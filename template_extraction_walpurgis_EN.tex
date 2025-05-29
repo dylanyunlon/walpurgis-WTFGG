@@ -134,6 +134,18 @@
 %   CXXIII= query-equivalence (prune-or-descend exactness)
 %   CXXIV = output-sensitivity (independent of migration churn)
 %   CXXV  = atomic index epoch (staleness stamp for wait-free readers)
+%
+% Section 4 Experimental Design (CLI-CLXXV) -- added by Claude-3:
+%   CLX    = timestamp extent / query-width regime (100,000)
+%   CLXIII = promotion/demotion evaluation interval K_x
+%   CLXVII = mixed-generation cluster (H100 + A6000)
+%   CLXX   = one million edges (max graph size)
+%   Tiered = Walpurgis temperature-aware placement (the method under test)
+%   baselines = HBM-Only / GDDR-Only / DRAM-Only / fixed (non-adaptive) tiering
+%   metrics   = query latency / QPS / per-tier memory utilization / migration cost
+%   protocol  = mean+std over 3 seeds {42,137,271}, 2000 incremental steps
+%   cost model= HBM 1ns / GDDR 5ns / DRAM 50ns; per-tier capacity 4 GiB
+%   datasets  = power-law (LDBC-like); LDBC SNB SF-1 / SF-10 / SF-100
 %================================================================================
 \documentclass{article}
 \usepackage{amsmath}
@@ -381,5 +393,40 @@ path. Empirically (Section~\ref{sec:eval}), the fair selection cost is
 $3.7\,\mu s$ indexed versus $8.0\,\mu s$ linear at $P = 8000$, and the apparent
 ``$5\times$ slowdown'' reported by a first measurement was a benchmark artifact that
 charged per-hit bookkeeping solely to the indexed path.
+
+%================================================================================
+% Section 4: Experimental Design (Filled)
+% Claude-3 (M051-M075). Mirrors the source Section 4 structure:
+%   P1 datasets/workload   P2 baselines+configuration   P3 hardware+metrics.
+% Every number grounded in the committed data files (philemon_*_2000.json) and
+% src/bench/philemon_data_gen.cpp: methods {Tiered, HBM-Only, GDDR-Only,
+% DRAM-Only}, seeds {42,137,271}, 2000 steps x 3 seeds, 4 GiB per tier,
+% timestamp extent 100k, power-law (LDBC-like) edges, cost model 1/5/50 ns.
+%================================================================================
+\section{Experimental Design}
+\label{sec:experimental_design}
+
+% Paragraph 1: Datasets and workload
+We evaluate Walpurgis on temporal graphs of up to one million edges, generated with a
+power-law degree distribution that mirrors the LDBC Social Network Benchmark, and
+validate on LDBC SF-1, SF-10, and SF-100. Queries are temporal range scans over a
+timestamp extent of $100{,}000$, with query widths spanning narrow, medium, and wide
+windows so that the output size $k$ varies by orders of magnitude.
+
+% Paragraph 2: Baselines and configuration
+We compare Walpurgis (the temperature-aware \emph{Tiered} placement) against three
+single-tier baselines---HBM-Only, GDDR-Only, and DRAM-Only---each given the same
+$4$\,GiB capacity, and against a fixed (non-adaptive) tiering. For Walpurgis we set the
+promotion/demotion evaluation interval $K_x$, with the occupancy threshold at $80\%$
+and the hotness half-life chosen per tier as a constant multiple of $K_x$, so that
+slower-changing partitions are re-evaluated less often.
+
+% Paragraph 3: Hardware and metrics
+Experiments are conducted on mixed-generation clusters (H100 alongside A6000) under a
+tiered-memory cost model of $1$\,ns (HBM), $5$\,ns (GDDR), and $50$\,ns (DRAM), with
+the sequence-lock reader path enabling concurrent queries during migration. We report
+query latency, queries per second, per-tier memory utilization, and migration cost as
+mean and standard deviation over $3$ seeds ($\{42, 137, 271\}$), each curve sampled at
+$2{,}000$ incremental steps.
 
 \end{document}

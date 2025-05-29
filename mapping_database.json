@@ -2,8 +2,8 @@
   "project": "Walpurgis: Workload-Aware Temporal-Subgraph Processing on Heterogeneous GPU Memory (repo: walpurgis-WTFGG; data-layer codename: Philemon-TSH)",
   "source": "https://github.com/dylanyunlon/walpurgis-WTFGG (DEVELOPMENT_PLAN.md + src/ headers)",
   "template": "https://github.com/dylanyunlon/Desynced-Low-Communication (template.txt)",
-  "claude_instance": "Claude-2 (M026-M050)",
-  "scope": "Section 1 Introduction + Section 2 System + Section 3 Correctness/Performance guarantees",
+  "claude_instance": "Claude-3 (M051-M075)",
+  "scope": "Section 1 Introduction + Section 2 System + Section 3 Correctness/Performance + Section 4 Experimental Design",
   "notes": "Symbol->concept mapping for the Walpurgis systems paper. The .tex body is written in academic register: component ROLES are named in prose (tiered allocator, bridge layer, migration scheduler, sequence lock); source-file names are never cited in the text. Concepts are recovered from the design narratives in src/ headers and DEVELOPMENT_PLAN.md.",
   "mapping": {
     "A": "Walpurgis (our heterogeneous-memory temporal-subgraph engine; data layer codename Philemon-TSH)",
@@ -185,7 +185,21 @@
     "CXXII": "streaming rebuild factor (monolithic Theta(N^2 log N))",
     "CXXIII": "query-equivalence (prune-or-descend exactness)",
     "CXXIV": "output-sensitivity (independent of migration churn)",
-    "CXXV": "atomic index epoch (staleness stamp for wait-free readers)"
+    "CXXV": "atomic index epoch (staleness stamp for wait-free readers)",
+    "CLX": "timestamp extent / query-width regime (100,000)",
+    "CLXIII": "promotion/demotion evaluation interval K_x (80% occupancy threshold)",
+    "CLXVII": "mixed-generation cluster (H100 + A6000)",
+    "CLXX": "one million edges (max temporal-graph size)",
+    "Tiered": "Walpurgis temperature-aware placement (method under test)",
+    "HBM-Only": "single-tier baseline: all partitions in HBM (4 GiB)",
+    "GDDR-Only": "single-tier baseline: all partitions in GDDR (4 GiB)",
+    "DRAM-Only": "single-tier baseline: all partitions in DRAM (4 GiB)",
+    "Fixed-Tiering": "non-adaptive tiering baseline",
+    "metrics": "query latency / QPS / per-tier memory utilization / migration cost",
+    "seeds": "{42, 137, 271} (3 seeds, mean+std)",
+    "n_steps": "2000 incremental steps per curve",
+    "cost_model": "HBM 1ns / GDDR 5ns / DRAM 50ns; 4 GiB per tier",
+    "datasets": "power-law LDBC-like; LDBC SNB SF-1 / SF-10 / SF-100"
   },
   "chinese_titles": {
     "line4_WX": "分层指针守卫(W=TierPtr, X=RAII 守卫 → 四字'分层指针')",
