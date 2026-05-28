@@ -55,6 +55,7 @@
 #include <mutex>           // M005: for std::unique_lock
 #include <unordered_map>
 #include <cstdint>
+#include "../core/interval_index.hpp"  // M011: dual-sorted interval index
 
 namespace philemon {
 
@@ -79,6 +80,8 @@ struct TemporalInterval {
 
 // ─── Edge with temporal annotation ──────────────────────────────────────────
 // Extends RapidStore's driver::graph::weightedEdge with a temporal range.
+#ifndef PHILEMON_TEMPORAL_EDGE_DEFINED
+#define PHILEMON_TEMPORAL_EDGE_DEFINED
 struct TemporalEdge {
     uint64_t source;
     uint64_t destination;
@@ -91,6 +94,7 @@ struct TemporalEdge {
     TemporalEdge(uint64_t s, uint64_t d, double w, int32_t t0, int32_t t1)
         : source(s), destination(d), weight(w), ts_start(t0), ts_end(t1) {}
 };
+#endif
 
 
 // ─── Tier Placement Policy ──────────────────────────────────────────────────
@@ -132,6 +136,10 @@ struct SubgraphPartition {
     uint64_t             edge_count;     // number of temporal edges
     std::atomic<uint8_t> tier_atomic;    // M005: atomic tier for concurrent access
 
+    // M011: Interval index for O(log N + output) temporal queries
+    // Pattern: PyTorch BlockPool dual ordered sets (CUDACachingAllocator.cpp:173)
+    mutable IntervalIndex interval_idx;
+
     // Convenience getter/setter
     MemoryTier tier() const {
         return static_cast<MemoryTier>(tier_atomic.load(std::memory_order_relaxed));
@@ -150,6 +158,7 @@ struct SubgraphPartition {
     {
         tier_atomic.store(o.tier_atomic.load(std::memory_order_relaxed),
                           std::memory_order_relaxed);
+        // M011: interval_idx is rebuilt lazily, no need to copy
     }
     SubgraphPartition& operator=(const SubgraphPartition& o) {
         if (this != &o) {
@@ -305,6 +314,14 @@ public:
             part.edge_count = count;
             part.set_tier(init_tier);
 
+            // M011: Build interval index for O(log N + output) queries.
+            // Pattern: PyTorch BlockPool builds two sorted views at init.
+            // We build the dual-sorted index after data is written to memory.
+            if (dst) {
+                part.interval_idx.build(
+                    reinterpret_cast<const TemporalEdge*>(dst), count);
+            }
+
             {
                 std::unique_lock<std::shared_mutex> lk(part_mu_);  // M005
                 seq_lock_.write_lock();   // M007: seqlock write
@@ -414,6 +431,83 @@ public:
         uint64_t total = 0;
         for (auto* p : parts) {
             total += scan_partition(*p, ts_lo, ts_hi, std::forward<Callback>(cb));
+        }
+        return total;
+    }
+
+
+    // ── M011: Indexed Temporal Queries ──────────────────────────────────────
+    // Uses IntervalIndex for O(log N + output) per partition.
+    //
+    // Pattern: TEM-Graph build_index → sorted_by_start + sorted_by_end,
+    //          then contains_query uses binary search on both orderings.
+    // Also: PyTorch BlockPool dual ordered sets for multi-key lookup.
+
+    /// contains_query: find edges where [edge.start, edge.end] ⊆ [lo, hi]
+    template <typename Callback>
+    uint64_t indexed_contains_query(int32_t ts_lo, int32_t ts_hi,
+                                     Callback&& cb) const {
+        auto parts = query_partitions(ts_lo, ts_hi);
+        uint64_t total = 0;
+        for (auto* p : parts) {
+            if (p->interval_idx.is_built()) {
+                total += p->interval_idx.contains_query(
+                    ts_lo, ts_hi, std::forward<Callback>(cb));
+            } else {
+                // Fallback to linear scan_partition
+                total += scan_partition(*p, ts_lo, ts_hi, std::forward<Callback>(cb));
+            }
+        }
+        return total;
+    }
+
+    /// contained_query: find edges where [lo, hi] ⊆ [edge.start, edge.end]
+    template <typename Callback>
+    uint64_t indexed_contained_query(int32_t ts_lo, int32_t ts_hi,
+                                      Callback&& cb) const {
+        auto parts = query_partitions(ts_lo, ts_hi);
+        uint64_t total = 0;
+        for (auto* p : parts) {
+            if (p->interval_idx.is_built()) {
+                total += p->interval_idx.contained_query(
+                    ts_lo, ts_hi, std::forward<Callback>(cb));
+            } else {
+                // Fallback: linear scan with reverse inclusion check
+                void* raw = allocator_.get_ptr(p->alloc_id);
+                if (!raw) continue;
+                const TemporalEdge* edges = reinterpret_cast<const TemporalEdge*>(raw);
+                for (uint64_t i = 0; i < p->edge_count; ++i) {
+                    if (edges[i].ts_start <= ts_lo && edges[i].ts_end >= ts_hi) {
+                        cb(edges[i]);
+                        ++total;
+                    }
+                }
+            }
+        }
+        return total;
+    }
+
+    /// overlaps_query: find edges where edge ∩ [lo, hi] ≠ ∅
+    template <typename Callback>
+    uint64_t indexed_overlaps_query(int32_t ts_lo, int32_t ts_hi,
+                                     Callback&& cb) const {
+        auto parts = query_partitions(ts_lo, ts_hi);
+        uint64_t total = 0;
+        for (auto* p : parts) {
+            if (p->interval_idx.is_built()) {
+                total += p->interval_idx.overlaps_query(
+                    ts_lo, ts_hi, std::forward<Callback>(cb));
+            } else {
+                void* raw = allocator_.get_ptr(p->alloc_id);
+                if (!raw) continue;
+                const TemporalEdge* edges = reinterpret_cast<const TemporalEdge*>(raw);
+                for (uint64_t i = 0; i < p->edge_count; ++i) {
+                    if (edges[i].ts_start <= ts_hi && edges[i].ts_end >= ts_lo) {
+                        cb(edges[i]);
+                        ++total;
+                    }
+                }
+            }
         }
         return total;
     }
