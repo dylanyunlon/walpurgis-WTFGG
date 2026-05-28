@@ -31,8 +31,16 @@ philemon_bench: src/bench/philemon_bench.cpp src/core/tiered_allocator.hpp \
                 src/bridge/temporal_bridge.hpp src/scheduler/migration_scheduler.hpp
 	$(CXX) $(CXXFLAGS) -I src -o $@ src/bench/philemon_bench.cpp
 
+# M013/M014: partition skip-list self-test + selection benchmark
+skiplist_selftest: src/bench/skiplist_selftest.cpp src/core/partition_skiplist.hpp
+	$(CXX) $(CXXFLAGS) -I src -o $@ src/bench/skiplist_selftest.cpp
+
+pidx_bench: src/bench/partition_index_bench.cpp src/core/partition_skiplist.hpp \
+            src/bridge/temporal_bridge.hpp src/core/tiered_allocator.hpp
+	$(CXX) $(CXXFLAGS) -I src -o $@ src/bench/partition_index_bench.cpp
+
 hetero_bench: src/cuda/hetero_bench.cu
 	$(NVCC) $(NVFLAGS) $(ARCH_FLAGS) -o $@ $<
 
 clean:
-	rm -f philemon_bench hetero_bench
+	rm -f philemon_bench hetero_bench skiplist_selftest pidx_bench

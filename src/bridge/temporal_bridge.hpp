@@ -55,7 +55,8 @@
 #include <mutex>           // M005: for std::unique_lock
 #include <unordered_map>
 #include <cstdint>
-#include "../core/interval_index.hpp"  // M011: dual-sorted interval index
+#include "../core/interval_index.hpp"     // M011: dual-sorted interval index
+#include "../core/partition_skiplist.hpp" // M013: augmented interval skip list
 
 namespace philemon {
 
@@ -333,34 +334,85 @@ public:
 
         buffer_.clear();
         buffer_.shrink_to_fit();
+
+        // M013: rebuild the partition-level interval skip list so the next
+        // query_partitions runs in O(log P + k) instead of O(P). Done once per
+        // flush (batch-append model), inside the seqlock write section so
+        // concurrent optimistic readers retry against a consistent index.
+        rebuild_partition_index();
         return created;
+    }
+
+    // M013: (re)build the augmented interval skip list over current partitions.
+    // Caller note: takes the same locks as a structural write.
+    void rebuild_partition_index() {
+        std::unique_lock<std::shared_mutex> lk(part_mu_);
+        std::vector<PartitionInterval> ivals;
+        ivals.reserve(partitions_.size());
+        for (uint32_t s = 0; s < partitions_.size(); ++s) {
+            ivals.push_back(PartitionInterval{
+                partitions_[s].ts_lo, partitions_[s].ts_hi, s});
+        }
+        seq_lock_.write_lock();
+        part_index_.build(std::move(ivals));
+        index_ready_ = !partitions_.empty();
+        seq_lock_.write_unlock();
     }
 
 
     // ── Temporal Range Query ────────────────────────────────────────────────
     // Find all partitions whose interval range overlaps [ts_lo, ts_hi].
-    // M007: Uses SeqLock for wait-free reads. Readers optimistically read
-    // partition data and retry if a concurrent write is detected.
-    // This eliminates the shared_mutex write-starvation risk.
+    // M007: SeqLock optimistic reads — no blocking on writers.
+    // M013: When the partition skip list is built, selection is O(log P + k)
+    //       via the augmented interval walk. Falls back to the O(P) linear
+    //       scan when the index is absent (e.g. before the first flush) or
+    //       has gone stale relative to partitions_ (defensive). The two paths
+    //       are equivalent in result; the linear path is the correctness
+    //       oracle the M014 benchmark validates the index against.
 
     std::vector<const SubgraphPartition*>
     query_partitions(int32_t ts_lo, int32_t ts_hi) const {
         std::vector<const SubgraphPartition*> result;
-        // M007: Optimistic seqlock read — no blocking on writers
+        std::vector<uint32_t> slots;
         uint64_t seq;
         do {
             seq = seq_lock_.read_begin();
             result.clear();
-            // Still take shared_lock for vector safety (seqlock protects
-            // against torn partition metadata reads during migration)
             std::shared_lock<std::shared_mutex> lk(part_mu_);  // M005
-            for (auto& p : partitions_) {
-                if (p.ts_lo <= ts_hi && p.ts_hi >= ts_lo) {
-                    result.push_back(&p);
-                    allocator_.touch(p.alloc_id);  // M005: lockfree touch
+
+            if (index_ready_ && part_index_.size() == partitions_.size()) {
+                // M013: pruned interval walk over the skip list.
+                slots.clear();
+                part_index_.overlaps(ts_lo, ts_hi, slots);
+                for (uint32_t s : slots) {
+                    if (s < partitions_.size()) {
+                        const SubgraphPartition& p = partitions_[s];
+                        result.push_back(&p);
+                        allocator_.touch(p.alloc_id);   // M005: lockfree touch
+                    }
+                }
+            } else {
+                // Fallback: O(P) linear scan (pre-index, or size mismatch).
+                for (auto& p : partitions_) {
+                    if (p.ts_lo <= ts_hi && p.ts_hi >= ts_lo) {
+                        result.push_back(&p);
+                        allocator_.touch(p.alloc_id);
+                    }
                 }
             }
         } while (seq_lock_.read_retry(seq));
+        return result;
+    }
+
+    // M013: explicit linear-scan selection, kept as the benchmark oracle so
+    // the indexed path can be validated against it at runtime.
+    std::vector<const SubgraphPartition*>
+    query_partitions_linear(int32_t ts_lo, int32_t ts_hi) const {
+        std::vector<const SubgraphPartition*> result;
+        std::shared_lock<std::shared_mutex> lk(part_mu_);
+        for (auto& p : partitions_) {
+            if (p.ts_lo <= ts_hi && p.ts_hi >= ts_lo) result.push_back(&p);
+        }
         return result;
     }
 
@@ -569,6 +621,13 @@ private:
     mutable std::shared_mutex   part_mu_;      // M005: protects partitions_
     mutable SeqLock             seq_lock_;     // M007: wait-free reader seqlock
     std::vector<SubgraphPartition> partitions_;
+
+    // M013: partition-level augmented interval skip list. Rebuilt per flush.
+    // migration_sweep only mutates tier (not ts_lo/ts_hi), so partition
+    // intervals are stable between flushes and the index stays valid across
+    // migrations — only flush_partitions invalidates and rebuilds it.
+    PartitionSkipList           part_index_;
+    bool                        index_ready_ = false;
 };
 
 }  // namespace philemon
