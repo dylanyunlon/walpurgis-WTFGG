@@ -49,6 +49,8 @@
 #include "../core/seqlock.hpp"       // M007: wait-free reader seqlock
 #include <vector>
 #include <algorithm>
+#include <atomic>          // index_epoch_, ts_min_/ts_max_ (S5/S6)
+#include <limits>          // std::numeric_limits for the extent sentinels
 #include <numeric>
 #include <functional>
 #include <shared_mutex>    // M005: for partitions_ concurrency
@@ -228,6 +230,16 @@ public:
     size_t flush_partitions() {
         if (buffer_.empty()) return 0;
 
+        // S1: remember where this flush's new partitions will start, so the
+        // index can be updated *incrementally* (one new segment for the new
+        // partitions) instead of rebuilt wholesale. We read the size under the
+        // shared lock; this flush is the only writer (callers serialize flush).
+        size_t first_new_slot;
+        {
+            std::shared_lock<std::shared_mutex> lk(part_mu_);
+            first_new_slot = partitions_.size();
+        }
+
         // Sort by interval start, then end (matches TEM-Graph loading order).
         std::sort(buffer_.begin(), buffer_.end(),
             [](const TemporalEdge& a, const TemporalEdge& b) {
@@ -335,28 +347,39 @@ public:
         buffer_.clear();
         buffer_.shrink_to_fit();
 
-        // M013: rebuild the partition-level interval skip list so the next
-        // query_partitions runs in O(log P + k) instead of O(P). Done once per
-        // flush (batch-append model), inside the seqlock write section so
-        // concurrent optimistic readers retry against a consistent index.
-        rebuild_partition_index();
+        // S1: incrementally add ONLY this flush's new partitions as one
+        // immutable index segment — O(M log M), not a wholesale O(P log P)
+        // rebuild. SegmentedPartitionIndex compacts in the background when the
+        // segment count crosses its threshold (LSM/Lucene pattern).
+        append_new_partitions(first_new_slot);
         return created;
     }
 
-    // M013: (re)build the augmented interval skip list over current partitions.
-    // Caller note: takes the same locks as a structural write.
+    // ── Index maintenance (S1/S4: locking made explicit) ────────────────────
+    // Public surface: a full rebuild and an explicit compaction, both of which
+    // acquire part_mu_ themselves. They MUST NOT be called while already
+    // holding part_mu_ (std::shared_mutex is non-recursive → self-deadlock).
+    // The internal _locked variants assume the caller holds the unique lock.
+
+    /// Rebuild the whole index from scratch (e.g. after bulk slot remapping).
     void rebuild_partition_index() {
         std::unique_lock<std::shared_mutex> lk(part_mu_);
-        std::vector<PartitionInterval> ivals;
-        ivals.reserve(partitions_.size());
-        for (uint32_t s = 0; s < partitions_.size(); ++s) {
-            ivals.push_back(PartitionInterval{
-                partitions_[s].ts_lo, partitions_[s].ts_hi, s});
-        }
+        rebuild_partition_index_locked();
+    }
+
+    /// Force-merge index segments into one. Safe to call periodically from a
+    /// maintenance thread; cheap no-op when already compact.
+    void compact_partition_index() {
+        std::unique_lock<std::shared_mutex> lk(part_mu_);
         seq_lock_.write_lock();
-        part_index_.build(std::move(ivals));
-        index_ready_ = !partitions_.empty();
+        part_index_.compact();
+        index_epoch_.fetch_add(1, std::memory_order_release);
         seq_lock_.write_unlock();
+    }
+
+    size_t index_segment_count() const {
+        std::shared_lock<std::shared_mutex> lk(part_mu_);
+        return part_index_.segment_count();
     }
 
 
@@ -380,19 +403,39 @@ public:
             result.clear();
             std::shared_lock<std::shared_mutex> lk(part_mu_);  // M005
 
-            if (index_ready_ && part_index_.size() == partitions_.size()) {
-                // M013: pruned interval walk over the skip list.
+            const size_t P = partitions_.size();
+            const bool index_usable =
+                index_epoch_.load(std::memory_order_acquire) != 0 &&
+                part_index_.size() == P;
+
+            // Selectivity note (Claude #7 self-review, S6 — corrected):
+            // An earlier revision added a width-ratio "fall back to linear for
+            // wide queries" guard, believing the index walk was ~5× slower than
+            // a flat scan at low selectivity. Direct profiling disproved that:
+            // at P=8000 the pure SELECTION cost is 3.7 µs indexed vs 8.0 µs
+            // linear even for the widest query — the index always wins. The
+            // apparent slowdown was a benchmark artifact: indexed queries
+            // touch() every hit while the linear oracle did not, so N touch()
+            // calls were miscredited to the index. touch() cost is identical on
+            // both paths (every selected partition is touched either way), so a
+            // fallback could not save it. The guard was therefore removed — no
+            // heuristic, no threshold, just the index. (A genuine cost model
+            // for the *intra*-partition scan stays planned as M047.)
+            if (index_usable) {
+                // S1/M013: segmented pruned interval walk.
                 slots.clear();
                 part_index_.overlaps(ts_lo, ts_hi, slots);
                 for (uint32_t s : slots) {
-                    if (s < partitions_.size()) {
+                    // Defensive bound: slots are global and < P by
+                    // construction, but guard against any future remap bug.
+                    if (s < P) {
                         const SubgraphPartition& p = partitions_[s];
                         result.push_back(&p);
-                        allocator_.touch(p.alloc_id);   // M005: lockfree touch
+                        allocator_.touch(p.alloc_id);  // M005: lockfree
                     }
                 }
             } else {
-                // Fallback: O(P) linear scan (pre-index, or size mismatch).
+                // Linear O(P) scan: pre-index or size mismatch only.
                 for (auto& p : partitions_) {
                     if (p.ts_lo <= ts_hi && p.ts_hi >= ts_lo) {
                         result.push_back(&p);
@@ -406,12 +449,25 @@ public:
 
     // M013: explicit linear-scan selection, kept as the benchmark oracle so
     // the indexed path can be validated against it at runtime.
+    //
+    // S2-followup (Claude #7 self-review): `with_touch` controls whether each
+    // hit is touch()'d. The indexed query_partitions touches every hit; for a
+    // FAIR latency comparison the linear oracle must do the same amount of
+    // work. The earlier benchmark compared indexed-with-touch against
+    // linear-WITHOUT-touch, which charged the cost of N touch() calls entirely
+    // to the index and produced a misleading "wide query is 5× slower" result.
+    // touch() is the real cost at low selectivity, not the index walk.
+    // Default false preserves the pure-selection oracle used for correctness.
     std::vector<const SubgraphPartition*>
-    query_partitions_linear(int32_t ts_lo, int32_t ts_hi) const {
+    query_partitions_linear(int32_t ts_lo, int32_t ts_hi,
+                            bool with_touch = false) const {
         std::vector<const SubgraphPartition*> result;
         std::shared_lock<std::shared_mutex> lk(part_mu_);
         for (auto& p : partitions_) {
-            if (p.ts_lo <= ts_hi && p.ts_hi >= ts_lo) result.push_back(&p);
+            if (p.ts_lo <= ts_hi && p.ts_hi >= ts_lo) {
+                result.push_back(&p);
+                if (with_touch) allocator_.touch(p.alloc_id);
+            }
         }
         return result;
     }
@@ -613,6 +669,53 @@ public:
     }
 
 private:
+    // ── Index maintenance internals ──────────────────────────────────────────
+    // append_new_partitions ACQUIRES the unique lock itself (called from
+    // flush_partitions after its push_back critical sections have released).
+    // rebuild_partition_index_locked ASSUMES the unique lock is already held
+    // (called from the public rebuild_partition_index after it locks).
+
+    // S1: append only the partitions [first_new_slot, partitions_.size()) as a
+    // single immutable index segment — O(M log M).
+    void append_new_partitions(size_t first_new_slot) {
+        std::unique_lock<std::shared_mutex> lk(part_mu_);
+        if (first_new_slot >= partitions_.size()) return;  // nothing new
+        std::vector<PartitionInterval> ivals;
+        ivals.reserve(partitions_.size() - first_new_slot);
+        int32_t lo_seen = ts_min_.load(std::memory_order_relaxed);
+        int32_t hi_seen = ts_max_.load(std::memory_order_relaxed);
+        for (uint32_t s = static_cast<uint32_t>(first_new_slot);
+             s < partitions_.size(); ++s) {
+            ivals.push_back(PartitionInterval{
+                partitions_[s].ts_lo, partitions_[s].ts_hi, s});
+            lo_seen = std::min(lo_seen, partitions_[s].ts_lo);
+            hi_seen = std::max(hi_seen, partitions_[s].ts_hi);
+        }
+        // S6: publish the widened extent (relaxed is fine; it is only a hint).
+        ts_min_.store(lo_seen, std::memory_order_relaxed);
+        ts_max_.store(hi_seen, std::memory_order_relaxed);
+        seq_lock_.write_lock();
+        part_index_.add_segment(std::move(ivals));
+        index_epoch_.fetch_add(1, std::memory_order_release);
+        seq_lock_.write_unlock();
+    }
+
+    // Full wholesale rebuild from current partitions_. Caller holds the unique
+    // lock. Used by the public rebuild_partition_index() after slot remapping.
+    void rebuild_partition_index_locked() {
+        std::vector<PartitionInterval> ivals;
+        ivals.reserve(partitions_.size());
+        for (uint32_t s = 0; s < partitions_.size(); ++s) {
+            ivals.push_back(PartitionInterval{
+                partitions_[s].ts_lo, partitions_[s].ts_hi, s});
+        }
+        seq_lock_.write_lock();
+        part_index_.clear();
+        part_index_.add_segment(std::move(ivals));   // one compacted segment
+        index_epoch_.fetch_add(1, std::memory_order_release);
+        seq_lock_.write_unlock();
+    }
+
     TieredAllocator&            allocator_;
     TierPlacementPolicy         policy_;
     size_t                      partition_cap_;
@@ -623,11 +726,32 @@ private:
     std::vector<SubgraphPartition> partitions_;
 
     // M013: partition-level augmented interval skip list. Rebuilt per flush.
-    // migration_sweep only mutates tier (not ts_lo/ts_hi), so partition
-    // intervals are stable between flushes and the index stays valid across
-    // migrations — only flush_partitions invalidates and rebuilds it.
-    PartitionSkipList           part_index_;
-    bool                        index_ready_ = false;
+    //
+    // Concurrency contract (revised after Claude #7 self-review):
+    //   - part_index_ and index_epoch_ are read under shared_lock(part_mu_)
+    //     and written under unique_lock(part_mu_). They are NOT lock-free; the
+    //     seqlock retry in query_partitions is therefore redundant for the
+    //     index (the shared_lock already serializes against the rebuild's
+    //     unique_lock) and is kept only to preserve the M007 read protocol for
+    //     the partition *metadata* fields touched during migration. See S3 in
+    //     REVIEW_M013_M014.md.
+    //   - migration_sweep mutates only tier (not ts_lo/ts_hi), so partition
+    //     intervals — and hence the index — stay valid across migrations. Only
+    //     flush_partitions invalidates and rebuilds the index.
+    //   - index_epoch_ is atomic so a future lock-free reader path can detect
+    //     staleness without holding part_mu_; today it doubles as the
+    //     "is the index usable" flag (epoch 0 == not yet built).
+    SegmentedPartitionIndex     part_index_;     // S1: LSM-style segmented
+    std::atomic<uint64_t>       index_epoch_{0};
+
+    // Global temporal extent across all partitions, maintained cheaply at
+    // flush. Not used by the query fast path anymore (the S6 width-ratio guard
+    // was removed — see query_partitions). Kept because it is near-free to
+    // maintain and is the natural input for the planned M047 cost model and for
+    // O(1) "does any partition cover this time?" pre-checks. Atomic for
+    // lock-free reads.
+    std::atomic<int32_t>        ts_min_{std::numeric_limits<int32_t>::max()};
+    std::atomic<int32_t>        ts_max_{std::numeric_limits<int32_t>::min()};
 };
 
 }  // namespace philemon

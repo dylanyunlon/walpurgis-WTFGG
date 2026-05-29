@@ -69,22 +69,14 @@ static const int32_t SLICE_WIDTH  = 50;       // time advanced per step
 
 struct QWidth { const char* name; int32_t half; };
 
-static std::set<uint32_t> slot_set(const std::vector<const SubgraphPartition*>& v,
-                                   const TemporalBridge& b) {
-    // map partition pointer back to slot via its ts_lo/ts_hi+ptr identity:
-    // simplest stable key is the pointer's position; we reconstruct from the
-    // snapshot order. Here we just hash on (ts_lo,ts_hi,edge_count) which is
-    // unique enough for the validation sample.
-    (void)b;
-    std::set<uint32_t> s;
-    for (auto* p : v) {
-        // fold a small identity into a slot-like key
-        uint32_t key = static_cast<uint32_t>(
-            (uint32_t(p->ts_lo) * 2654435761u) ^
-            (uint32_t(p->ts_hi) * 40503u) ^
-            uint32_t(p->edge_count));
-        s.insert(key);
-    }
+// S2 fix: compare result sets by the partition's real, unique identity
+// (alloc_id, assigned monotonically by TieredAllocator). The earlier version
+// hashed (ts_lo, ts_hi, edge_count), which can collide for distinct partitions
+// in dense time slices — making the "match" check silently unreliable. alloc_id
+// is collision-free, so set equality here is a true correctness assertion.
+static std::set<uint64_t> id_set(const std::vector<const SubgraphPartition*>& v) {
+    std::set<uint64_t> s;
+    for (auto* p : v) s.insert(p->alloc_id);
     return s;
 }
 
@@ -150,24 +142,30 @@ int main() {
                 int32_t lo = center - qw.half;
                 int32_t hi = center + qw.half;
 
-                // time the indexed selection
+                // time the indexed selection (touches every hit)
                 hrc::time_point a0 = hrc::now();
                 auto idx = bridge.query_partitions(lo, hi);
                 hrc::time_point a1 = hrc::now();
                 idx_lat[qw.name].push_back(
                     std::chrono::duration<double, std::micro>(a1 - a0).count());
 
-                // time the linear oracle
+                // time the linear oracle — WITH touch, so both paths do the
+                // same per-hit work and the comparison is fair (see the
+                // query_partitions_linear S2-followup note). Touching the same
+                // hits twice per step (indexed + linear) is harmless: touch()
+                // only bumps an access counter.
                 a0 = hrc::now();
-                auto lin = bridge.query_partitions_linear(lo, hi);
+                auto lin = bridge.query_partitions_linear(lo, hi, /*with_touch=*/true);
                 a1 = hrc::now();
                 lin_lat[qw.name].push_back(
                     std::chrono::duration<double, std::micro>(a1 - a0).count());
 
-                // runtime correctness sample (every 200 steps, medium width)
-                if (step % 200 == 0) {
-                    auto si = slot_set(idx, bridge);
-                    auto sl = slot_set(lin, bridge);
+                // S2: runtime correctness — true set equality by alloc_id.
+                // Sampled every 20 steps across ALL widths (the validation is
+                // now collision-free, so we exercise it far more often).
+                if (step % 20 == 0) {
+                    auto si = id_set(idx);
+                    auto sl = id_set(lin);
                     ++checks;
                     if (si != sl) {
                         ++mism;

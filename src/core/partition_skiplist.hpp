@@ -71,6 +71,7 @@
 #include <vector>
 #include <limits>
 #include <algorithm>
+#include <memory>   // SegmentedPartitionIndex: std::unique_ptr segments
 
 namespace philemon {
 
@@ -187,6 +188,18 @@ public:
         }
     }
 
+    bool empty() const { return size_ == 0; }
+
+    // Export all intervals in base-level (ts_lo-sorted) order into `out`.
+    // Used by SegmentedPartitionIndex::compact to merge segments. O(P).
+    void collect(std::vector<PartitionInterval>& out) const {
+        out.reserve(out.size() + nodes_.size());
+        for (uint32_t i = forward_at_const(kHead, 0); i != kNil;
+             i = forward_at_const(i, 0)) {
+            out.push_back(nodes_[i].iv);
+        }
+    }
+
 private:
     static constexpr uint32_t kNil  = std::numeric_limits<uint32_t>::max();
     static constexpr uint32_t kHead = kNil - 1;   // sentinel id for head_
@@ -280,6 +293,92 @@ private:
     std::vector<Node> nodes_;    // node id == index here == base-level order
     int               levels_;
     size_t            size_;
+};
+
+
+// ─── SegmentedPartitionIndex ────────────────────────────────────────────────
+//
+// Why this exists (Claude #7 self-review, S1):
+//   A single PartitionSkipList must be rebuilt wholesale on every flush —
+//   build() is O(P log P) (sort) + O(P) (link + span_max), and span_max is a
+//   global per-level fold that cannot be locally patched when nodes are
+//   appended. Under streaming ingestion with N flushes that is
+//   Σ O(P_i log P_i) = O(N² log N) cumulative — a real scaling cliff
+//   (measured: per-flush rebuild grew from 0.24 ms at P=100 to 0.43 ms at
+//   P=800, monotonically).
+//
+// The fix is the log-structured-merge / Lucene-segment pattern: each flush
+// builds ONE small immutable skip-list segment over just the *new* partitions
+// (O(M log M), M = new partitions ≪ P). A query fans out over all segments and
+// merges results. When the segment count crosses a threshold, compact() merges
+// them back into one — amortizing the rebuild cost the way LSM compaction does.
+//
+//   LevelDB/RocksDB: immutable SSTables + background compaction.
+//   Lucene:          immutable index segments + periodic merge.
+//
+// Cost model:
+//   add_segment(M)  : O(M log M)
+//   overlaps        : O(S · (log P + k_s))   S = #segments, usually O(log N)
+//   compact         : O(P log P), run every kCompactThreshold segments, so the
+//                     amortized rebuild cost per partition is O(log P).
+//
+// Concurrency: the index is owned by TemporalBridge and mutated only under its
+// unique_lock(part_mu_); readers hold shared_lock. Segments are immutable once
+// built, so a reader iterating segments_ under shared_lock sees a consistent
+// snapshot. Slots are GLOBAL partition slots (indices into partitions_), so a
+// hit maps straight back regardless of which segment produced it.
+class SegmentedPartitionIndex {
+public:
+    // Merge once the number of live segments reaches this. Geometric segment
+    // sizes under monotone flushes keep S = O(log N) between compactions; the
+    // threshold caps the per-query fan-out in the meantime.
+    static constexpr size_t kCompactThreshold = 8;
+
+    SegmentedPartitionIndex() : total_(0) {}
+
+    size_t size()          const { return total_; }
+    size_t segment_count() const { return segments_.size(); }
+
+    void clear() {
+        segments_.clear();
+        total_ = 0;
+    }
+
+    // Append a batch of NEW partition intervals as one immutable segment.
+    // `ivals` need not be pre-sorted; the segment's build() sorts internally.
+    void add_segment(std::vector<PartitionInterval> ivals) {
+        if (ivals.empty()) return;
+        auto seg = std::make_unique<PartitionSkipList>();
+        seg->build(std::move(ivals));
+        total_ += seg->size();
+        segments_.push_back(std::move(seg));
+        if (segments_.size() >= kCompactThreshold) compact();
+    }
+
+    // Collect global slots whose interval meets [lo, hi], across all segments.
+    // Appends to `out` (caller-owned, reused to avoid per-query allocation).
+    // Note: a global slot appears in exactly one segment, so no de-dup needed.
+    void overlaps(int32_t lo, int32_t hi, std::vector<uint32_t>& out) const {
+        for (const auto& seg : segments_) seg->overlaps(lo, hi, out);
+    }
+
+    // Merge all segments into a single skip list. O(P log P). Called
+    // automatically at the threshold, or explicitly by a maintenance sweep.
+    void compact() {
+        if (segments_.size() <= 1) return;
+        std::vector<PartitionInterval> all;
+        all.reserve(total_);
+        for (const auto& seg : segments_) seg->collect(all);
+        auto merged = std::make_unique<PartitionSkipList>();
+        merged->build(std::move(all));
+        segments_.clear();
+        segments_.push_back(std::move(merged));
+        // total_ unchanged: compaction preserves membership.
+    }
+
+private:
+    std::vector<std::unique_ptr<PartitionSkipList>> segments_;
+    size_t                                          total_;
 };
 
 }  // namespace philemon
