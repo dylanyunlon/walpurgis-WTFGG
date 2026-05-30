@@ -82,35 +82,58 @@ class STLocalizedConv(nn.Module):
     def gconv(self, support, X_k, X_0):
         """Graph convolution with support matrices.
         
-        Walpurgis: validates shape compatibility and tracks per-support contributions.
+        Walpurgis algorithm change: support decay weighting.
+        Higher-order supports (later in the list) carry diminishing weight
+        via an exponential decay factor. This prevents over-smoothing from
+        distant neighbors dominating the aggregation, a known issue in deep
+        GCN stacks. Decay factor: w_i = exp(-decay_rate * i).
+        
+        Also adds residual shortcut from X_0 to output for gradient health.
         """
         out = [X_0]
         support_norms = []
+        decay_rate = 0.15  # empirically tuned: each hop loses ~14% weight
+        
         for i, graph in enumerate(support):
             if len(graph.shape) == 2:
-                # Static or predefined graph (N × kN)
                 pass
             else:
                 graph = graph.unsqueeze(1)
             H_k = torch.matmul(graph, X_k)
+            
+            # Walpurgis: apply order-dependent decay weight
+            hop_weight = torch.exp(torch.tensor(-decay_rate * i,
+                                                device=H_k.device, dtype=H_k.dtype))
+            H_k = H_k * hop_weight
+            
             support_norms.append(H_k.norm().item())
             out.append(H_k)
         
         self.debug_state['gconv_support_norms'] = support_norms
         self.debug_state['gconv_num_supports'] = len(support)
+        self.debug_state['gconv_decay_weights'] = [
+            float(torch.exp(torch.tensor(-decay_rate * i)).item())
+            for i in range(len(support))
+        ]
         
         out = torch.cat(out, dim=-1)
         self.debug_state['gconv_cat_shape'] = list(out.shape)
         
         out = self.gcn_updt(out)
         out = self.dropout(out)
+        
+        # Walpurgis: residual connection from identity feature X_0
+        # stabilizes gradient flow through deep decouple stacks
+        out = out + X_0
+        
         return out
 
     def get_graph(self, support):
         """Build k-hop ST-localized graph from support matrices.
         
-        For each predefined/static graph, computes powers up to k_s
-        and reshapes for spatial-temporal localization.
+        Walpurgis change: higher-order matrix powers (k≥2) are row-normalized
+        to prevent numerical blowup. D2STGNN uses raw powers which can cause
+        NaN in deep stacks when the predefined graph has large eigenvalues.
         """
         graph_ordered = []
         mask = 1 - torch.eye(support[0].shape[0]).to(support[0].device)
@@ -119,6 +142,10 @@ class STLocalizedConv(nn.Module):
             graph_ordered.append(k_1_order * mask)
             for k in range(2, self.k_s + 1):
                 k_1_order = torch.matmul(graph, k_1_order)
+                # Walpurgis: row-normalize higher-order powers
+                row_sum = k_1_order.abs().sum(dim=-1, keepdim=True).clamp(min=1e-8)
+                scale = graph.abs().sum(dim=-1, keepdim=True).clamp(min=1e-8)
+                k_1_order = k_1_order / row_sum * scale  # preserve scale of 1st order
                 graph_ordered.append(k_1_order * mask)
         
         # ST localization: expand each graph along temporal kernel dimension

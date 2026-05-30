@@ -59,9 +59,26 @@ class DifBlock(nn.Module):
         backcast_seq = self.backcast_branch(hidden_states_dif)
         self._timing['backcast'].append(time.time() - t0)
         
+        # Walpurgis: pre-residual norm check — if backcast signal is much larger
+        # than history, the residual will be dominated by backcast artifacts.
+        # This often signals tier-boundary instability in heterogeneous training.
+        import torch
+        backcast_norm = backcast_seq.norm().item()
+        
         # Residual decomposition — critical numerical stability point
         t0 = time.time()
         history_data = history_data[:, -backcast_seq.shape[1]:, :, :]
+        history_norm = history_data.norm().item()
+        
+        # Walpurgis algorithm tweak: if backcast overwhelms history (ratio > 10x),
+        # scale it down before residual to prevent gradient explosion
+        ratio = backcast_norm / (history_norm + 1e-8)
+        if ratio > 10.0:
+            backcast_seq = backcast_seq * (history_norm / (backcast_norm + 1e-8)) * 5.0
+            if verbose:
+                print(f"      [DifBlock] ⚠ backcast/history ratio={ratio:.1f} "
+                      f"→ rescaled backcast")
+        
         backcast_seq_res = self.residual_decompose(history_data, backcast_seq)
         self._timing['residual'].append(time.time() - t0)
         
@@ -69,6 +86,12 @@ class DifBlock(nn.Module):
             avg = {k: sum(v[-100:]) / max(len(v[-100:]), 1) * 1000 for k, v in self._timing.items()}
             print(f"      [DifBlock] call={self._call_count}: "
                   f"conv={avg['conv']:.1f}ms, fcast={avg['forecast']:.1f}ms, "
-                  f"bcast={avg['backcast']:.1f}ms, resid={avg['residual']:.1f}ms")
+                  f"bcast={avg['backcast']:.1f}ms, resid={avg['residual']:.1f}ms, "
+                  f"bcast/hist_ratio={ratio:.2f}")
+            # Health check on output
+            res_nan = torch.isnan(backcast_seq_res).any().item()
+            fcast_nan = torch.isnan(forecast_hidden).any().item()
+            if res_nan or fcast_nan:
+                print(f"      [DifBlock] ⚠ OUTPUT NaN: residual={res_nan} forecast={fcast_nan}")
 
         return backcast_seq_res, forecast_hidden

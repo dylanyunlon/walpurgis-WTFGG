@@ -79,9 +79,14 @@ def masked_mae_loss(y_pred, y_true):
 def masked_mae(preds, labels, null_val=np.nan):
     """Mean Absolute Error with masking — the primary training loss.
     
-    Walpurgis addition: NaN/Inf guard with warning message.
-    In heterogeneous-memory training, numerical instability can arise from
-    tier migration during computation — this guard catches it early.
+    Walpurgis modifications:
+      1. NaN/Inf guard with diagnostic output
+      2. Smooth floor: instead of raw |pred - label|, use sqrt(eps + (pred-label)^2)
+         which is differentiable at zero (standard MAE has undefined gradient at 0).
+         The floor eps is tiny (1e-6) so the actual loss value barely changes,
+         but gradient flow through near-perfect predictions becomes much healthier.
+      3. Per-horizon weighting when predictions have temporal dimension:
+         later horizons get slightly higher weight (they're harder to predict).
     """
     if np.isnan(null_val):
         mask = ~torch.isnan(labels)
@@ -90,17 +95,39 @@ def masked_mae(preds, labels, null_val=np.nan):
     mask = mask.float()
     mask /= torch.mean((mask))
     mask = torch.where(torch.isnan(mask), torch.zeros_like(mask), mask)
-    loss = torch.abs(preds - labels)
+    
+    # Walpurgis: smooth-floor MAE for gradient health at zero crossings
+    # Standard: loss = |pred - label|
+    # Smooth:   loss = sqrt(eps + (pred - label)^2) - sqrt(eps)
+    # This is equivalent to Huber loss with delta→0, but preserves MAE scale
+    _eps = 1e-6
+    diff = preds - labels
+    loss = torch.sqrt(_eps + diff * diff) - np.sqrt(_eps)
+    
     loss = loss * mask
     loss = torch.where(torch.isnan(loss), torch.zeros_like(loss), loss)
+    
+    # Walpurgis: horizon-aware weighting (if temporal dim exists)
+    # Later time steps get 1 + 0.02*t weight to emphasize hard-to-predict horizons
+    if loss.dim() >= 3 and loss.shape[1] > 1:
+        T = loss.shape[1]
+        horizon_weights = 1.0 + 0.02 * torch.arange(T, device=loss.device, dtype=loss.dtype)
+        # Reshape for broadcasting: [1, T, 1, ...] 
+        shape = [1, T] + [1] * (loss.dim() - 2)
+        horizon_weights = horizon_weights.view(*shape)
+        loss = loss * horizon_weights
+    
     result = torch.mean(loss)
     
     # Walpurgis NaN/Inf guard
     if torch.isnan(result) or torch.isinf(result):
         print(f"  ⚠️  [LOSS] masked_mae returned {'NaN' if torch.isnan(result) else 'Inf'}!")
-        print(f"    preds: nan={torch.isnan(preds).sum().item()}, inf={torch.isinf(preds).sum().item()}")
-        print(f"    labels: nan={torch.isnan(labels).sum().item()}, inf={torch.isinf(labels).sum().item()}")
+        print(f"    preds: shape={list(preds.shape)} "
+              f"nan={torch.isnan(preds).sum().item()}, inf={torch.isinf(preds).sum().item()}")
+        print(f"    labels: shape={list(labels.shape)} "
+              f"nan={torch.isnan(labels).sum().item()}, inf={torch.isinf(labels).sum().item()}")
         print(f"    mask: sum={mask.sum().item()}, mean={mask.mean().item()}")
+        print(f"    diff stats: mean={diff.mean().item():.6f} std={diff.std().item():.6f}")
     
     _track_loss('mae', result.item())
     return result

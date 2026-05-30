@@ -225,10 +225,11 @@ class D2STGNN(nn.Module):
         if verbose:
             _probe(history_data, "embedded_data", verbose)
 
-        # ===== Decouple Layers ===== #
+        # ===== Decouple Layers with per-layer contribution tracking ===== #
         dif_forecast_hidden_list = []
         inh_forecast_hidden_list = []
         inh_backcast_seq_res = history_data
+        layer_contributions = []  # track per-layer contribution magnitude
         
         for i, layer in enumerate(self.layers):
             t0 = time.time()
@@ -237,16 +238,44 @@ class D2STGNN(nn.Module):
                 node_embedding_u, node_embedding_d, 
                 time_in_day_feat, day_in_week_feat
             )
+            elapsed_ms = (time.time()-t0)*1000
+            
+            # Walpurgis: track per-layer contribution magnitude for diagnostics.
+            # If a layer's contribution is negligible, it may be worth pruning or
+            # demoting to a lower memory tier.
+            dif_mag = dif_forecast_hidden.norm().item()
+            inh_mag = inh_forecast_hidden.norm().item()
+            layer_contributions.append({
+                'layer': i, 'dif_norm': dif_mag, 'inh_norm': inh_mag,
+                'elapsed_ms': elapsed_ms
+            })
+            
             if verbose:
-                print(f"  [FWD] Layer {i}: {(time.time()-t0)*1000:.1f}ms, "
-                      f"backcast={list(inh_backcast_seq_res.shape)}")
+                print(f"  [FWD] Layer {i}: {elapsed_ms:.1f}ms, "
+                      f"backcast={list(inh_backcast_seq_res.shape)} "
+                      f"dif_contrib={dif_mag:.2f} inh_contrib={inh_mag:.2f}")
             dif_forecast_hidden_list.append(dif_forecast_hidden)
             inh_forecast_hidden_list.append(inh_forecast_hidden)
 
-        # ===== Output ===== #
-        dif_forecast_hidden = sum(dif_forecast_hidden_list)
-        inh_forecast_hidden = sum(inh_forecast_hidden_list)
-        forecast_hidden     = dif_forecast_hidden + inh_forecast_hidden
+        # ===== Walpurgis Output: weighted aggregation ===== #
+        # D2STGNN uses naive sum of all layer forecasts. This treats every layer
+        # equally, but in practice deeper layers often contribute noise.
+        # Walpurgis: weight by inverse layer index (earlier layers get more weight)
+        # with a smoothing factor to avoid completely ignoring deep layers.
+        n_layers = len(dif_forecast_hidden_list)
+        layer_weights = []
+        for i in range(n_layers):
+            w = 1.0 / (1.0 + 0.3 * i)  # decay: layer 0→1.0, layer 4→0.45
+            layer_weights.append(w)
+        weight_sum = sum(layer_weights)
+        
+        dif_forecast_hidden = sum(
+            w / weight_sum * h for w, h in zip(layer_weights, dif_forecast_hidden_list)
+        )
+        inh_forecast_hidden = sum(
+            w / weight_sum * h for w, h in zip(layer_weights, inh_forecast_hidden_list)
+        )
+        forecast_hidden = dif_forecast_hidden + inh_forecast_hidden
         
         forecast = self.out_fc_2(F.relu(self.out_fc_1(F.relu(forecast_hidden))))
         forecast = forecast.transpose(1, 2).contiguous().view(
@@ -255,6 +284,15 @@ class D2STGNN(nn.Module):
         
         if verbose:
             _probe(forecast, "final_output", verbose)
+            print(f"  [FWD] Layer weights: {['%.3f'%(w/weight_sum) for w in layer_weights]}")
+            # Print contribution summary
+            total_dif = sum(c['dif_norm'] for c in layer_contributions)
+            total_inh = sum(c['inh_norm'] for c in layer_contributions)
+            for c in layer_contributions:
+                dif_pct = c['dif_norm'] / (total_dif + 1e-8) * 100
+                inh_pct = c['inh_norm'] / (total_inh + 1e-8) * 100
+                print(f"    Layer {c['layer']}: dif={dif_pct:.1f}% inh={inh_pct:.1f}% "
+                      f"time={c['elapsed_ms']:.1f}ms")
             print(f"  [FWD] Total: {(time.time()-t_total)*1000:.1f}ms")
 
         return forecast

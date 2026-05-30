@@ -123,14 +123,35 @@ class InhBlock(nn.Module):
         hidden_states_rnn = self.rnn_layer(hidden_inherent_signal)
         timings['rnn'] = (time.perf_counter() - t0) * 1000
 
+        # Walpurgis: layer-norm RNN output before PE/MSA to stabilize deep stacks.
+        # D2STGNN feeds raw RNN output directly, which can cause attention score
+        # explosion when RNN output variance grows across decouple layers.
+        rnn_std = hidden_states_rnn.std().item()
+        if rnn_std > 5.0:  # empirical threshold for instability
+            hidden_states_rnn = hidden_states_rnn / (rnn_std + 1e-8) * 2.0
+            if _verbose:
+                print(f"  [InhBlock] RNN output rescaled: std was {rnn_std:.4f}, "
+                      f"normalized to ~2.0")
+
         # ── Positional Encoding ──
         t0 = time.perf_counter()
         hidden_states_rnn = self.pos_encoder(hidden_states_rnn)
         timings['pe'] = (time.perf_counter() - t0) * 1000
 
-        # ── Multi-head Self-Attention ──
+        # ── Multi-head Self-Attention with adaptive temperature ──
+        # Walpurgis: scale Q/K before attention when feature variance is high.
+        # This acts as an implicit temperature: prevents softmax saturation
+        # in early training when embeddings haven't converged yet.
         t0 = time.perf_counter()
-        hidden_states_inh = self.transformer_layer(hidden_states_rnn, hidden_states_rnn, hidden_states_rnn)
+        attn_input = hidden_states_rnn
+        input_var = attn_input.var().item()
+        if input_var > 3.0:  # attention heads saturating
+            temp_scale = (2.0 / (input_var + 1e-8)) ** 0.5
+            attn_input = attn_input * temp_scale
+            if _verbose:
+                print(f"  [InhBlock] Attention temp scaling: var={input_var:.4f} "
+                      f"→ scale={temp_scale:.4f}")
+        hidden_states_inh = self.transformer_layer(attn_input, attn_input, attn_input)
         timings['msa'] = (time.perf_counter() - t0) * 1000
 
         # ── Forecast branch ──

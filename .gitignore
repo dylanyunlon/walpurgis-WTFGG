@@ -11,3 +11,5 @@ data_demo/
 .DS_Store
 *.o
 *.d
+__pycache__/
+*.pyc
