@@ -3,10 +3,18 @@
 # Walpurgis Configuration — PEMS08 (traffic flow, 170 sensors)
 #
 # Tier placement notes:
-#   - batch_size 16 × 170 nodes × 32 hidden = ~340 KB per layer
+#   - batch_size 32 × 170 nodes × 32 hidden = ~0.7 MB per layer
 #   - Dynamic graph: O(170^2) = ~115 KB per adjacency
-#   - Smallest dataset — all tensors fit comfortably in HBM
-#   - batch_size=16 (smaller than other datasets)
+#   - Smallest sensor graph → lowest memory pressure
+#   - Good candidate for single-tier (HBM-only) baseline comparison
+#   - Uses MinMax normalization (flow data)
+#   - 300 epochs with patience 100 — full convergence run
+#
+# PEMS08 is the "canary" dataset: smallest, fastest to iterate.
+# Use this config to validate pipeline changes before PEMS04/BAY.
+#
+# Tier migration is less impactful here (everything fits in HBM),
+# but the debug infrastructure still exercises the same code paths.
 # ═══════════════════════════════════════════════════════════════
 
 start_up:
@@ -21,6 +29,11 @@ walpurgis:
   profile: False
   tier_sim: False
   nan_guard: True
+  log_grad_norms: True
+  tier_placement_log: True
+  checkpoint_struct_dump: True
+  mem_budget_mb: 16.0
+  canary_mode: True
 
 data_args:
   data_dir: datasets/PEMS08
@@ -28,11 +41,11 @@ data_args:
   adj_type: doubletransition
 
 model_args:
-  batch_size: 16
+  batch_size: 32
   num_feat: 1
   num_hidden: 32
-  node_hidden: 10
-  time_emb_dim: 10
+  node_hidden: 12
+  time_emb_dim: 12
   dropout: 0.1
   seq_length: 12
   k_t: 3

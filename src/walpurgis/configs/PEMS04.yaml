@@ -7,6 +7,17 @@
 #   - Dynamic graph: O(307^2) = ~370 KB per adjacency
 #   - Uses MinMax normalization (flow data, not speed)
 #   - 300 epochs — long training benefits from tier migration
+#   - Curriculum learning over 3 epochs per horizon step
+#
+# Memory tier waterfall for PEMS04:
+#   HBM  (tier-0): dynamic graph conv weights + attention (hot path)
+#   GDDR (tier-1): static adjacency cache, embedding tables
+#   DRAM (tier-2): input buffer, checkpoint storage, gradient history
+#
+# Debugging notes:
+#   - Set walpurgis.debug_interval to 50 for first-run diagnostics
+#   - Enable walpurgis.profile to get per-layer CUDA timing
+#   - walpurgis.nan_guard inserts check_nan_inf after every forward
 # ═══════════════════════════════════════════════════════════════
 
 start_up:
@@ -21,6 +32,10 @@ walpurgis:
   profile: False
   tier_sim: False
   nan_guard: True
+  log_grad_norms: True
+  tier_placement_log: True
+  checkpoint_struct_dump: True
+  mem_budget_mb: 28.0
 
 data_args:
   data_dir: datasets/PEMS04
