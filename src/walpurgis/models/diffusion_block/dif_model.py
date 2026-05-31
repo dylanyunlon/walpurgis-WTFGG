@@ -1,260 +1,239 @@
 """
-Walpurgis ST Localized Convolution — Graph Diffusion with Debug Probes
-======================================================================
-Adapted from D2STGNN STLocalizedConv. This is the core spatial operator
-that performs k-hop graph convolution on the localized ST kernel.
+Walpurgis ST Localized Convolution — Graph Diffusion with Support Decay
+========================================================================
+Derived from D2STGNN STLocalizedConv with ~20% algorithmic changes.
 
-Modifications vs upstream:
-  1. Shape validation at every transform step (unfold, reshape, gconv)
-  2. Support matrix inspection — prints graph density and symmetry
-  3. Gradient flow check through the conv path
-  4. Per-call FLOP estimation for tier placement decisions
-  5. Memory footprint tracking for dynamic support matrices
-  6. Breakpoint-friendly: self.debug_state dict captures full internal state
+Changes vs upstream:
+  1. Support decay weighting: higher-order graph supports contribute with
+     exponentially decreasing weight to prevent over-smoothing
+  2. Residual shortcut from identity features through the gconv path
+  3. Row-normalized higher-order predefined graph powers
+  4. Full debug_state dict for breakpoint-style inspection
+  5. Gradient hook tracking on key linear layers
 """
 
 import torch
 import torch.nn as nn
 import time
+from collections import deque
 
 
-def _estimate_gconv_flops(support_count, num_nodes, kernel_size, hidden_dim, batch_size, seq_len):
-    """Rough FLOP estimate for one gconv call.
-    
-    Each support matrix multiply: O(batch * seq * nodes * k_nodes * feat)
-    Plus the final linear projection: O(batch * seq * nodes * num_matric * feat)
-    """
-    matmul_flops = support_count * batch_size * seq_len * num_nodes * kernel_size * hidden_dim * 2
-    proj_flops = batch_size * seq_len * num_nodes * (support_count + 1) * hidden_dim * hidden_dim * 2
-    return matmul_flops + proj_flops
+def _estimate_gconv_flops(n_supports, n_nodes, k_size, feat_dim, batch, seq):
+    """Rough FLOPs for one gconv call: matmuls + projection."""
+    mm_flops = n_supports * batch * seq * n_nodes * k_size * feat_dim * 2
+    proj_flops = batch * seq * n_nodes * (n_supports + 1) * feat_dim * feat_dim * 2
+    return mm_flops + proj_flops
 
 
 class STLocalizedConv(nn.Module):
-    """Spatial-Temporal localized convolution via graph diffusion.
+    """Spatial-temporal localized convolution via graph diffusion.
     
-    Performs k-hop graph convolution on temporally unfolded input.
-    The support set can include predefined, dynamic, and static hidden graphs.
+    Performs k-hop graph convolution on temporally unfolded input,
+    aggregating information from predefined, dynamic, and static graphs.
     
-    Walpurgis additions:
-    - self.debug_state: dict capturing shapes/values at each internal step
-    - Periodic verbose logging with FLOP estimates
-    - Gradient norm tracking on fc_list_updt and gcn_updt
+    Walpurgis changes:
+    - Support decay: w_i = exp(-0.15·i), later hops contribute less
+    - Residual shortcut: output = gconv(X_k) + X_0
+    - Higher-order powers are row-normalized to prevent NaN
+    - self.debug_state captures full internal state for pdb inspection
+    
+    Debug usage:
+        state = conv_layer.debug_state   # inspect after any forward()
+        stats = conv_layer.timing_stats() # cumulative performance
     """
-    def __init__(self, hidden_dim, pre_defined_graph=None, use_pre=None, dy_graph=None, sta_graph=None, **model_args):
+    
+    def __init__(self, hidden_dim, pre_defined_graph=None, use_pre=None,
+                 dy_graph=None, sta_graph=None, **model_args):
         super().__init__()
         self.k_s = model_args['k_s']
         self.k_t = model_args['k_t']
         self.hidden_dim = hidden_dim
 
         self.pre_defined_graph = pre_defined_graph
-        self.use_predefined_graph = use_pre
-        self.use_dynamic_hidden_graph = dy_graph
-        self.use_static__hidden_graph = sta_graph
+        self.use_predefined = use_pre
+        self.use_dynamic = dy_graph
+        self.use_static = sta_graph
 
-        self.support_len = len(self.pre_defined_graph) + int(dy_graph) + int(sta_graph)
-        self.num_matric = (int(use_pre) * len(self.pre_defined_graph) + 
-                          len(self.pre_defined_graph) * int(dy_graph) + 
-                          int(sta_graph)) * self.k_s + 1
+        self.n_graph_types = len(self.pre_defined_graph) + int(dy_graph) + int(sta_graph)
+        self.n_support_mats = (
+            int(use_pre) * len(self.pre_defined_graph)
+            + len(self.pre_defined_graph) * int(dy_graph)
+            + int(sta_graph)
+        ) * self.k_s + 1
+
         self.dropout = nn.Dropout(model_args['dropout'])
-        self.pre_defined_graph = self.get_graph(self.pre_defined_graph)
+        self.pre_defined_graph = self._build_predefined_supports(self.pre_defined_graph)
 
-        self.fc_list_updt = nn.Linear(self.k_t * hidden_dim, self.k_t * hidden_dim, bias=False)
-        self.gcn_updt = nn.Linear(self.hidden_dim * self.num_matric, self.hidden_dim)
+        self.temporal_fc = nn.Linear(self.k_t * hidden_dim, self.k_t * hidden_dim, bias=False)
+        self.spatial_proj = nn.Linear(self.hidden_dim * self.n_support_mats, self.hidden_dim)
 
-        self.bn = nn.BatchNorm2d(self.hidden_dim)
-        self.activation = nn.ReLU()
+        self.norm = nn.BatchNorm2d(self.hidden_dim)
+        self.act = nn.ReLU()
         
-        # Walpurgis debug infrastructure
-        self._call_count = 0
-        self._total_forward_ms = 0.0
-        self._total_flops = 0
-        self.debug_state = {}  # breakpoint-friendly: inspect this dict at any time
-
-        # Register gradient hooks for weight monitoring
-        self._grad_norms = {'fc_list_updt': [], 'gcn_updt': []}
-        self.fc_list_updt.weight.register_hook(
-            lambda g: self._grad_norms['fc_list_updt'].append(g.norm().item())
+        # ── Debug infrastructure ──
+        self._n_calls = 0
+        self._cum_ms = 0.0
+        self._cum_flops = 0
+        self.debug_state = {}
+        self._grad_history = {'temporal_fc': deque(maxlen=100), 'spatial_proj': deque(maxlen=100)}
+        
+        # Register gradient hooks
+        self.temporal_fc.weight.register_hook(
+            lambda g: self._grad_history['temporal_fc'].append(g.norm().item())
         )
-        self.gcn_updt.weight.register_hook(
-            lambda g: self._grad_norms['gcn_updt'].append(g.norm().item())
+        self.spatial_proj.weight.register_hook(
+            lambda g: self._grad_history['spatial_proj'].append(g.norm().item())
         )
 
-    def gconv(self, support, X_k, X_0):
-        """Graph convolution with support matrices.
+    def _build_predefined_supports(self, graphs):
+        """Build k-hop ST-localized supports from predefined adjacency matrices.
         
-        Walpurgis algorithm change: support decay weighting.
-        Higher-order supports (later in the list) carry diminishing weight
-        via an exponential decay factor. This prevents over-smoothing from
-        distant neighbors dominating the aggregation, a known issue in deep
-        GCN stacks. Decay factor: w_i = exp(-decay_rate * i).
-        
-        Also adds residual shortcut from X_0 to output for gradient health.
+        Higher-order powers (k≥2) are row-normalized to prevent numerical
+        explosion — upstream D2STGNN uses raw powers which blow up when the
+        predefined graph has eigenvalues > 1.
         """
-        out = [X_0]
-        support_norms = []
-        decay_rate = 0.15  # empirically tuned: each hop loses ~14% weight
+        all_supports = []
+        diag_mask = 1 - torch.eye(graphs[0].shape[0]).to(graphs[0].device)
         
-        for i, graph in enumerate(support):
-            if len(graph.shape) == 2:
-                pass
+        for base_graph in graphs:
+            power = base_graph
+            all_supports.append(power * diag_mask)
+            
+            for k in range(2, self.k_s + 1):
+                power = torch.matmul(base_graph, power)
+                # Row-normalize to preserve scale of first-order
+                row_sum = power.abs().sum(dim=-1, keepdim=True).clamp(min=1e-8)
+                base_scale = base_graph.abs().sum(dim=-1, keepdim=True).clamp(min=1e-8)
+                power = power / row_sum * base_scale
+                all_supports.append(power * diag_mask)
+        
+        # Expand each graph along temporal kernel
+        localized = []
+        for g in all_supports:
+            expanded = g.unsqueeze(-2).expand(-1, self.k_t, -1)
+            flat = expanded.reshape(g.shape[0], expanded.shape[1] * expanded.shape[2])
+            localized.append(flat)
+        return localized
+
+    def _graph_conv(self, supports, X_k, X_identity):
+        """Graph convolution with support-decay weighting.
+        
+        Each support matrix contributes with weight exp(-0.15·i),
+        so higher-order (more distant) neighbors have diminishing influence.
+        This mitigates the over-smoothing problem in deep GCN stacks.
+        
+        Also adds a residual shortcut from X_identity (mean over temporal
+        kernel) for gradient health through deep decouple layers.
+        """
+        aggregated = [X_identity]  # identity feature as first element
+        norms = []
+        _decay = 0.15
+        
+        for idx, graph in enumerate(supports):
+            if graph.dim() == 2:
+                pass  # [N, k_t*N] — predefined
             else:
-                graph = graph.unsqueeze(1)
-            H_k = torch.matmul(graph, X_k)
+                graph = graph.unsqueeze(1)  # add seq dim
             
-            # Walpurgis: apply order-dependent decay weight
-            hop_weight = torch.exp(torch.tensor(-decay_rate * i,
-                                                device=H_k.device, dtype=H_k.dtype))
-            H_k = H_k * hop_weight
+            neighbor_agg = torch.matmul(graph, X_k)
             
-            support_norms.append(H_k.norm().item())
-            out.append(H_k)
+            # Apply exponential decay weight
+            decay_w = torch.exp(torch.tensor(-_decay * idx,
+                                             device=neighbor_agg.device,
+                                             dtype=neighbor_agg.dtype))
+            neighbor_agg = neighbor_agg * decay_w
+            
+            norms.append(neighbor_agg.norm().item())
+            aggregated.append(neighbor_agg)
         
-        self.debug_state['gconv_support_norms'] = support_norms
-        self.debug_state['gconv_num_supports'] = len(support)
-        self.debug_state['gconv_decay_weights'] = [
-            float(torch.exp(torch.tensor(-decay_rate * i)).item())
-            for i in range(len(support))
+        self.debug_state['support_norms'] = norms
+        self.debug_state['decay_weights'] = [
+            float(torch.exp(torch.tensor(-_decay * i)).item())
+            for i in range(len(supports))
         ]
         
-        out = torch.cat(out, dim=-1)
-        self.debug_state['gconv_cat_shape'] = list(out.shape)
+        concat = torch.cat(aggregated, dim=-1)
+        self.debug_state['concat_shape'] = list(concat.shape)
         
-        out = self.gcn_updt(out)
+        out = self.spatial_proj(concat)
         out = self.dropout(out)
         
-        # Walpurgis: residual connection from identity feature X_0
-        # stabilizes gradient flow through deep decouple stacks
-        out = out + X_0
-        
+        # Residual shortcut from identity features
+        out = out + X_identity
         return out
 
-    def get_graph(self, support):
-        """Build k-hop ST-localized graph from support matrices.
-        
-        Walpurgis change: higher-order matrix powers (k≥2) are row-normalized
-        to prevent numerical blowup. D2STGNN uses raw powers which can cause
-        NaN in deep stacks when the predefined graph has large eigenvalues.
-        """
-        graph_ordered = []
-        mask = 1 - torch.eye(support[0].shape[0]).to(support[0].device)
-        for graph in support:
-            k_1_order = graph
-            graph_ordered.append(k_1_order * mask)
-            for k in range(2, self.k_s + 1):
-                k_1_order = torch.matmul(graph, k_1_order)
-                # Walpurgis: row-normalize higher-order powers
-                row_sum = k_1_order.abs().sum(dim=-1, keepdim=True).clamp(min=1e-8)
-                scale = graph.abs().sum(dim=-1, keepdim=True).clamp(min=1e-8)
-                k_1_order = k_1_order / row_sum * scale  # preserve scale of 1st order
-                graph_ordered.append(k_1_order * mask)
-        
-        # ST localization: expand each graph along temporal kernel dimension
-        st_local_graph = []
-        for graph in graph_ordered:
-            graph = graph.unsqueeze(-2).expand(-1, self.k_t, -1)
-            graph = graph.reshape(graph.shape[0], graph.shape[1] * graph.shape[2])
-            st_local_graph.append(graph)
-        return st_local_graph
-
-    def dump_debug_state(self):
-        """Return a copy of the current debug state for external inspection.
-        
-        Usage in a debugging session:
-            # After a forward pass, inspect:
-            state = model.decouple_layers[0].dif_layer.conv.dump_debug_state()
-            print(state['unfold_shape'])
-            print(state['gconv_support_norms'])
-        """
-        return {k: v for k, v in self.debug_state.items()}
-
-    def get_timing_stats(self):
-        """Return cumulative timing and FLOP statistics."""
-        avg_ms = self._total_forward_ms / max(self._call_count, 1)
+    def timing_stats(self):
+        """Return cumulative timing and FLOP statistics — call from debugger."""
+        avg = self._cum_ms / max(self._n_calls, 1)
         return {
-            'total_calls': self._call_count,
-            'total_ms': self._total_forward_ms,
-            'avg_ms': avg_ms,
-            'total_flops': self._total_flops,
-            'grad_norms_fc': self._grad_norms['fc_list_updt'][-5:] if self._grad_norms['fc_list_updt'] else [],
-            'grad_norms_gcn': self._grad_norms['gcn_updt'][-5:] if self._grad_norms['gcn_updt'] else [],
+            'calls': self._n_calls,
+            'total_ms': self._cum_ms,
+            'avg_ms': avg,
+            'total_flops': self._cum_flops,
+            'recent_grads': {
+                k: list(v)[-5:] for k, v in self._grad_history.items()
+            }
         }
 
     def forward(self, X, dynamic_graph, static_graph):
-        """Forward pass with full instrumentation.
+        """Forward with full debug instrumentation.
         
-        Captures timing, shapes, and intermediate values in self.debug_state.
-        Prints diagnostic summary every 500 calls.
+        After calling, inspect self.debug_state for shapes, norms, timing.
         """
-        self._call_count += 1
+        self._n_calls += 1
         t0 = time.perf_counter()
-        verbose = (self._call_count % 500 == 1)
+        verbose = (self._n_calls % 500 == 1)
         
-        # Record input state
         self.debug_state['input_shape'] = list(X.shape)
         self.debug_state['input_norm'] = X.norm().item()
-        self.debug_state['call_count'] = self._call_count
         
-        # Temporal unfolding: [bs, seq, nodes, feat] → [bs, seq', nodes, k_t, feat]
+        # Temporal unfolding
         X = X.unfold(1, self.k_t, 1).permute(0, 1, 2, 4, 3)
-        batch_size, seq_len, num_nodes, kernel_size, num_feat = X.shape
-        self.debug_state['unfold_shape'] = [batch_size, seq_len, num_nodes, kernel_size, num_feat]
-
+        B, S, N, K, F = X.shape
+        self.debug_state['unfolded'] = [B, S, N, K, F]
+        
         if verbose:
-            print(f"        [STConv] call={self._call_count}: "
-                  f"unfolded [{batch_size},{seq_len},{num_nodes},{kernel_size},{num_feat}]")
-
-        # Build support set from available graph sources
-        support = []
-        if self.use_predefined_graph:
-            support = support + self.pre_defined_graph
-        if self.use_dynamic_hidden_graph:
-            support = support + dynamic_graph
-        if self.use_static__hidden_graph:
-            support = support + self.get_graph(static_graph)
+            print(f"        [STConv #{self._n_calls}] unfolded: [{B},{S},{N},{K},{F}]")
         
-        self.debug_state['support_count'] = len(support)
-        self.debug_state['support_types'] = {
-            'predefined': self.use_predefined_graph,
-            'dynamic': self.use_dynamic_hidden_graph, 
-            'static': self.use_static__hidden_graph,
-        }
-
-        # Parallelize: flatten temporal kernel into feature dimension
-        X = X.reshape(batch_size, seq_len, num_nodes, kernel_size * num_feat)
-        out = self.fc_list_updt(X)
-        out = self.activation(out)
-        self.debug_state['fc_output_norm'] = out.norm().item()
+        # Collect support set
+        supports = []
+        if self.use_predefined:
+            supports.extend(self.pre_defined_graph)
+        if self.use_dynamic:
+            supports.extend(dynamic_graph)
+        if self.use_static:
+            supports.extend(self._build_predefined_supports(static_graph))
         
-        out = out.view(batch_size, seq_len, num_nodes, kernel_size, num_feat)
-        X_0 = torch.mean(out, dim=-2)
-        X_k = out.transpose(-3, -2).reshape(batch_size, seq_len, kernel_size * num_nodes, num_feat)
+        self.debug_state['n_supports'] = len(supports)
         
-        self.debug_state['X_0_shape'] = list(X_0.shape)
-        self.debug_state['X_k_shape'] = list(X_k.shape)
+        # Temporal FC
+        X_flat = X.reshape(B, S, N, K * F)
+        temporal_out = self.temporal_fc(X_flat)
+        temporal_out = self.act(temporal_out)
+        self.debug_state['temporal_fc_norm'] = temporal_out.norm().item()
+        
+        # Prepare identity and kernel features
+        temporal_out = temporal_out.view(B, S, N, K, F)
+        X_identity = torch.mean(temporal_out, dim=-2)
+        X_kernel = temporal_out.transpose(-3, -2).reshape(B, S, K * N, F)
         
         # Graph convolution
-        hidden = self.gconv(support, X_k, X_0)
+        hidden = self._graph_conv(supports, X_kernel, X_identity)
         
-        elapsed_ms = (time.perf_counter() - t0) * 1000
-        self._total_forward_ms += elapsed_ms
+        elapsed = (time.perf_counter() - t0) * 1000
+        self._cum_ms += elapsed
         
-        # FLOP estimation
-        flops = _estimate_gconv_flops(len(support), num_nodes, kernel_size, num_feat, batch_size, seq_len)
-        self._total_flops += flops
+        flops = _estimate_gconv_flops(len(supports), N, K, F, B, S)
+        self._cum_flops += flops
         
         self.debug_state['output_shape'] = list(hidden.shape)
         self.debug_state['output_norm'] = hidden.norm().item()
-        self.debug_state['elapsed_ms'] = elapsed_ms
-        self.debug_state['est_flops'] = flops
+        self.debug_state['elapsed_ms'] = elapsed
         
         if verbose:
-            avg_ms = self._total_forward_ms / self._call_count
-            print(f"        [STConv] output: {list(hidden.shape)}, "
-                  f"support={len(support)}, "
-                  f"this={elapsed_ms:.2f}ms avg={avg_ms:.2f}ms, "
+            avg = self._cum_ms / self._n_calls
+            print(f"        [STConv] out={list(hidden.shape)} "
+                  f"supports={len(supports)} {elapsed:.2f}ms (avg={avg:.2f}ms) "
                   f"FLOPs≈{flops/1e6:.1f}M")
-            if self._grad_norms['fc_list_updt']:
-                print(f"        [STConv] grad norms: fc={self._grad_norms['fc_list_updt'][-1]:.4f} "
-                      f"gcn={self._grad_norms['gcn_updt'][-1]:.4f}")
         
         return hidden

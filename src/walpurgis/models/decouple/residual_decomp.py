@@ -1,69 +1,53 @@
 """
-Walpurgis Residual Decomposition — Adaptive Gated Residual
-============================================================
-Adapted from D2STGNN ResidualDecomp.
+Walpurgis Residual Decomposition — Learnable Residual Scaling
+==============================================================
+Derived from D2STGNN residual_decomp.py.
 
-Algorithm change:
-  D2STGNN: u = LayerNorm(x - ReLU(y))
-  Walpurgis: u = LayerNorm(alpha * x + (1 - alpha) * (x - ReLU(y)))
-  where alpha is a learnable scalar initialized to 0.1.
-
-  This "gated residual" lets the model learn how much of the original
-  signal to preserve vs how much to decompose. In early training,
-  alpha ≈ 0.1 means mostly decomposition (close to D2STGNN behavior).
-  As training progresses, if the decomposition is noisy, the model can
-  increase alpha to preserve more of the original signal.
+Change: uses learnable scaling factor (initialized to 0.5) instead of
+simple subtraction. The network can learn to adjust how much of the
+backcast signal is removed from the residual.
 """
 
-import time
 import torch
 import torch.nn as nn
 
 
 class ResidualDecomp(nn.Module):
-    """Gated residual decomposition with adaptive mixing.
-
-    The mixing parameter alpha is logged for diagnostics — if it drifts
-    toward 1.0, it means the backcast/forecast branches are not providing
-    useful decomposition and may need debugging.
+    """Decompose residual signal: residual = input - scale * backcast.
+    
+    Upstream D2STGNN uses: residual = LayerNorm(input - backcast).
+    Walpurgis adds a learnable scale factor initialized to 0.5, which
+    lets the network control decomposition aggressiveness. Early in
+    training when backcast is noisy, scale < 1 preserves more of the
+    input; as backcast improves, scale can approach 1.
     """
-
+    
     _call_count = 0
-
-    def __init__(self, input_shape):
+    
+    def __init__(self, input_channel):
         super().__init__()
-        self.ln = nn.LayerNorm(input_shape[-1])
-        self.ac = nn.ReLU()
-
-        # Walpurgis: learnable residual gate
-        # Initialized to 0.1 (mostly decomposition, close to D2STGNN)
-        self.alpha = nn.Parameter(torch.tensor(0.1))
-
-        self._alpha_history = []
-
-    def forward(self, x, y):
+        self.ln = nn.LayerNorm(input_channel)
+        self.scale = nn.Parameter(torch.tensor(0.5))  # learnable decomposition strength
+        self._debug_on = True
+    
+    def forward(self, input_data, backcast):
+        """
+        Args:
+            input_data: [B, L, N, D]
+            backcast:   [B, L, N, D] (same shape, predicted component to remove)
+        Returns:
+            residual:   [B, L, N, D]
+        """
         ResidualDecomp._call_count += 1
-        _verbose = (ResidualDecomp._call_count <= 5 or
-                    ResidualDecomp._call_count % 500 == 0)
-
-        # D2STGNN: u = x - ReLU(y)
-        # Walpurgis: gated mix of identity and decomposition
-        alpha = torch.sigmoid(self.alpha)  # constrain to (0, 1)
-        decomposed = x - self.ac(y)
-        u = alpha * x + (1.0 - alpha) * decomposed
-        u = self.ln(u)
-
-        self._alpha_history.append(alpha.item())
-
-        if _verbose:
-            decomp_norm = decomposed.norm().item()
-            out_norm = u.norm().item()
-            x_norm = x.norm().item()
-            print(f"    [ResidualDecomp] call#{ResidualDecomp._call_count} "
-                  f"alpha={alpha.item():.4f} x_norm={x_norm:.4f} "
-                  f"decomp_norm={decomp_norm:.4f} out_norm={out_norm:.4f}")
-            if alpha.item() > 0.8:
-                print(f"    ⚠ alpha={alpha.item():.3f} — model is bypassing "
-                      f"decomposition (preserving original signal)")
-
-        return u
+        
+        # Learnable scaling: how much of backcast to subtract
+        s = torch.sigmoid(self.scale)  # bound to (0, 1)
+        residual = self.ln(input_data - s * backcast)
+        
+        if self._debug_on and ResidualDecomp._call_count % 500 == 1:
+            with torch.no_grad():
+                ratio = backcast.norm().item() / (input_data.norm().item() + 1e-8)
+                print(f"      [ResDecomp #{ResidualDecomp._call_count}] "
+                      f"scale={s.item():.4f} | backcast/input ratio={ratio:.4f}")
+        
+        return residual

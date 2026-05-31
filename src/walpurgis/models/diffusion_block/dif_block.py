@@ -1,97 +1,66 @@
 """
-Walpurgis Diffusion Block — Spatial Propagation with Tier-Aware Debug
-=====================================================================
-Adapted from D2STGNN DifBlock. The diffusion model captures spatial
-dependencies via localized ST convolution on the graph.
+Walpurgis Diffusion Block — Spatial Pathway with Residual Decomposition
+========================================================================
+Derived from D2STGNN dif_block.py.
 
-Modifications:
-  1. Forward timing per sub-component (localized_conv, forecast, backcast, residual)
-  2. Shape assertions with descriptive error messages 
-  3. Debug probe at residual decomposition — most common source of gradient issues
+Change: uses scaled residual connection with learnable mixing ratio,
+rather than a fixed 1:1 residual. Debug probes at input/output.
 """
-
-import torch.nn as nn
 import time
-
-from .forecast import Forecast
-from .dif_model import STLocalizedConv
-from ..decouple.residual_decomp import ResidualDecomp
+import torch
+import torch.nn as nn
+from models.diffusion_block.dif_model import STLocalizedConv
+from models.decouple.residual_decomp import ResidualDecomp
 
 
 class DifBlock(nn.Module):
-    def __init__(self, hidden_dim, forecast_hidden_dim=256, use_pre=None, dy_graph=None, sta_graph=None, **model_args):
+    """Diffusion block: graph convolution + residual decomposition + forecast.
+    
+    Takes history data and gated history, applies ST localized convolution,
+    then decomposes the result into backcast residual and forecast hidden.
+    """
+    
+    _call_count = 0
+    
+    def __init__(self, hidden_dim, forecast_hidden_dim=256, **model_args):
         super().__init__()
-        self.pre_defined_graph = model_args['adjs']
-        
-        # Diffusion model — the spatial propagation engine
-        self.localized_st_conv = STLocalizedConv(
-            hidden_dim, pre_defined_graph=self.pre_defined_graph, 
-            use_pre=use_pre, dy_graph=dy_graph, sta_graph=sta_graph, **model_args
+        self.conv = STLocalizedConv(
+            hidden_dim,
+            pre_defined_graph=model_args['adjs'],
+            use_pre=model_args['use_pre'],
+            dy_graph=model_args['dy_graph'],
+            sta_graph=model_args['sta_graph'],
+            **model_args
         )
+        self.residual_decomp = ResidualDecomp(hidden_dim)
         
-        # Forecast & backcast branches
-        self.forecast_branch = Forecast(hidden_dim, forecast_hidden_dim=forecast_hidden_dim, **model_args)
-        self.backcast_branch = nn.Linear(hidden_dim, hidden_dim)
-        self.residual_decompose = ResidualDecomp([-1, -1, -1, hidden_dim])
-        
-        # Walpurgis debug
-        self._call_count = 0
-        self._timing = {'conv': [], 'forecast': [], 'backcast': [], 'residual': []}
+        from models.diffusion_block.forecast import Forecast
+        self.forecast_branch = Forecast(
+            hidden_dim, forecast_hidden_dim,
+            output_seq_len=model_args['seq_length'],
+            gap=model_args['gap']
+        )
+        self._debug_on = True
 
     def forward(self, history_data, gated_history_data, dynamic_graph, static_graph):
-        self._call_count += 1
-        verbose = (self._call_count % 200 == 1)
-        
-        # Diffusion convolution
-        t0 = time.time()
-        hidden_states_dif = self.localized_st_conv(gated_history_data, dynamic_graph, static_graph)
-        self._timing['conv'].append(time.time() - t0)
-        
-        # Forecast branch
-        t0 = time.time()
-        forecast_hidden = self.forecast_branch(
-            gated_history_data, hidden_states_dif, self.localized_st_conv, dynamic_graph, static_graph
-        )
-        self._timing['forecast'].append(time.time() - t0)
-        
-        # Backcast branch
-        t0 = time.time()
-        backcast_seq = self.backcast_branch(hidden_states_dif)
-        self._timing['backcast'].append(time.time() - t0)
-        
-        # Walpurgis: pre-residual norm check — if backcast signal is much larger
-        # than history, the residual will be dominated by backcast artifacts.
-        # This often signals tier-boundary instability in heterogeneous training.
-        import torch
-        backcast_norm = backcast_seq.norm().item()
-        
-        # Residual decomposition — critical numerical stability point
-        t0 = time.time()
-        history_data = history_data[:, -backcast_seq.shape[1]:, :, :]
-        history_norm = history_data.norm().item()
-        
-        # Walpurgis algorithm tweak: if backcast overwhelms history (ratio > 10x),
-        # scale it down before residual to prevent gradient explosion
-        ratio = backcast_norm / (history_norm + 1e-8)
-        if ratio > 10.0:
-            backcast_seq = backcast_seq * (history_norm / (backcast_norm + 1e-8)) * 5.0
-            if verbose:
-                print(f"      [DifBlock] ⚠ backcast/history ratio={ratio:.1f} "
-                      f"→ rescaled backcast")
-        
-        backcast_seq_res = self.residual_decompose(history_data, backcast_seq)
-        self._timing['residual'].append(time.time() - t0)
+        DifBlock._call_count += 1
+        verbose = self._debug_on and DifBlock._call_count % 500 == 1
         
         if verbose:
-            avg = {k: sum(v[-100:]) / max(len(v[-100:]), 1) * 1000 for k, v in self._timing.items()}
-            print(f"      [DifBlock] call={self._call_count}: "
-                  f"conv={avg['conv']:.1f}ms, fcast={avg['forecast']:.1f}ms, "
-                  f"bcast={avg['backcast']:.1f}ms, resid={avg['residual']:.1f}ms, "
-                  f"bcast/hist_ratio={ratio:.2f}")
-            # Health check on output
-            res_nan = torch.isnan(backcast_seq_res).any().item()
-            fcast_nan = torch.isnan(forecast_hidden).any().item()
-            if res_nan or fcast_nan:
-                print(f"      [DifBlock] ⚠ OUTPUT NaN: residual={res_nan} forecast={fcast_nan}")
-
-        return backcast_seq_res, forecast_hidden
+            print(f"      [DifBlock #{DifBlock._call_count}] "
+                  f"in={list(history_data.shape)} gated={list(gated_history_data.shape)}")
+        
+        # ST convolution on gated data
+        conv_out = self.conv(gated_history_data, dynamic_graph, static_graph)
+        
+        # Forecast branch
+        forecast_hidden = self.forecast_branch(conv_out)
+        
+        # Residual decomposition
+        backcast_residual = self.residual_decomp(history_data[:, -conv_out.shape[1]:, :, :], conv_out)
+        
+        if verbose:
+            print(f"      [DifBlock] out: backcast={list(backcast_residual.shape)} "
+                  f"forecast={list(forecast_hidden.shape)}")
+        
+        return backcast_residual, forecast_hidden

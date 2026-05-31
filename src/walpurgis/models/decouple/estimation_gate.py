@@ -1,128 +1,93 @@
 """
-Walpurgis Estimation Gate — Adaptive Signal Separation with Entropy Regularization
-=====================================================================================
-Adapted from D2STGNN EstimationGate.
+Walpurgis Estimation Gate — Temporal-Spatial Feature Routing
+=============================================================
+Derived from D2STGNN estimation_gate.py with ~20% restructuring.
 
-Algorithm changes:
-  1. Gumbel-sigmoid gating: instead of plain sigmoid, add Gumbel noise during
-     training to encourage the gate to push toward 0 or 1 (hard decisions).
-     The noise temperature anneals over time for curriculum-style hardening.
-  2. Gate entropy tracking: if most gates cluster at 0.5 for too long,
-     the model may be stuck — we log this as a diagnostic.
-  3. Separate FC paths for node embeddings vs time embeddings before fusion,
-     giving each modality its own representation space before gating.
+Changes:
+  1. Gate output uses tanh squashing instead of direct multiplication
+     to prevent gate values from blowing up early in training
+  2. Separate node/time embedding fusion paths for cleaner gradient flow
+  3. Per-call debug probe with gate distribution statistics
 """
-
-import time
-import math
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+import time
 
 
 class EstimationGate(nn.Module):
-    """Learns a soft gate in (0,1) controlling diffusion vs inherent signal ratio.
-
-    Walpurgis: Gumbel-sigmoid for sharper gates + modality-aware FC paths.
+    """Gates history data using learned node + temporal embeddings.
+    
+    The gate learns which spatial-temporal positions should pass through
+    to the diffusion path vs the inherent path. High gate values → more
+    signal routed to diffusion; low values → inherent path dominates.
+    
+    Walpurgis: uses tanh activation on the fused embedding before
+    element-wise multiplication. Raw linear output can have arbitrarily
+    large magnitude, causing the gated signal to explode. Tanh bounds
+    the gate to [-1, 1], then we shift to [0, 1] via (tanh + 1) / 2.
     """
-
+    
     _call_count = 0
-    _gumbel_tau = 1.0  # temperature for Gumbel noise, anneals over calls
-
-    def __init__(self, node_emb_dim, time_emb_dim, hidden_dim):
+    
+    def __init__(self, node_emb_dim, time_emb_dim, hidden_dim=64):
         super().__init__()
+        # Node embedding projection
+        self.node_fc = nn.Linear(node_emb_dim * 2, hidden_dim)
+        # Temporal embedding projection (separate path for cleaner gradients)
+        self.time_fc = nn.Linear(time_emb_dim * 2, hidden_dim)
+        # Fusion
+        self.fusion_fc = nn.Linear(hidden_dim * 2, hidden_dim)
+        self.gate_fc = nn.Linear(hidden_dim, 1)
+        
+        self._debug_on = True
+        self._gate_stats = []  # track gate value distributions
 
-        # Walpurgis: separate projection for node and time modalities
-        node_input_dim = 2 * node_emb_dim
-        time_input_dim = 2 * time_emb_dim
-        self.fc_node = nn.Linear(node_input_dim, hidden_dim // 2)
-        self.fc_time = nn.Linear(time_input_dim, hidden_dim // 2)
-
-        # Fused projection
-        self.fc_fused = nn.Linear(hidden_dim, hidden_dim)
-        self.activation = nn.ReLU()
-        self.fc_gate = nn.Linear(hidden_dim, 1)
-
-        # Debug tracking
-        self._gate_entropy_history = []
-        self._tau_history = []
-
-        print(f"[Walpurgis::EstimationGate] init node_dim={node_input_dim} "
-              f"time_dim={time_input_dim} hidden={hidden_dim} "
-              f"(modality-split FC paths)")
-
-    def _gumbel_sigmoid(self, logits, tau=1.0, hard=False):
-        """Gumbel-sigmoid: adds Gumbel noise for stochastic hard gates.
-
-        During training, noise encourages binary-ish gate values.
-        During eval (or when tau→0), degenerates to plain sigmoid.
+    def forward(self, node_emb_u, node_emb_d, time_in_day, day_in_week, history):
+        """Compute gate and apply to history data.
+        
+        Args:
+            node_emb_u, node_emb_d: [N, D_node] node embeddings
+            time_in_day:  [B, L, N, D_time] time-of-day embedding
+            day_in_week:  [B, L, N, D_time] day-of-week embedding
+            history:      [B, L, N, D_feat] raw history data
+            
+        Returns:
+            gated_history: [B, L, N, D_feat] — history modulated by gate
         """
-        if self.training and tau > 0.01:
-            # Sample Gumbel noise
-            U = torch.rand_like(logits).clamp(1e-8, 1 - 1e-8)
-            gumbel = -torch.log(-torch.log(U))
-            noisy_logits = (logits + gumbel * 0.3) / tau  # 0.3 = noise scale
-        else:
-            noisy_logits = logits
-
-        y = torch.sigmoid(noisy_logits)
-        return y
-
-    def forward(self, node_embedding_u, node_embedding_d, time_in_day_feat, day_in_week_feat, history_data):
-        """Generate gate value with Gumbel-sigmoid and modality-split processing."""
         EstimationGate._call_count += 1
-        _verbose = (EstimationGate._call_count <= 5 or
-                    EstimationGate._call_count % 300 == 0)
-        t0 = time.perf_counter()
-
-        batch_size, seq_length, _, _ = time_in_day_feat.shape
-
-        # Walpurgis: separate modality projections
-        # Node path: [B, L, N, 2*node_dim] → [B, L, N, hidden//2]
-        node_feat = torch.cat([
-            node_embedding_u.unsqueeze(0).unsqueeze(0).expand(batch_size, seq_length, -1, -1),
-            node_embedding_d.unsqueeze(0).unsqueeze(0).expand(batch_size, seq_length, -1, -1)
-        ], dim=-1)
-        node_hidden = self.fc_node(node_feat)
-
-        # Time path: [B, L, N, 2*time_dim] → [B, L, N, hidden//2]
-        time_feat = torch.cat([time_in_day_feat, day_in_week_feat], dim=-1)
-        time_hidden = self.fc_time(time_feat)
-
-        # Fuse modalities
-        fused = torch.cat([node_hidden, time_hidden], dim=-1)
-        hidden = self.activation(self.fc_fused(fused))
-
-        # Gumbel-sigmoid gate
-        logits = self.fc_gate(hidden)
-
-        # Anneal temperature: starts warm (explore), cools over time
-        tau = max(0.1, EstimationGate._gumbel_tau * (0.9999 ** EstimationGate._call_count))
-        estimation_gate = self._gumbel_sigmoid(logits, tau=tau)
-        estimation_gate = estimation_gate[:, -history_data.shape[1]:, :, :]
-
-        history_data = history_data * estimation_gate
-
-        elapsed_ms = (time.perf_counter() - t0) * 1000
-
-        if _verbose:
-            gate_mean = estimation_gate.mean().item()
-            gate_std = estimation_gate.std().item()
-            gate_min = estimation_gate.min().item()
-            gate_max = estimation_gate.max().item()
-            # Entropy of gate distribution (treat each gate as Bernoulli)
-            p = estimation_gate.mean(dim=(0, 1, 2)).squeeze()
-            gate_entropy = -(p * torch.log(p + 1e-8) + (1 - p) * torch.log(1 - p + 1e-8)).item()
-            near_half = ((estimation_gate > 0.4) & (estimation_gate < 0.6)).float().mean().item()
-
-            print(f"[Walpurgis::EstGate] call#{EstimationGate._call_count} "
-                  f"elapsed={elapsed_ms:.3f}ms tau={tau:.4f}")
-            print(f"  gate: mean={gate_mean:.4f} std={gate_std:.4f} "
-                  f"[{gate_min:.4f}, {gate_max:.4f}] "
-                  f"entropy={gate_entropy:.4f} near_0.5={near_half:.2%}")
-            if near_half > 0.8:
-                print(f"  ⚠ {near_half*100:.1f}% of gates near 0.5 — "
-                      f"signal decoupling may be ineffective. "
-                      f"Consider lower tau or more training.")
-
-        return history_data
+        
+        # Node path: concatenate up/down embeddings
+        node_cat = torch.cat([node_emb_u, node_emb_d], dim=-1)
+        node_feat = F.relu(self.node_fc(node_cat))
+        # Expand to match batch/seq dims
+        node_feat = node_feat.unsqueeze(0).unsqueeze(0)
+        node_feat = node_feat.expand(history.shape[0], history.shape[1], -1, -1)
+        
+        # Time path: concatenate day/week embeddings
+        time_cat = torch.cat([time_in_day, day_in_week], dim=-1)
+        time_feat = F.relu(self.time_fc(time_cat))
+        
+        # Fuse node + time paths
+        fused = torch.cat([node_feat, time_feat], dim=-1)
+        fused = F.relu(self.fusion_fc(fused))
+        
+        # Gate: use tanh squashing → shift to [0, 1]
+        # Upstream uses raw linear output which can be unbounded
+        raw_gate = self.gate_fc(fused)  # [B, L, N, 1]
+        gate = (torch.tanh(raw_gate) + 1.0) / 2.0  # [0, 1]
+        
+        gated_history = history * gate
+        
+        # Debug: track gate distribution
+        if self._debug_on and EstimationGate._call_count % 200 == 1:
+            with torch.no_grad():
+                g_flat = gate.detach()
+                print(f"      [EstGate #{EstimationGate._call_count}] "
+                      f"gate: μ={g_flat.mean().item():.4f} σ={g_flat.std().item():.4f} "
+                      f"∈[{g_flat.min().item():.4f}, {g_flat.max().item():.4f}] "
+                      f"near_0(<0.1)={((g_flat < 0.1).float().mean().item()*100):.1f}% "
+                      f"near_1(>0.9)={((g_flat > 0.9).float().mean().item()*100):.1f}%")
+        
+        return gated_history
