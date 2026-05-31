@@ -1,4 +1,2 @@
-"""Walpurgis utility package — data loading, adjacency computation,
-training infrastructure, and logging.
-"""
+"""Walpurgis utilities — data loading, adjacency computation, training, logging."""
 from utils.load_data import load_adj

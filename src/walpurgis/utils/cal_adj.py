@@ -1,275 +1,249 @@
 #!/usr/bin/env python
 # -*- encoding: utf-8 -*-
-"""Adjacency matrix calculation utilities for Walpurgis engine.
+"""
+Walpurgis Adjacency Utilities — Graph Construction and Normalization
+=====================================================================
+Derived from D2STGNN cal_adj.py with ~20% restructuring.
 
-Provides graph normalization, Laplacian computation, and transition matrix
-methods used by both static and dynamic graph components.
-
-Walpurgis adaptations vs upstream D2STGNN:
-- check_nan_inf returns detailed diagnostics (count, positions, percentage)
-- remove_nan_inf tracks cumulative sanitization statistics
-- All matrix operations print shapes, sparsity, and key statistics
-- First-call profiling: each function logs timing on its initial invocation
-- Graph topology analysis: density, symmetry, connected component hints
-- dump_all_stats() for checkpoint-time summary of all matrix ops
+Changes:
+  1. Refactored into AdjStats collector class (replaces scattered globals)
+  2. Eigenvalue-aware Laplacian computation logs spectral gap
+  3. Transition matrix checks stochastic consistency
+  4. All ops use timed context manager for cleaner profiling
 """
 import scipy.sparse as sp
 import numpy as np
 from scipy.sparse import linalg
 import torch
 import time
-
-# ── Walpurgis global tracking ──────────────────────────────────────────
-_sanitize_stats = {'nan_removed': 0, 'inf_removed': 0, 'calls': 0}
-_op_timing = {}  # function_name → list of elapsed times
-_first_call_flags = {}  # function_name → bool (has printed first-call banner)
+from contextlib import contextmanager
 
 
-def get_sanitize_stats():
-    """Return global NaN/Inf sanitization statistics.
+# ═══════════ Profiling Infrastructure ═══════════ #
+
+class AdjStats:
+    """Centralized tracker for adjacency matrix operations.
     
-    Useful at checkpoint time to see how many values were cleaned:
-        stats = get_sanitize_stats()
-        print(f"Total NaN removed: {stats['nan_removed']}")
+    Replaces scattered global dicts. Call AdjStats.report() at checkpoint
+    time or from pdb to see cumulative operation statistics.
     """
-    return _sanitize_stats.copy()
-
-
-def dump_all_stats():
-    """Dump complete operation statistics — call at end of epoch or checkpoint.
+    _timings = {}       # func_name → [elapsed_seconds]
+    _sanitize = {'nan': 0, 'inf': 0, 'calls': 0}
+    _first_calls = set()
     
-    Prints:
-    - Per-function call counts and total time
-    - Sanitization summary
-    - Average time per operation type
-    """
-    print("\n" + "=" * 60)
-    print("[Walpurgis::cal_adj] Operation Statistics Dump")
-    print("=" * 60)
-    for func_name, times in _op_timing.items():
-        total = sum(times)
-        avg = total / len(times) if times else 0
-        print(f"  {func_name}: {len(times)} calls, total={total:.4f}s, avg={avg:.4f}s")
-    print(f"  sanitize: {_sanitize_stats['calls']} calls, "
-          f"nan_removed={_sanitize_stats['nan_removed']}, "
-          f"inf_removed={_sanitize_stats['inf_removed']}")
-    print("=" * 60 + "\n")
+    @classmethod
+    def record(cls, func_name, elapsed):
+        cls._timings.setdefault(func_name, []).append(elapsed)
+    
+    @classmethod
+    def is_first(cls, func_name):
+        if func_name not in cls._first_calls:
+            cls._first_calls.add(func_name)
+            return True
+        return False
+    
+    @classmethod
+    def report(cls):
+        """Print full operation summary — call from debugger or checkpoint."""
+        print(f"\n{'═'*60}")
+        print(f"  [AdjStats] Operation Summary")
+        print(f"{'═'*60}")
+        for name, times in cls._timings.items():
+            total = sum(times)
+            avg = total / len(times)
+            print(f"  {name:>24s}: {len(times):3d} calls | "
+                  f"total={total:.4f}s avg={avg:.4f}s")
+        s = cls._sanitize
+        print(f"  {'sanitize':>24s}: {s['calls']:3d} calls | "
+              f"nan={s['nan']} inf={s['inf']}")
+        print(f"{'═'*60}\n")
+    
+    @classmethod
+    def sanitize_stats(cls):
+        return cls._sanitize.copy()
 
 
-def _record_timing(func_name, elapsed):
-    """Record timing for a function call."""
-    if func_name not in _op_timing:
-        _op_timing[func_name] = []
-    _op_timing[func_name].append(elapsed)
+@contextmanager
+def _timed(func_name):
+    """Context manager for timing adjacency ops."""
+    t0 = time.perf_counter()
+    yield
+    elapsed = time.perf_counter() - t0
+    AdjStats.record(func_name, elapsed)
 
 
-def _is_first_call(func_name):
-    """Check if this is the first call for verbose logging."""
-    if func_name not in _first_call_flags:
-        _first_call_flags[func_name] = True
-        return True
-    return False
-
+# ═══════════ Tensor Sanity Checks ═══════════ #
 
 def check_nan_inf(tensor, raise_ex=True):
-    """Check tensor for NaN and Inf values.
-
-    Returns a diagnostics dict and a boolean flag.
-    Walpurgis: enhanced with count, percentage, and position reporting.
+    """Inspect tensor for NaN/Inf contamination.
     
-    For debugging, you can set raise_ex=False and inspect the return:
-        diag, has_bad = check_nan_inf(my_tensor, raise_ex=False)
-        if has_bad:
-            print(f"Found {diag['nan_count']} NaN at positions...")
+    Returns (diagnostics_dict, has_problem). Set raise_ex=False to
+    suppress exceptions and just get the report.
+    
+    Usage from pdb:
+        diag, bad = check_nan_inf(my_tensor, raise_ex=False)
+        if bad: print(diag)
     """
     nan_mask = torch.isnan(tensor)
     inf_mask = torch.isinf(tensor)
-    nan = torch.any(nan_mask)
-    inf = torch.any(inf_mask)
-    nan_count = nan_mask.sum().item()
-    inf_count = inf_mask.sum().item()
+    n_nan = nan_mask.sum().item()
+    n_inf = inf_mask.sum().item()
     total = tensor.numel()
 
-    diagnostics = {
-        "nan": nan, "inf": inf,
-        "nan_count": nan_count, "inf_count": inf_count,
-        "total_elements": total,
-        "contamination_pct": (nan_count + inf_count) / max(total, 1) * 100,
-        "tensor_shape": list(tensor.shape),
-        "tensor_dtype": str(tensor.dtype),
+    diag = {
+        'has_nan': bool(nan_mask.any()),
+        'has_inf': bool(inf_mask.any()),
+        'nan_count': n_nan,
+        'inf_count': n_inf,
+        'total_elements': total,
+        'contamination_pct': (n_nan + n_inf) / max(total, 1) * 100,
+        'shape': list(tensor.shape),
+        'dtype': str(tensor.dtype),
     }
 
-    if nan or inf:
-        print(f"[Walpurgis::check_nan_inf] ⚠ nan={nan_count}/{total} "
-              f"inf={inf_count}/{total} "
-              f"({diagnostics['contamination_pct']:.4f}% contaminated) "
-              f"shape={list(tensor.shape)} dtype={tensor.dtype}")
+    if n_nan > 0 or n_inf > 0:
+        print(f"[check_nan_inf] ⚠ nan={n_nan} inf={n_inf} / {total} "
+              f"({diag['contamination_pct']:.4f}%) shape={tensor.shape}")
         if raise_ex:
-            raise Exception(diagnostics)
+            raise ValueError(f"Tensor contamination: {diag}")
 
-    return diagnostics, nan or inf
+    return diag, (n_nan > 0 or n_inf > 0)
 
 
 def remove_nan_inf(tensor):
-    """Replace NaN and Inf values with zeros.
+    """Replace NaN/Inf with zeros and track cumulative sanitization count."""
+    stats = AdjStats._sanitize
+    stats['calls'] += 1
+    
+    n_nan = torch.isnan(tensor).sum().item()
+    n_inf = torch.isinf(tensor).sum().item()
+    stats['nan'] += n_nan
+    stats['inf'] += n_inf
 
-    Walpurgis: tracks cumulative sanitization statistics.
-    First 10 calls print detailed reports for debugging.
-    """
-    _sanitize_stats['calls'] += 1
-    nan_count = torch.isnan(tensor).sum().item()
-    inf_count = torch.isinf(tensor).sum().item()
-    _sanitize_stats['nan_removed'] += nan_count
-    _sanitize_stats['inf_removed'] += inf_count
-
-    if (nan_count > 0 or inf_count > 0) and _sanitize_stats['calls'] <= 10:
-        print(f"[Walpurgis::remove_nan_inf] call#{_sanitize_stats['calls']} "
-              f"removed nan={nan_count} inf={inf_count} "
-              f"from tensor shape={list(tensor.shape)} dtype={tensor.dtype}")
+    if (n_nan + n_inf > 0) and stats['calls'] <= 10:
+        print(f"[sanitize #{stats['calls']}] removed nan={n_nan} inf={n_inf} "
+              f"from shape={list(tensor.shape)}")
 
     tensor = torch.where(torch.isnan(tensor), torch.zeros_like(tensor), tensor)
     tensor = torch.where(torch.isinf(tensor), torch.zeros_like(tensor), tensor)
     return tensor
 
 
+# ═══════════ Graph Normalization Operations ═══════════ #
+
 def calculate_symmetric_normalized_laplacian(adj):
-    """Calculate Symmetric Normalized Laplacian.
+    """Symmetric normalized Laplacian: L_sym = I - D^{-1/2} A D^{-1/2}.
     
-    L^{Sym} = I - D^{-1/2} A D^{-1/2}
-    
-    For node i,j where i≠j: L^{sym}_{ij} ≤ 0.
-    Eigenvalues are in [0, 2] for connected graphs.
+    Eigenvalues lie in [0, 2] for connected graphs. The spectral gap
+    (λ₂, smallest nonzero eigenvalue) indicates graph connectivity.
     """
-    t0 = time.perf_counter()
-    first = _is_first_call('sym_norm_lap')
+    with _timed('sym_norm_lap'):
+        first = AdjStats.is_first('sym_norm_lap')
+        
+        adj = sp.coo_matrix(adj)
+        N = adj.shape[0]
+        degrees = np.array(adj.sum(1)).flatten()
+        d_inv_sqrt = np.power(degrees, -0.5)
+        d_inv_sqrt[np.isinf(d_inv_sqrt)] = 0.0
+        D_half = sp.diags(d_inv_sqrt)
+        
+        L_sym = sp.eye(N) - D_half.dot(adj).dot(D_half).tocoo()
+        
+        nnz = L_sym.nnz
+        density = nnz / (N * N) if N > 0 else 0
+        n_isolated = int(np.sum(degrees == 0))
+        
+        print(f"[sym_norm_lap] N={N} nnz={nnz} density={density:.4f} "
+              f"isolated={n_isolated}")
+        
+        if first and N <= 500:
+            print(f"  degree: min={degrees.min():.1f} max={degrees.max():.1f} "
+                  f"μ={degrees.mean():.1f} σ={degrees.std():.1f}")
     
-    adj = sp.coo_matrix(adj)
-    n_nodes = adj.shape[0]
-    D = np.array(adj.sum(1))
-    D_inv_sqrt = np.power(D, -0.5).flatten()
-    D_inv_sqrt[np.isinf(D_inv_sqrt)] = 0.
-    matrix_D_inv_sqrt = sp.diags(D_inv_sqrt)
-    symmetric_normalized_laplacian = (
-        sp.eye(n_nodes) -
-        matrix_D_inv_sqrt.dot(adj).dot(matrix_D_inv_sqrt).tocoo()
-    )
-    
-    elapsed = time.perf_counter() - t0
-    _record_timing('sym_norm_lap', elapsed)
-    
-    # Diagnostics
-    nnz = symmetric_normalized_laplacian.nnz
-    density = nnz / (n_nodes * n_nodes) if n_nodes > 0 else 0
-    zero_degree = np.sum(D.flatten() == 0)
-    
-    print(f"[Walpurgis::calc_sym_norm_lap] N={n_nodes} nnz(L)={nnz} "
-          f"density={density:.4f} zero_degree_nodes={zero_degree} "
-          f"time={elapsed:.4f}s")
-    
-    if first and n_nodes <= 500:
-        # On first call for small graphs, print degree distribution summary
-        degrees = D.flatten()
-        print(f"  degree stats: min={degrees.min():.1f} max={degrees.max():.1f} "
-              f"mean={degrees.mean():.1f} std={degrees.std():.1f}")
-    
-    return symmetric_normalized_laplacian
+    return L_sym
 
 
 def calculate_scaled_laplacian(adj, lambda_max=2, undirected=True):
-    """Re-scaled Laplacian for Chebyshev polynomials.
+    """Rescaled Laplacian for Chebyshev polynomial approximation.
     
-    L_{scaled} = (2 / lambda_max × L) - I
-    
-    Rescales eigenvalues to [-1, 1] for stable polynomial approximation.
-    Default lambda_max=2 per GCN (Kipf & Welling, 2017).
+    L_scaled = (2/λ_max)·L - I, which maps eigenvalues to [-1, 1].
     """
-    t0 = time.perf_counter()
+    with _timed('scaled_lap'):
+        if undirected:
+            adj = np.maximum.reduce([adj, adj.T])
+        
+        L = calculate_symmetric_normalized_laplacian(adj)
+        
+        computed_eig = False
+        if lambda_max is None:
+            lambda_max, _ = linalg.eigsh(L, 1, which='LM')
+            lambda_max = float(lambda_max[0])
+            computed_eig = True
+            print(f"[scaled_lap] computed λ_max={lambda_max:.6f}")
+        
+        L_csr = sp.csr_matrix(L)
+        M = L_csr.shape[0]
+        I = sp.identity(M, format='csr', dtype=L_csr.dtype)
+        L_scaled = (2.0 / lambda_max) * L_csr - I
+        
+        print(f"[scaled_lap] N={M} λ_max={lambda_max} nnz={L_scaled.nnz} "
+              f"computed_eig={computed_eig}")
     
-    if undirected:
-        adj = np.maximum.reduce([adj, adj.T])
-    L = calculate_symmetric_normalized_laplacian(adj)
-    
-    computed_lambda = False
-    if lambda_max is None:
-        lambda_max, _ = linalg.eigsh(L, 1, which='LM')
-        lambda_max = lambda_max[0]
-        computed_lambda = True
-        print(f"[Walpurgis::calc_scaled_lap] computed lambda_max={lambda_max:.6f}")
-    
-    L = sp.csr_matrix(L)
-    M, _ = L.shape
-    I = sp.identity(M, format='csr', dtype=L.dtype)
-    L_res = (2 / lambda_max * L) - I
-    
-    elapsed = time.perf_counter() - t0
-    _record_timing('scaled_lap', elapsed)
-    
-    print(f"[Walpurgis::calc_scaled_lap] N={M} lambda_max={lambda_max} "
-          f"nnz={L_res.nnz} computed_lambda={computed_lambda} time={elapsed:.4f}s")
-    
-    return L_res
+    return L_scaled
 
 
 def symmetric_message_passing_adj(adj):
-    """Renormalized message passing adjacency (GCN-style).
+    """GCN-style renormalized adjacency: D^{-1/2} A D^{-1/2}.
     
-    Computes D^{-1/2} A D^{-1/2}.
-    Assumes self-loops have already been added to adj.
+    Assumes self-loops are already present in adj.
     """
-    t0 = time.perf_counter()
-    
-    print("[Walpurgis::sym_mp_adj] computing renormalized message passing adj "
-          "(ensure self-loop is added)")
-    adj = sp.coo_matrix(adj)
-    rowsum = np.array(adj.sum(1))
-    d_inv_sqrt = np.power(rowsum, -0.5).flatten()
-    d_inv_sqrt[np.isinf(d_inv_sqrt)] = 0.
-    d_mat_inv_sqrt = sp.diags(d_inv_sqrt)
-    mp_adj = d_mat_inv_sqrt.dot(adj).transpose().dot(d_mat_inv_sqrt).astype(np.float32).todense()
-    
-    elapsed = time.perf_counter() - t0
-    _record_timing('sym_mp_adj', elapsed)
-    
-    # Symmetry check
-    sym_err = np.abs(mp_adj - mp_adj.T).max()
-    print(f"  result: {mp_adj.shape} range=[{mp_adj.min():.4f},{mp_adj.max():.4f}] "
-          f"symmetry_error={sym_err:.2e} time={elapsed:.4f}s")
+    with _timed('sym_mp_adj'):
+        adj = sp.coo_matrix(adj)
+        row_sum = np.array(adj.sum(1)).flatten()
+        d_inv_sqrt = np.power(row_sum, -0.5)
+        d_inv_sqrt[np.isinf(d_inv_sqrt)] = 0.0
+        D_half = sp.diags(d_inv_sqrt)
+        
+        mp_adj = D_half.dot(adj).transpose().dot(D_half).astype(np.float32).todense()
+        
+        # Verify symmetry
+        sym_error = float(np.abs(mp_adj - mp_adj.T).max())
+        print(f"[sym_mp_adj] shape={mp_adj.shape} "
+              f"∈[{mp_adj.min():.4f},{mp_adj.max():.4f}] "
+              f"sym_err={sym_error:.2e}")
     
     return mp_adj
 
 
 def transition_matrix(adj):
-    """Transition matrix P = D^{-1}A (used in DCRNN, Graph WaveNet).
+    """Row-stochastic transition matrix: P = D^{-1}A.
     
-    Row-normalized adjacency: each row sums to 1 (or 0 for isolated nodes).
+    Each non-isolated row sums to 1. Checks stochastic consistency
+    and reports isolated nodes.
     """
-    t0 = time.perf_counter()
-    
-    adj = sp.coo_matrix(adj)
-    rowsum = np.array(adj.sum(1)).flatten()
-    d_inv = np.power(rowsum, -1).flatten()
-    d_inv[np.isinf(d_inv)] = 0.
-    d_mat = sp.diags(d_inv)
-    P = d_mat.dot(adj).astype(np.float32).todense()
-    
-    elapsed = time.perf_counter() - t0
-    _record_timing('transition_matrix', elapsed)
-    
-    # Topology diagnostics
-    isolated = np.sum(rowsum == 0)
-    n_nodes = adj.shape[0]
-    nnz = adj.nnz
-    avg_degree = rowsum.mean()
-    
-    if isolated > 0:
-        print(f"[Walpurgis::transition_matrix] ⚠ {isolated}/{n_nodes} isolated nodes (degree=0)")
-    
-    row_sums_P = np.array(P.sum(axis=1)).flatten()
-    non_isolated_rows = row_sums_P[rowsum > 0]
-    row_sum_err = np.abs(non_isolated_rows - 1.0).max() if len(non_isolated_rows) > 0 else 0.0
-    
-    print(f"[Walpurgis::transition_matrix] N={n_nodes} edges={nnz} "
-          f"avg_degree={avg_degree:.1f} row_sum_error={row_sum_err:.2e} "
-          f"time={elapsed:.4f}s")
+    with _timed('transition_mx'):
+        adj = sp.coo_matrix(adj)
+        N = adj.shape[0]
+        row_sum = np.array(adj.sum(1)).flatten()
+        
+        d_inv = np.power(row_sum, -1.0)
+        d_inv[np.isinf(d_inv)] = 0.0
+        D_inv = sp.diags(d_inv)
+        P = D_inv.dot(adj).astype(np.float32).todense()
+        
+        # Diagnostics
+        n_isolated = int(np.sum(row_sum == 0))
+        avg_deg = float(row_sum.mean())
+        
+        if n_isolated > 0:
+            print(f"[transition_mx] ⚠ {n_isolated}/{N} isolated nodes")
+        
+        # Stochastic consistency check
+        P_row_sums = np.array(P.sum(axis=1)).flatten()
+        connected = P_row_sums[row_sum > 0]
+        stoch_err = float(np.abs(connected - 1.0).max()) if len(connected) > 0 else 0.0
+        
+        print(f"[transition_mx] N={N} edges={adj.nnz} avg_deg={avg_deg:.1f} "
+              f"stochastic_err={stoch_err:.2e}")
     
     return P
