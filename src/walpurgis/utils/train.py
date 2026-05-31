@@ -1,17 +1,13 @@
 """
-Walpurgis Training Utilities — Environment & Checkpointing with Full Diagnostics
-==================================================================================
-Derived from D2STGNN train.py with enhanced debug output.
-
-Changes:
-  1. set_config prints full environment fingerprint (GPU, CUDA, cuDNN versions)
-  2. save_model/load_model include SHA-256 integrity checks
-  3. EarlyStopping uses patience-proportional cooldown instead of hard cutoff
-  4. data_reshaper logs transfer timing on first call per device
+Walpurgis v2 Training Utilities
+=================================
+Delta: EarlyStopping gains a *plateau detector* — if val_loss oscillates
+within a band for patience/2 epochs, it suggests LR reduction rather
+than stopping.  Checkpoint I/O uses fast CRC32-based integrity check.
 """
 import time
 import json
-import hashlib
+import zlib
 import os
 
 import torch
@@ -20,11 +16,7 @@ import random
 
 
 def set_config(seed=0):
-    """Lock all random seeds and print environment fingerprint.
-    
-    The fingerprint is critical for reproducibility debugging — if results
-    differ between runs, check this output first.
-    """
+    """Lock all seeds and print environment fingerprint."""
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
@@ -32,80 +24,61 @@ def set_config(seed=0):
     np.random.seed(seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
-    
-    print(f"[Walpurgis::env] seed={seed}")
-    print(f"[Walpurgis::env] torch={torch.__version__} "
-          f"cuda={torch.cuda.is_available()} "
-          f"cudnn={torch.backends.cudnn.version() if torch.cuda.is_available() else 'N/A'} "
-          f"gpus={torch.cuda.device_count()}")
+
+    print(f"[env] seed={seed}")
+    print(
+        f"[env] torch={torch.__version__} "
+        f"cuda={torch.cuda.is_available()} "
+        f"cudnn={torch.backends.cudnn.version() if torch.cuda.is_available() else 'n/a'} "
+        f"gpus={torch.cuda.device_count()}"
+    )
     if torch.cuda.is_available():
         for i in range(torch.cuda.device_count()):
-            props = torch.cuda.get_device_properties(i)
-            mem_gb = props.total_memory / (1024**3)
-            print(f"  GPU[{i}] {props.name} | {mem_gb:.1f}GB | "
-                  f"SM×{props.multi_processor_count} | "
-                  f"compute={props.major}.{props.minor}")
+            p = torch.cuda.get_device_properties(i)
+            print(f"  GPU[{i}] {p.name} | {p.total_memory/1e9:.1f}GB | SM×{p.multi_processor_count}")
 
 
-def _file_sha256(path, chunk_size=65536):
-    """Compute SHA-256 of a file for integrity verification."""
-    h = hashlib.sha256()
-    with open(path, 'rb') as f:
+def _file_crc(path, chunk=65536):
+    crc = 0
+    with open(path, "rb") as f:
         while True:
-            chunk = f.read(chunk_size)
-            if not chunk:
+            data = f.read(chunk)
+            if not data:
                 break
-            h.update(chunk)
-    return h.hexdigest()[:16]  # short hash is enough for quick checks
+            crc = zlib.crc32(data, crc)
+    return f"{crc & 0xFFFFFFFF:08x}"
 
 
-def save_model(model, save_path):
-    """Save model state dict with size and integrity reporting."""
+def save_model(model, path):
     t0 = time.perf_counter()
-    os.makedirs(os.path.dirname(save_path) if os.path.dirname(save_path) else '.', exist_ok=True)
-    torch.save(model.state_dict(), save_path)
-    elapsed = time.perf_counter() - t0
-    size_mb = os.path.getsize(save_path) / (1024 * 1024)
-    sha = _file_sha256(save_path)
-    print(f"[Walpurgis::save] {save_path} | {size_mb:.2f}MB | {elapsed:.3f}s | sha256={sha}")
+    os.makedirs(os.path.dirname(path) if os.path.dirname(path) else ".", exist_ok=True)
+    torch.save(model.state_dict(), path)
+    mb = os.path.getsize(path) / 1e6
+    crc = _file_crc(path)
+    print(f"[save] {path} | {mb:.2f}MB | {(time.perf_counter()-t0)*1000:.0f}ms | crc={crc}")
 
 
-def load_model(model, save_path):
-    """Load model state dict with key-matching diagnostics.
-    
-    Prints matched/missing/unexpected keys so you can immediately see
-    if a checkpoint is compatible with the current model architecture.
-    """
+def load_model(model, path):
     t0 = time.perf_counter()
-    sha = _file_sha256(save_path)
-    state_dict = torch.load(save_path)
-    
-    model_keys = set(model.state_dict().keys())
-    loaded_keys = set(state_dict.keys())
-    matched = model_keys & loaded_keys
-    missing = model_keys - loaded_keys
-    unexpected = loaded_keys - model_keys
-    
-    model.load_state_dict(state_dict)
-    elapsed = time.perf_counter() - t0
-    
-    print(f"[Walpurgis::load] {save_path} | {elapsed:.3f}s | sha256={sha}")
-    print(f"  keys: matched={len(matched)} missing={len(missing)} unexpected={len(unexpected)}")
-    if missing:
-        preview = list(missing)[:5]
-        print(f"  ⚠ missing: {preview}{'...' if len(missing) > 5 else ''}")
-    if unexpected:
-        preview = list(unexpected)[:5]
-        print(f"  ⚠ unexpected: {preview}{'...' if len(unexpected) > 5 else ''}")
+    crc = _file_crc(path)
+    sd = torch.load(path)
+    mk = set(model.state_dict().keys())
+    lk = set(sd.keys())
+    model.load_state_dict(sd)
+    print(
+        f"[load] {path} | {(time.perf_counter()-t0)*1000:.0f}ms | crc={crc}\n"
+        f"  matched={len(mk&lk)} missing={len(mk-lk)} extra={len(lk-mk)}"
+    )
+    if mk - lk:
+        print(f"  ⚠ missing: {list(mk-lk)[:5]}")
     return model
 
 
 class EarlyStopping:
-    """Early stopping with patience-proportional cooldown.
-    
-    Walpurgis change vs upstream: when counter reaches patience/2,
-    we print a "yellow warning" so the developer can intervene early.
-    Also tracks full history for post-mortem analysis.
+    """Early stopping with plateau detection.
+
+    When loss oscillates within ±δ_plateau for patience//2 epochs,
+    prints a suggestion to reduce LR (non-blocking).
     """
 
     def __init__(self, patience, save_path, verbose=False, delta=0):
@@ -118,77 +91,67 @@ class EarlyStopping:
         self.delta = delta
         self.save_path = save_path
         self._history = []
-        self._warned_halfway = False
-        print(f"[Walpurgis::EarlyStopping] patience={patience} delta={delta} "
-              f"save={save_path}")
+        self._warned = False
+        self._plateau_band = 0.005  # ±0.5% of best loss
+        print(f"[EarlyStopping] patience={patience} delta={delta} save={save_path}")
+
+    def _check_plateau(self):
+        """Check if recent losses oscillate within a narrow band."""
+        window = self.patience // 2
+        if len(self._history) < window:
+            return False
+        recent = [h["val_loss"] for h in self._history[-window:]]
+        lo, hi = min(recent), max(recent)
+        mid = (lo + hi) / 2
+        return (hi - lo) / (mid + 1e-8) < self._plateau_band * 2
 
     def __call__(self, val_loss, model):
         score = -val_loss
-        self._history.append({
-            'val_loss': float(val_loss),
-            'score': float(score),
-            'counter': self.counter,
-            'best': float(self.best_score) if self.best_score is not None else None,
-        })
+        self._history.append({"val_loss": float(val_loss), "counter": self.counter})
 
         if self.best_score is None:
             self.best_score = score
             self.save_checkpoint(val_loss, model)
         elif score < self.best_score - self.delta:
             self.counter += 1
-            gap = self.best_score - score
-            print(f'[EarlyStopping] {self.counter}/{self.patience} '
-                  f'(val={val_loss:.6f} vs best={-self.best_score:.6f} Δ={gap:.6f})')
-            
-            # Halfway warning
-            if not self._warned_halfway and self.counter >= self.patience // 2:
-                self._warned_halfway = True
-                print(f'  ⚠️  Halfway to early stop — '
-                      f'consider adjusting LR or checking data pipeline')
-            
+            print(
+                f"[ES] {self.counter}/{self.patience} "
+                f"(val={val_loss:.6f} vs best={-self.best_score:.6f})"
+            )
+            if not self._warned and self._check_plateau():
+                self._warned = True
+                print("  💡 Plateau detected — consider reducing LR")
             if self.counter >= self.patience:
                 self.early_stop = True
-                print(f'[EarlyStopping] *** TRIGGERED *** '
-                      f'no improvement for {self.patience} epochs')
+                print(f"[ES] *** STOP *** no improvement for {self.patience} epochs")
         else:
-            improvement = score - self.best_score
             self.best_score = score
             self.save_checkpoint(val_loss, model)
             self.counter = 0
-            self._warned_halfway = False
-            if self.verbose:
-                print(f'[EarlyStopping] improved by {improvement:.6f}')
+            self._warned = False
 
     def save_checkpoint(self, val_loss, model):
         if self.verbose:
-            print(f'[EarlyStopping] val_loss {self.val_loss_min:.6f} → {val_loss:.6f}. Saving...')
+            print(f"[ES] {self.val_loss_min:.6f} → {val_loss:.6f}  Saving...")
         save_model(model, self.save_path)
         self.val_loss_min = val_loss
 
     def export_history(self, path=None):
-        """Export history as JSON for post-mortem analysis."""
         if path:
-            with open(path, 'w') as f:
+            with open(path, "w") as f:
                 json.dump(self._history, f, indent=2)
-            print(f"[EarlyStopping] history → {path}")
         return self._history
 
 
-# ── Data transfer ── #
-_reshaper_first_call = {}
+_reshaper_first = {}
 
 def data_reshaper(data, device):
-    """Convert numpy array to tensor on target device.
-    
-    Logs transfer timing on first call per device (to catch slow PCIe).
-    """
-    dev_key = str(device)
-    if dev_key not in _reshaper_first_call:
+    dk = str(device)
+    if dk not in _reshaper_first:
         t0 = time.perf_counter()
-        result = torch.Tensor(data).to(device)
-        elapsed = (time.perf_counter() - t0) * 1000
-        _reshaper_first_call[dev_key] = True
-        print(f"  [DATA→{dev_key}] first transfer: shape={list(result.shape)} "
-              f"| {elapsed:.1f}ms | {result.element_size()*result.nelement()/1024/1024:.1f}MB")
-        return result
+        r = torch.Tensor(data).to(device)
+        ms = (time.perf_counter() - t0) * 1000
+        _reshaper_first[dk] = True
+        print(f"  [DATA→{dk}] first: shape={list(r.shape)} | {ms:.1f}ms | {r.element_size()*r.nelement()/1e6:.1f}MB")
+        return r
     return torch.Tensor(data).to(device)
