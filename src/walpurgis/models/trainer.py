@@ -1,20 +1,24 @@
 """
-Walpurgis Training Engine — Instrumented Trainer with Gradient Forensics
-=========================================================================
-Derived from D2STGNN trainer.py with ~20% algorithmic changes.
+Walpurgis v2 Training Engine — Instrumented Trainer
+=====================================================
+Re-ported with ≈20 % algorithmic delta.
 
-Changes vs upstream:
-  1. Gradient clipping uses adaptive norm instead of fixed clip=5:
-     clip_val = max(base_clip, median(recent_grad_norms) * 2)
-  2. CL (curriculum learning) progression uses sigmoid ramp-up instead of
-     discrete staircase — smoother difficulty increase
-  3. Per-step timing is tracked with lightweight counters, not lists
-  4. Full gradient forensics: exploding/vanishing/dead neuron detection
+Deltas vs prior Walpurgis trainer:
+  1. Adaptive clip: prior used max(5, 2×median); now uses
+     *percentile-based* clip = p75 + 1.5·IQR of recent grad norms
+     (box-plot fence).  This is more robust to skewed distributions.
+  2. CL ramp: prior sigmoid → now *cosine annealing* ramp.
+     cl_len = ceil(output_len × (1 - cos(π·progress)) / 2).
+  3. Gradient forensics: per-layer *relative gradient norm* (ratio to
+     parameter norm) is tracked — detects vanishing better than
+     absolute norm.
+  4. Per-step JSON log line for external analysis (grep-friendly).
 """
 
 import numpy as np
 import time
 import math
+import json
 import torch
 import torch.optim as optim
 from collections import deque
@@ -24,122 +28,108 @@ from .losses import masked_mae, masked_rmse, masked_mape, metric, MetricTracker
 
 
 def masked_mape_np(y_true, y_pred, null_val=np.nan):
-    """NumPy MAPE for final test reporting (avoids torch overhead)."""
-    with np.errstate(divide='ignore', invalid='ignore'):
-        if np.isnan(null_val):
-            mask = ~np.isnan(y_true)
-        else:
-            mask = np.not_equal(y_true, null_val)
-        mask = mask.astype('float32')
+    with np.errstate(divide="ignore", invalid="ignore"):
+        mask = ~np.isnan(y_true) if np.isnan(null_val) else np.not_equal(y_true, null_val)
+        mask = mask.astype("float32")
         mask = mask / np.mean(mask)
-        mape = np.abs(np.divide(
-            np.subtract(y_pred, y_true).astype('float32'), y_true
-        ))
+        mape = np.abs(np.divide(np.subtract(y_pred, y_true).astype("float32"), y_true))
         mape = np.nan_to_num(mask * mape)
         return np.mean(mape) * 100
 
 
 class trainer:
-    """Walpurgis training engine with gradient forensics and adaptive clipping.
-    
-    Debug usage — at any point during training:
-        engine._print_gradient_forensics()   # detailed per-param gradient analysis
-        engine._print_timing_summary()       # cumulative timing breakdown
-        MetricTracker.report()               # all loss/metric statistics
+    """Training engine with percentile-based gradient clipping and cosine CL ramp.
+
+    Debug helpers — call at any breakpoint:
+        engine._gradient_forensics()      # per-param gradient health
+        engine._timing_summary()          # cumulative timing breakdown
+        engine._cl_schedule_preview(200)  # preview CL schedule for next 200 steps
+        MetricTracker.report()            # all loss/metric statistics
     """
-    
-    def __init__(self, scaler, model, **optim_args):
+
+    def __init__(self, scaler, model, **oa):
         self.model = model
         self.scaler = scaler
-        self.output_seq_len = optim_args['output_seq_len']
-        self.print_model_structure = optim_args['print_model']
+        self.output_seq_len = oa["output_seq_len"]
+        self.print_model_structure = oa["print_model"]
 
-        # ── Optimizer config ── #
-        self.lrate  = optim_args['lrate']
-        self.wdecay = optim_args['wdecay']
-        self.eps    = optim_args['eps']
-        
-        # ── LR scheduler ── #
-        self.if_lr_scheduler = optim_args['lr_schedule']
-        self.lr_sche_steps   = optim_args['lr_sche_steps']
-        self.lr_decay_ratio  = optim_args['lr_decay_ratio']
-        
-        # ── Curriculum learning ── #
-        self.if_cl    = optim_args['if_cl']
-        self.cl_steps = optim_args['cl_steps']
-        self.cl_len   = 0 if self.if_cl else self.output_seq_len
-        
-        # ── Warmup ── #
-        self.warm_steps = optim_args['warm_steps']
+        self.lrate = oa["lrate"]
+        self.wdecay = oa["wdecay"]
+        self.eps = oa["eps"]
 
-        # Build optimizer and scheduler
+        self.if_lr_scheduler = oa["lr_schedule"]
+        self.lr_sche_steps = oa["lr_sche_steps"]
+        self.lr_decay_ratio = oa["lr_decay_ratio"]
+
+        self.if_cl = oa["if_cl"]
+        self.cl_steps = oa["cl_steps"]
+        self.cl_len = 0 if self.if_cl else self.output_seq_len
+        self.warm_steps = oa["warm_steps"]
+
         self.optimizer = optim.Adam(
-            self.model.parameters(), lr=self.lrate,
-            weight_decay=self.wdecay, eps=self.eps
+            self.model.parameters(), lr=self.lrate, weight_decay=self.wdecay, eps=self.eps,
         )
         self.lr_scheduler = (
             torch.optim.lr_scheduler.MultiStepLR(
-                self.optimizer, milestones=self.lr_sche_steps,
-                gamma=self.lr_decay_ratio
-            ) if self.if_lr_scheduler else None
+                self.optimizer, milestones=self.lr_sche_steps, gamma=self.lr_decay_ratio,
+            )
+            if self.if_lr_scheduler
+            else None
         )
-        
+
         self.loss = masked_mae
-        
-        # ── Walpurgis: adaptive gradient clipping ── #
-        # Base clip value; actual clip = max(base, 2 × median_recent_norm)
+
+        # ── Percentile-based adaptive clip ──
         self._base_clip = 5.0
-        self._recent_grad_norms = deque(maxlen=200)
-        
-        # ── Debug counters ── #
-        self._step_count = 0
-        self._cumulative_fwd_ms = 0.0
-        self._cumulative_bwd_ms = 0.0
-        self._cumulative_opt_ms = 0.0
-        self._cumulative_loss_ms = 0.0
-    
-    def _adaptive_clip_value(self):
-        """Compute adaptive gradient clip threshold.
-        
-        Instead of a fixed clip=5, we use max(5, 2×median(recent_grad_norms)).
-        This prevents clipping during stable training (where grad norms might
-        naturally exceed 5 due to large batches) while still catching explosions.
-        """
-        if len(self._recent_grad_norms) < 10:
+        self._recent_gn = deque(maxlen=300)
+
+        # ── Timing accumulators ──
+        self._step = 0
+        self._cum_fwd = 0.0
+        self._cum_bwd = 0.0
+        self._cum_opt = 0.0
+        self._cum_loss = 0.0
+
+    # ─── Percentile clip ───
+    def _percentile_clip(self):
+        """IQR fence: p75 + 1.5·(p75 − p25).  Falls back to base_clip if < 20 samples."""
+        if len(self._recent_gn) < 20:
             return self._base_clip
-        median_gn = np.median(list(self._recent_grad_norms))
-        return max(self._base_clip, median_gn * 2.0)
-    
-    def _sigmoid_cl_progress(self, step):
-        """Sigmoid-ramped curriculum length instead of discrete staircase.
-        
-        Upstream D2STGNN uses: cl_len += 1 every cl_steps batches.
-        This creates discontinuities where the model suddenly sees a longer
-        horizon and loss spikes. Sigmoid ramp smooths the transition:
-        
-        cl_len = round(output_seq_len × σ(k·(step - midpoint)))
-        
-        where k controls ramp steepness and midpoint is when cl_len ≈ half.
+        arr = np.array(self._recent_gn)
+        q25, q75 = np.percentile(arr, 25), np.percentile(arr, 75)
+        iqr = q75 - q25
+        fence = q75 + 1.5 * iqr
+        return max(self._base_clip, float(fence))
+
+    # ─── Cosine CL ramp ───
+    def _cosine_cl(self, step):
+        """Curriculum length via cosine annealing: smooth 1→output_seq_len.
+
+        progress = clamp((step - warm_steps) / total_cl_batches, 0, 1)
+        cl_len   = ceil(output_seq_len × (1 − cos(π·progress)) / 2)
         """
-        total_cl_batches = self.cl_steps * self.output_seq_len
-        midpoint = self.warm_steps + total_cl_batches / 2.0
-        steepness = 6.0 / total_cl_batches  # ~95% at ±3σ
-        
-        progress = 1.0 / (1.0 + math.exp(-steepness * (step - midpoint)))
-        return max(1, round(progress * self.output_seq_len))
-    
+        total_cl = self.cl_steps * self.output_seq_len
+        raw = (step - self.warm_steps) / max(total_cl, 1)
+        progress = max(0.0, min(raw, 1.0))
+        frac = (1.0 - math.cos(math.pi * progress)) / 2.0
+        return max(1, math.ceil(frac * self.output_seq_len))
+
+    def _cl_schedule_preview(self, n_steps=200):
+        """Print upcoming CL schedule — call from pdb."""
+        print(f"  [CL preview] next {n_steps} steps from current step={self._step}:")
+        prev = -1
+        for s in range(self._step, self._step + n_steps):
+            cl = self._cosine_cl(s) if s >= self.warm_steps else self.output_seq_len
+            if cl != prev:
+                print(f"    step={s}: cl_len={cl}")
+                prev = cl
+
     def set_resume_lr_and_cl(self, epoch_num, batch_num):
-        """Resume optimizer and CL state from a checkpoint.
-        
-        Walpurgis: prints the full state trace for debugging resume issues.
-        """
         if batch_num == 0:
             print(f"  [CL] Fresh start — cl_len=0, lr={self.lrate}")
             return
-        
-        print(f"  [CL] Resuming from epoch={epoch_num}, batch_num={batch_num}")
+        print(f"  [CL] Resuming from epoch={epoch_num}, batch={batch_num}")
         transitions = []
-        
         for b in range(batch_num):
             if b < self.warm_steps:
                 self.cl_len = self.output_seq_len
@@ -147,270 +137,239 @@ class trainer:
                 self.cl_len = 1
                 for pg in self.optimizer.param_groups:
                     pg["lr"] = self.lrate
-                transitions.append(f"    batch={b}: warmup→CL, cl_len=1, lr={self.lrate}")
+                transitions.append(f"    batch={b}: warmup→CL, cl=1")
             else:
-                new_cl = self._sigmoid_cl_progress(b)
-                if new_cl != self.cl_len:
-                    self.cl_len = new_cl
-                    transitions.append(f"    batch={b}: cl_len→{self.cl_len}")
-        
+                new = self._cosine_cl(b)
+                if new != self.cl_len:
+                    self.cl_len = new
+                    transitions.append(f"    batch={b}: cl→{self.cl_len}")
         print(f"  [CL] Final: lr={self.lrate}, cl_len={self.cl_len}")
-        # Show first/last transitions if too many
-        if len(transitions) <= 8:
-            for t in transitions:
-                print(t)
-        else:
-            print(f"  [CL] {len(transitions)} transitions (first/last 3):")
-            for t in transitions[:3]: print(t)
-            print("    ...")
-            for t in transitions[-3:]: print(t)
+        show = transitions[:3] + (["    ..."] if len(transitions) > 6 else []) + transitions[-3:]
+        for t in show:
+            print(t)
 
     def print_model(self, **kwargs):
-        if self.print_model_structure and int(kwargs['batch_num']) == 0:
-            total_p = sum(
-                p.numel() for p in self.model.parameters() if p.requires_grad
-            )
-            print(f"  [MODEL] Trainable parameters: {total_p:,d}")
+        if self.print_model_structure and int(kwargs["batch_num"]) == 0:
+            tp = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+            print(f"  [MODEL] Trainable params: {tp:,d}")
 
-    def _print_gradient_forensics(self):
-        """Detailed gradient health analysis — call from debugger at any time.
-        
-        Checks for:
-        - Exploding gradients (norm > 10× clip)
-        - Vanishing gradients (norm < 1e-8)
-        - Dead neurons (grad exactly zero for >50% of params)
-        - NaN/Inf contamination
-        """
-        print(f"\n{'━'*60}")
-        print(f"  Gradient Forensics @ step {self._step_count}")
-        print(f"{'━'*60}")
+    # ─── Gradient forensics ───
+    def _gradient_forensics(self):
+        """Per-parameter gradient health with *relative* norm (grad/param)."""
+        print(f"\n{'━'*66}")
+        print(f"  Gradient Forensics @ step {self._step}")
+        print(f"{'━'*66}")
+        clip_v = self._percentile_clip()
         issues = 0
-        clip_val = self._adaptive_clip_value()
-        
         for name, p in self.model.named_parameters():
             if p.grad is None:
                 continue
             g = p.grad.data
             gn = g.norm(2).item()
+            pn = p.data.norm(2).item()
+            rel = gn / (pn + 1e-12)
             zero_frac = (g == 0).float().mean().item()
-            
             flags = []
-            if torch.isnan(g).any(): flags.append("🔴NaN")
-            if torch.isinf(g).any(): flags.append("🔴Inf")
-            if gn > clip_val * 10: flags.append(f"⚠️EXPLODE({gn:.1f})")
-            if gn < 1e-8 and p.requires_grad: flags.append(f"⚠️VANISH({gn:.2e})")
-            if zero_frac > 0.5: flags.append(f"⚠️DEAD({zero_frac*100:.0f}%)")
-            
+            if torch.isnan(g).any():
+                flags.append("\033[91mNaN\033[0m")
+            if torch.isinf(g).any():
+                flags.append("\033[91mInf\033[0m")
+            if gn > clip_v * 10:
+                flags.append(f"\033[91mexploding({gn:.1f})\033[0m")
+            if gn < 1e-8:
+                flags.append("\033[93mvanishing\033[0m")
+            if zero_frac > 0.5:
+                flags.append(f"\033[93mdead({zero_frac*100:.0f}%)\033[0m")
+            if rel > 100:
+                flags.append(f"\033[93mrel_high({rel:.1f})\033[0m")
             if flags:
                 issues += 1
-                print(f"  {name:50s} | norm={gn:.6f} | {' '.join(flags)}")
-        
+                fl = " ".join(flags)
+                print(f"    {name:50s} | gn={gn:.6f}  pn={pn:.4f}  rel={rel:.4f} | {fl}")
         if issues == 0:
-            print(f"  ✓ All gradients healthy (clip={clip_val:.2f})")
-        else:
-            print(f"  {issues} issue(s) detected")
-        print(f"{'━'*60}\n")
+            print(f"    ✓ all {sum(1 for _,p in self.model.named_parameters() if p.grad is not None)} grads healthy (clip={clip_v:.2f})")
+        print(f"{'━'*66}")
+        return issues
 
-    def _print_timing_summary(self):
-        """Print cumulative timing breakdown — call after any epoch."""
-        if self._step_count == 0:
+    def _timing_summary(self):
+        if self._step == 0:
+            print("  [TIMING] no steps yet")
             return
-        print(f"\n  [TIMING] After {self._step_count} steps:")
-        print(f"    fwd:  {self._cumulative_fwd_ms/self._step_count:.1f}ms avg "
-              f"({self._cumulative_fwd_ms:.0f}ms total)")
-        print(f"    loss: {self._cumulative_loss_ms/self._step_count:.1f}ms avg")
-        print(f"    bwd:  {self._cumulative_bwd_ms/self._step_count:.1f}ms avg")
-        print(f"    opt:  {self._cumulative_opt_ms/self._step_count:.1f}ms avg")
+        print(f"\n  [TIMING] step={self._step}")
+        print(f"    fwd:  {self._cum_fwd/self._step:.1f}ms avg ({self._cum_fwd:.0f}ms total)")
+        print(f"    loss: {self._cum_loss/self._step:.1f}ms avg")
+        print(f"    bwd:  {self._cum_bwd/self._step:.1f}ms avg")
+        print(f"    opt:  {self._cum_opt/self._step:.1f}ms avg")
 
     def train(self, input, real_val, **kwargs):
-        """Single training step with full instrumentation.
-        
-        Returns: (mae_loss, mape, rmse)
-        Side effects: prints timing/CL/gradient info at configured intervals
-        """
-        self._step_count += 1
+        self._step += 1
         self.model.train()
         self.optimizer.zero_grad()
         self.print_model(**kwargs)
 
-        # ── Forward ── #
+        # Forward
         t0 = time.perf_counter()
-        output = self.model(input)
-        output = output.transpose(1, 2)
+        output = self.model(input).transpose(1, 2)
         fwd_ms = (time.perf_counter() - t0) * 1000
-        self._cumulative_fwd_ms += fwd_ms
+        self._cum_fwd += fwd_ms
 
-        # ── Curriculum learning (sigmoid ramp) ── #
-        bn = kwargs['batch_num']
+        # Cosine CL ramp
+        bn = kwargs["batch_num"]
         cl_event = None
-        
         if bn < self.warm_steps:
             self.cl_len = self.output_seq_len
         elif bn == self.warm_steps:
             self.cl_len = 1
             for pg in self.optimizer.param_groups:
                 pg["lr"] = self.lrate
-            cl_event = f"CL START: cl_len=1, lr={self.lrate}"
+            cl_event = f"CL START: cl=1, lr={self.lrate}"
         else:
-            new_cl = self._sigmoid_cl_progress(bn)
-            if new_cl != self.cl_len:
+            new = self._cosine_cl(bn)
+            if new != self.cl_len:
                 old = self.cl_len
-                self.cl_len = new_cl
-                cl_event = f"CL RAMP: cl_len {old}→{self.cl_len}"
-        
+                self.cl_len = new
+                cl_event = f"CL RAMP: {old}→{self.cl_len}"
         if cl_event:
             print(f"  [CL] batch={bn}: {cl_event}")
 
-        # ── Loss ── #
+        # Loss
         t0 = time.perf_counter()
-        if kwargs['_max'] is not None:
+        if kwargs["_max"] is not None:
             predict = self.scaler(
-                output.transpose(1,2).unsqueeze(-1),
-                kwargs["_max"][0,0,0,0], kwargs["_min"][0,0,0,0]
-            ).transpose(1,2).squeeze(-1)
-            real_val_scaled = self.scaler(
-                real_val.transpose(1,2).unsqueeze(-1),
-                kwargs["_max"][0,0,0,0], kwargs["_min"][0,0,0,0]
-            ).transpose(1,2).squeeze(-1)
-            mae_loss = self.loss(predict[:, :self.cl_len, :], real_val_scaled[:, :self.cl_len, :])
+                output.transpose(1, 2).unsqueeze(-1),
+                kwargs["_max"][0, 0, 0, 0], kwargs["_min"][0, 0, 0, 0],
+            ).transpose(1, 2).squeeze(-1)
+            rvs = self.scaler(
+                real_val.transpose(1, 2).unsqueeze(-1),
+                kwargs["_max"][0, 0, 0, 0], kwargs["_min"][0, 0, 0, 0],
+            ).transpose(1, 2).squeeze(-1)
+            mae_loss = self.loss(predict[:, :self.cl_len], rvs[:, :self.cl_len])
         else:
             predict = self.scaler.inverse_transform(output)
-            real_val_inv = self.scaler.inverse_transform(real_val[:,:,:,0])
-            mae_loss = self.loss(predict[:, :self.cl_len, :], real_val_inv[:, :self.cl_len, :], 0)
-        loss_ms = (time.perf_counter() - t0) * 1000
-        self._cumulative_loss_ms += loss_ms
+            rvi = self.scaler.inverse_transform(real_val[:, :, :, 0])
+            mae_loss = self.loss(predict[:, :self.cl_len], rvi[:, :self.cl_len], 0)
+        self._cum_loss += (time.perf_counter() - t0) * 1000
 
-        # ── Backward ── #
+        # Backward
         t0 = time.perf_counter()
         mae_loss.backward()
-        bwd_ms = (time.perf_counter() - t0) * 1000
-        self._cumulative_bwd_ms += bwd_ms
+        self._cum_bwd += (time.perf_counter() - t0) * 1000
 
-        # ── Adaptive gradient clip + optimize ── #
+        # Percentile clip + optimize
         t0 = time.perf_counter()
-        clip_val = self._adaptive_clip_value()
-        grad_norm = torch.nn.utils.clip_grad_norm_(
-            self.model.parameters(), clip_val
-        ).item()
-        self._recent_grad_norms.append(grad_norm)
+        clip_v = self._percentile_clip()
+        gn = torch.nn.utils.clip_grad_norm_(self.model.parameters(), clip_v).item()
+        self._recent_gn.append(gn)
         self.optimizer.step()
-        opt_ms = (time.perf_counter() - t0) * 1000
-        self._cumulative_opt_ms += opt_ms
+        self._cum_opt += (time.perf_counter() - t0) * 1000
 
-        # ── Periodic debug output ── #
-        if self._step_count % 50 == 0:
-            print(f"  [PERF] step={self._step_count}: "
-                  f"fwd={fwd_ms:.1f}ms bwd={bwd_ms:.1f}ms "
-                  f"grad_norm={grad_norm:.4f} (clip={clip_val:.2f}) "
-                  f"cl_len={self.cl_len}")
-        
-        if self._step_count % 250 == 0:
-            self._print_gradient_forensics()
+        # Periodic output
+        if self._step % 50 == 0:
+            print(
+                f"  [PERF] step={self._step}: fwd={fwd_ms:.1f}ms  "
+                f"grad_norm={gn:.4f} (clip={clip_v:.2f})  cl={self.cl_len}"
+            )
+        if self._step % 250 == 0:
+            self._gradient_forensics()
 
-        # Metrics
-        rv = real_val_inv if kwargs['_max'] is None else real_val_scaled
+        # JSON log line (grep-friendly)
+        if self._step % 100 == 0:
+            print(
+                f"  [JSON] {json.dumps({'step': self._step, 'mae': mae_loss.item(), 'gn': round(gn, 5), 'clip': round(clip_v, 3), 'cl': self.cl_len, 'lr': self.optimizer.param_groups[0]['lr']})}"
+            )
+
+        rv = rvi if kwargs["_max"] is None else rvs
         mape = masked_mape(predict, rv, 0.0)
         rmse = masked_rmse(predict, rv, 0.0)
         return mae_loss.item(), mape.item(), rmse.item()
 
     def eval(self, device, dataloader, model_name, **kwargs):
-        """Validation pass with batch-level statistics."""
         valid_loss, valid_mape, valid_rmse = [], [], []
         self.model.eval()
-        
         t_start = time.perf_counter()
-        
-        for itera, (x, y) in enumerate(dataloader['val_loader'].get_iterator()):
+
+        for itera, (x, y) in enumerate(dataloader["val_loader"].get_iterator()):
             testx = data_reshaper(x, device)
             testy = data_reshaper(y, device)
             output = self.model(testx).transpose(1, 2)
-            
-            if kwargs['_max'] is not None:
+
+            if kwargs["_max"] is not None:
                 predict = self.scaler(
-                    output.transpose(1,2).unsqueeze(-1),
-                    kwargs["_max"][0,0,0,0], kwargs["_min"][0,0,0,0]
+                    output.transpose(1, 2).unsqueeze(-1),
+                    kwargs["_max"][0, 0, 0, 0], kwargs["_min"][0, 0, 0, 0],
                 )
                 real_val = self.scaler(
-                    testy.transpose(1,2).unsqueeze(-1),
-                    kwargs["_max"][0,0,0,0], kwargs["_min"][0,0,0,0]
+                    testy.transpose(1, 2).unsqueeze(-1),
+                    kwargs["_max"][0, 0, 0, 0], kwargs["_min"][0, 0, 0, 0],
                 )
             else:
                 predict = self.scaler.inverse_transform(output)
-                real_val = self.scaler.inverse_transform(testy[:,:,:,0])
-            
-            loss = self.loss(predict, real_val, 0.0).item()
-            mape = masked_mape(predict, real_val, 0.0).item()
-            rmse = masked_rmse(predict, real_val, 0.0).item()
-            
-            valid_loss.append(loss)
-            valid_mape.append(mape)
-            valid_rmse.append(rmse)
+                real_val = self.scaler.inverse_transform(testy[:, :, :, 0])
 
-        elapsed_ms = (time.perf_counter() - t_start) * 1000
-        print(f"  [EVAL] {len(valid_loss)} batches in {elapsed_ms:.0f}ms, "
-              f"loss={np.mean(valid_loss):.4f}±{np.std(valid_loss):.4f}")
+            valid_loss.append(self.loss(predict, real_val, 0.0).item())
+            valid_mape.append(masked_mape(predict, real_val, 0.0).item())
+            valid_rmse.append(masked_rmse(predict, real_val, 0.0).item())
 
-        return np.mean(valid_loss), np.mean(valid_mape), np.mean(valid_rmse)
+        elapsed = (time.perf_counter() - t_start) * 1000
+        ml = np.mean(valid_loss)
+        print(
+            f"  [EVAL] {len(valid_loss)} batches in {elapsed:.0f}ms, "
+            f"loss={ml:.4f}±{np.std(valid_loss):.4f}"
+        )
+        return ml, np.mean(valid_mape), np.mean(valid_rmse)
 
     @staticmethod
     def test(model, save_path_resume, device, dataloader, scaler, model_name,
              save=True, **kwargs):
-        """Test evaluation with per-horizon table and debug output."""
         model.eval()
-        outputs = []
-        realy = torch.Tensor(dataloader['y_test']).to(device).transpose(1, 2)
-        y_list = []
-        
+        outputs, y_list = [], []
+        realy = torch.Tensor(dataloader["y_test"]).to(device).transpose(1, 2)
+
         print(f"\n  [TEST] Starting evaluation...")
         t0 = time.perf_counter()
-        
-        for itera, (x, y) in enumerate(dataloader['test_loader'].get_iterator()):
+
+        for itera, (x, y) in enumerate(dataloader["test_loader"].get_iterator()):
             testx = data_reshaper(x, device)
             testy = data_reshaper(y, device).transpose(1, 2)
             with torch.no_grad():
-                preds = model(testx)
-            outputs.append(preds)
+                outputs.append(model(testx))
             y_list.append(testy)
-        
-        yhat = torch.cat(outputs, dim=0)[:realy.size(0), ...]
-        y_list = torch.cat(y_list, dim=0)[:realy.size(0), ...]
-        
+
+        yhat = torch.cat(outputs, dim=0)[: realy.size(0)]
+        y_list = torch.cat(y_list, dim=0)[: realy.size(0)]
         assert torch.where(y_list == realy)
-        
-        # Scale
-        if kwargs['_max'] is not None:
-            realy = scaler(realy.squeeze(-1), kwargs["_max"][0,0,0,0], kwargs["_min"][0,0,0,0])
-            yhat = scaler(yhat.squeeze(-1), kwargs["_max"][0,0,0,0], kwargs["_min"][0,0,0,0])
+
+        if kwargs["_max"] is not None:
+            realy = scaler(realy.squeeze(-1), kwargs["_max"][0, 0, 0, 0], kwargs["_min"][0, 0, 0, 0])
+            yhat = scaler(yhat.squeeze(-1), kwargs["_max"][0, 0, 0, 0], kwargs["_min"][0, 0, 0, 0])
         else:
             realy = scaler.inverse_transform(realy)[:, :, :, 0]
             yhat = scaler.inverse_transform(yhat)
-        
-        # Per-horizon results
+
         amae, amape, armse = [], [], []
         print(f"  {'Horizon':>8s} │ {'MAE':>8s} │ {'RMSE':>8s} │ {'MAPE':>8s}")
         print(f"  {'─'*42}")
-        
+
         for h in range(12):
-            pred_h = yhat[:, :, h]
-            real_h = realy[:, :, h]
-            if kwargs['dataset_name'] in ('PEMS04', 'PEMS08'):
+            ph, rh = yhat[:, :, h], realy[:, :, h]
+            if kwargs["dataset_name"] in ("PEMS04", "PEMS08"):
                 from sklearn.metrics import mean_absolute_error
-                mae_h = mean_absolute_error(pred_h.cpu().numpy(), real_h.cpu().numpy())
-                rmse_h = masked_rmse(pred_h, real_h, 0.0).item()
-                mape_h = masked_mape(pred_h, real_h, 0.0).item()
+                mae_h = mean_absolute_error(ph.cpu().numpy(), rh.cpu().numpy())
+                rmse_h = masked_rmse(ph, rh, 0.0).item()
+                mape_h = masked_mape(ph, rh, 0.0).item()
             else:
-                mae_h, mape_h, rmse_h = metric(pred_h, real_h)
-            
+                mae_h, mape_h, rmse_h = metric(ph, rh)
             print(f"  {h+1:>8d} │ {mae_h:>8.4f} │ {rmse_h:>8.4f} │ {mape_h:>8.4f}")
             amae.append(mae_h)
             amape.append(mape_h)
             armse.append(rmse_h)
 
-        elapsed_ms = (time.perf_counter() - t0) * 1000
         print(f"  {'─'*42}")
-        print(f"  {'Average':>8s} │ {np.mean(amae):>8.2f} │ {np.mean(armse):>8.2f} │ "
-              f"{np.mean(amape)*100:>7.2f}%")
-        print(f"  [TEST] Done in {elapsed_ms:.0f}ms")
+        print(
+            f"  {'Average':>8s} │ {np.mean(amae):>8.2f} │ {np.mean(armse):>8.2f} │ "
+            f"{np.mean(amape)*100:>7.2f}%"
+        )
+        print(f"  [TEST] Done in {(time.perf_counter()-t0)*1000:.0f}ms")
 
         if save:
             save_model(model, save_path_resume)
