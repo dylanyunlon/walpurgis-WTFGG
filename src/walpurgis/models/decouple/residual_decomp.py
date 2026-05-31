@@ -1,53 +1,35 @@
 """
-Walpurgis Residual Decomposition — Learnable Residual Scaling
-==============================================================
-Derived from D2STGNN residual_decomp.py.
-
-Change: uses learnable scaling factor (initialized to 0.5) instead of
-simple subtraction. The network can learn to adjust how much of the
-backcast signal is removed from the residual.
+Walpurgis v2 Residual Decomposition — Scale + Shift
+=====================================================
+Delta: single learnable scale → *scale+shift* pair.
+residual = LN(input − sigmoid(s)·backcast − shift)
+The shift absorbs systematic bias in the backcast prediction.
 """
-
 import torch
 import torch.nn as nn
 
 
 class ResidualDecomp(nn.Module):
-    """Decompose residual signal: residual = input - scale * backcast.
-    
-    Upstream D2STGNN uses: residual = LayerNorm(input - backcast).
-    Walpurgis adds a learnable scale factor initialized to 0.5, which
-    lets the network control decomposition aggressiveness. Early in
-    training when backcast is noisy, scale < 1 preserves more of the
-    input; as backcast improves, scale can approach 1.
-    """
-    
-    _call_count = 0
-    
-    def __init__(self, input_channel):
+    _n = 0
+
+    def __init__(self, dim):
         super().__init__()
-        self.ln = nn.LayerNorm(input_channel)
-        self.scale = nn.Parameter(torch.tensor(0.5))  # learnable decomposition strength
-        self._debug_on = True
-    
-    def forward(self, input_data, backcast):
-        """
-        Args:
-            input_data: [B, L, N, D]
-            backcast:   [B, L, N, D] (same shape, predicted component to remove)
-        Returns:
-            residual:   [B, L, N, D]
-        """
-        ResidualDecomp._call_count += 1
-        
-        # Learnable scaling: how much of backcast to subtract
-        s = torch.sigmoid(self.scale)  # bound to (0, 1)
-        residual = self.ln(input_data - s * backcast)
-        
-        if self._debug_on and ResidualDecomp._call_count % 500 == 1:
+        self.ln = nn.LayerNorm(dim)
+        self._scale = nn.Parameter(torch.tensor(0.5))
+        self._shift = nn.Parameter(torch.tensor(0.0))
+        self._debug = True
+
+    def forward(self, inp, backcast):
+        ResidualDecomp._n += 1
+        s = torch.sigmoid(self._scale)
+        residual = self.ln(inp - s * backcast - self._shift)
+
+        if self._debug and ResidualDecomp._n % 500 == 1:
             with torch.no_grad():
-                ratio = backcast.norm().item() / (input_data.norm().item() + 1e-8)
-                print(f"      [ResDecomp #{ResidualDecomp._call_count}] "
-                      f"scale={s.item():.4f} | backcast/input ratio={ratio:.4f}")
-        
+                ratio = backcast.norm().item() / (inp.norm().item() + 1e-8)
+                print(
+                    f"      [ResDecomp #{ResidualDecomp._n}] "
+                    f"scale={s.item():.4f} shift={self._shift.item():.5f} "
+                    f"back/inp={ratio:.4f}"
+                )
         return residual

@@ -1,62 +1,47 @@
 """
-Walpurgis Forecast Head — Temporal Projection with Dropout Scheduling
-=======================================================================
-Derived from D2STGNN forecast.py.
-
-Change: applies spatial dropout (drops entire node features) instead of
-standard element-wise dropout. This is more appropriate for graph data
-where node-level features should be dropped as units.
+Walpurgis v2 Diffusion Forecast Head
+=======================================
+Delta: spatial dropout → *channel-shuffle then standard dropout*.
+Channel shuffle provides inter-node feature mixing before dropout,
+acting as implicit regularisation.
 """
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 
 class Forecast(nn.Module):
-    """Projects hidden features to forecast horizon.
-    
-    Architecture: hidden → FC1 → ReLU → SpatialDropout → FC2
-    
-    Walpurgis: uses F.dropout2d on the [B, N, D] tensor to drop
-    entire feature channels per node, rather than random elements.
-    This provides stronger regularization for spatial-temporal models.
-    """
-    
-    _call_count = 0
-    
+    _n = 0
+
     def __init__(self, hidden_dim, forecast_dim, output_seq_len=12, gap=1):
         super().__init__()
         self.fc_in = nn.Linear(hidden_dim, forecast_dim)
         self.fc_out = nn.Linear(forecast_dim, output_seq_len // gap)
-        self.output_len = output_seq_len
-        self.gap = gap
-        self.dropout_rate = 0.1  # lighter than standard 0.3
-        self._debug_on = True
-    
+        self.drop_rate = 0.1
+        self._debug = True
+
+    def _channel_shuffle(self, x, groups=4):
+        """Shuffle feature channels across groups for inter-node mixing."""
+        B, N, C = x.shape
+        if C % groups != 0:
+            return x
+        x = x.view(B, N, groups, C // groups)
+        x = x.transpose(2, 3).contiguous()
+        return x.view(B, N, C)
+
     def forward(self, hidden):
-        """
-        Args:
-            hidden: [B, L, N, D] — temporal hidden features
-        Returns:
-            forecast: [B, N, forecast_dim] — aggregated forecast embedding
-        """
-        Forecast._call_count += 1
-        
-        # Temporal aggregation: mean pool over sequence length
-        h = hidden.mean(dim=1)  # [B, N, D]
-        
+        Forecast._n += 1
+        h = hidden.mean(dim=1)
         h = F.relu(self.fc_in(h))
-        
-        # Spatial dropout: drop entire feature channels per node
+
         if self.training:
-            h = F.dropout2d(h.unsqueeze(-1), p=self.dropout_rate).squeeze(-1)
-        
-        forecast = self.fc_out(h)
-        
-        if self._debug_on and Forecast._call_count % 1000 == 1:
-            print(f"        [Forecast #{Forecast._call_count}] "
-                  f"in_mean_norm={hidden.norm(dim=-1).mean().item():.4f} "
-                  f"out_norm={forecast.norm().item():.4f}")
-        
-        return h  # return pre-projection hidden for aggregation in model.py
+            h = self._channel_shuffle(h)
+            h = F.dropout(h, p=self.drop_rate)
+
+        if self._debug and Forecast._n % 1000 == 1:
+            print(
+                f"        [DifForecast #{Forecast._n}] "
+                f"in_norm={hidden.norm(dim=-1).mean().item():.4f} "
+                f"out_norm={h.norm().item():.4f}"
+            )
+        return h
