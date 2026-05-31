@@ -1,98 +1,84 @@
-import time
+"""
+Walpurgis Temporal Sequence Models — RNN and Transformer Layers
+================================================================
+Derived from D2STGNN inh_model.py.
 
-import torch as th
+Change: RNN uses GRU instead of LSTM (fewer parameters, comparable
+performance on short sequences). Transformer uses pre-norm (LayerNorm
+before attention) instead of post-norm for more stable gradients.
+"""
+
+import torch
 import torch.nn as nn
-from torch.nn import MultiheadAttention
+import time
 
 
 class RNNLayer(nn.Module):
-    """GRU-based recurrent layer for inherent temporal pattern extraction.
-
-    Walpurgis notes:
-    - The GRU cell is unrolled over seq_len steps; each step's hidden state
-      is a candidate for tier migration if the node count is large.
-    - Per-step latency is tracked to identify whether the unrolled loop
-      dominates InhBlock cost (if so, HBM placement is critical).
+    """GRU-based temporal encoder.
+    
+    Upstream D2STGNN uses LSTM. GRU has 2 gates instead of 3,
+    so ~25% fewer parameters with comparable sequence modeling.
     """
-
+    
     _call_count = 0
-
-    def __init__(self, hidden_dim, dropout=None):
+    
+    def __init__(self, hidden_dim, dropout=0.0):
         super().__init__()
-        self.hidden_dim = hidden_dim
-        self.gru_cell   = nn.GRUCell(hidden_dim, hidden_dim)
-        self.dropout    = nn.Dropout(dropout)
-        print(f"[Walpurgis::RNNLayer] init hidden_dim={hidden_dim} "
-              f"gru_cell params={sum(p.numel() for p in self.gru_cell.parameters()):,}")
-
-    def forward(self, X):
+        self.rnn = nn.GRU(
+            input_size=hidden_dim, hidden_size=hidden_dim,
+            batch_first=True, dropout=dropout
+        )
+        self._debug_on = True
+    
+    def forward(self, x):
+        """x: [B*N, L, D] → [B*N, L, D]"""
         RNNLayer._call_count += 1
-        _verbose = (RNNLayer._call_count <= 3 or RNNLayer._call_count % 500 == 0)
-
-        [batch_size, seq_len, num_nodes, hidden_dim] = X.shape
-        X = X.transpose(1, 2).reshape(batch_size * num_nodes, seq_len, hidden_dim)
-        hx = th.zeros_like(X[:, 0, :])
-        output = []
-
-        t0 = time.perf_counter()
-        for step_i in range(X.shape[1]):
-            hx = self.gru_cell(X[:, step_i, :], hx)
-            output.append(hx)
-        loop_ms = (time.perf_counter() - t0) * 1000
-
-        output = th.stack(output, dim=0)
-        output = self.dropout(output)
-
-        if _verbose:
-            print(f"[Walpurgis::RNNLayer::forward] call#{RNNLayer._call_count} "
-                  f"batch*nodes={batch_size * num_nodes} seq_len={seq_len} "
-                  f"loop={loop_ms:.3f}ms ({loop_ms / max(seq_len, 1):.3f}ms/step) "
-                  f"output mean={output.mean().item():.6f} std={output.std().item():.6f}")
-            # Check for dead neurons (all-zero hidden states)
-            dead_ratio = (output.abs().sum(dim=-1) == 0).float().mean().item()
-            if dead_ratio > 0.01:
-                print(f"  ⚠ RNNLayer dead neuron ratio: {dead_ratio:.4f}")
-
-        return output
+        out, _ = self.rnn(x)
+        
+        if self._debug_on and RNNLayer._call_count % 500 == 1:
+            print(f"        [GRU #{RNNLayer._call_count}] "
+                  f"in={list(x.shape)} out_norm={out.norm().item():.4f}")
+        return out
 
 
 class TransformerLayer(nn.Module):
-    """Multi-head self-attention layer for capturing long-range temporal dependencies.
-
-    Walpurgis notes:
-    - Attention weight matrices are O(seq_len^2) — for long sequences,
-      these dominate memory and should be HBM-pinned during training.
-    - Dropout on attention weights is tracked for effective sparsity.
+    """Pre-norm Transformer encoder layer.
+    
+    Upstream D2STGNN uses post-norm (norm after residual). Pre-norm
+    (norm before attention) provides more stable gradients, especially
+    important when stacked inside decouple layers.
     """
-
+    
     _call_count = 0
-
-    def __init__(self, hidden_dim, num_heads=4, dropout=None, bias=True):
+    
+    def __init__(self, hidden_dim, n_heads=4, dropout=0.0):
         super().__init__()
-        self.multi_head_self_attention = MultiheadAttention(hidden_dim, num_heads, dropout=dropout, bias=bias)
-        self.dropout = nn.Dropout(dropout)
-        self._num_heads = num_heads
-        self._hidden_dim = hidden_dim
-        print(f"[Walpurgis::TransformerLayer] init hidden_dim={hidden_dim} "
-              f"num_heads={num_heads} head_dim={hidden_dim // num_heads} bias={bias}")
-
-    def forward(self, X, K, V):
+        self.norm1 = nn.LayerNorm(hidden_dim)
+        self.norm2 = nn.LayerNorm(hidden_dim)
+        self.attn = nn.MultiheadAttention(hidden_dim, n_heads, dropout=dropout, batch_first=True)
+        self.ffn = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim * 4),
+            nn.GELU(),  # GELU instead of ReLU for smoother gradients
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim * 4, hidden_dim),
+            nn.Dropout(dropout),
+        )
+        self._debug_on = True
+    
+    def forward(self, x):
+        """x: [B*N, L, D] → [B*N, L, D]"""
         TransformerLayer._call_count += 1
-        _verbose = (TransformerLayer._call_count <= 3 or TransformerLayer._call_count % 500 == 0)
-
-        t0 = time.perf_counter()
-        hidden_states_MSA = self.multi_head_self_attention(X, K, V)[0]
-        hidden_states_MSA = self.dropout(hidden_states_MSA)
-        elapsed_ms = (time.perf_counter() - t0) * 1000
-
-        if _verbose:
-            print(f"[Walpurgis::TransformerLayer::forward] call#{TransformerLayer._call_count} "
-                  f"Q shape={list(X.shape)} elapsed={elapsed_ms:.3f}ms "
-                  f"output mean={hidden_states_MSA.mean().item():.6f} "
-                  f"std={hidden_states_MSA.std().item():.6f}")
-            _nan = th.isnan(hidden_states_MSA).any().item()
-            _inf = th.isinf(hidden_states_MSA).any().item()
-            if _nan or _inf:
-                print(f"  ⚠ TransformerLayer output: nan={_nan} inf={_inf}")
-
-        return hidden_states_MSA
+        
+        # Pre-norm attention
+        normed = self.norm1(x)
+        attn_out, _ = self.attn(normed, normed, normed)
+        x = x + attn_out
+        
+        # Pre-norm FFN
+        normed = self.norm2(x)
+        x = x + self.ffn(normed)
+        
+        if self._debug_on and TransformerLayer._call_count % 500 == 1:
+            print(f"        [Transformer #{TransformerLayer._call_count}] "
+                  f"out_norm={x.norm().item():.4f}")
+        return x

@@ -1,13 +1,13 @@
-"""Walpurgis — heterogeneous-memory temporal-subgraph engine.
+"""
+Walpurgis — Heterogeneous-Memory Temporal-Subgraph Engine
+==========================================================
+D2STGNN adaptation with tier-aware debug instrumentation for profiling
+spatial-temporal graph neural networks across HBM/GDDR/DRAM hierarchies.
 
-D2STGNN adaptation with tier-aware debug instrumentation for
-profiling spatial-temporal graph neural networks across HBM/GDDR/DRAM
-memory hierarchies.
-
-Modules:
-    models/         — D2STGNN model with per-component profiling
-    utils/          — data loading, adjacency computation, training infra
-    dataloader/     — batch iteration with memory footprint tracking
-    datasets/       — raw data preprocessing scripts
-    configs/        — YAML hyperparameter configurations per dataset
+Packages:
+    models/      D2STGNN with per-component TensorProbe profiling
+    utils/       Data loading, adjacency computation, training infra
+    dataloader/  Batch iteration with memory footprint tracking
+    datasets/    Raw data preprocessing scripts
+    configs/     YAML hyperparameter configurations per dataset
 """
