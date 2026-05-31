@@ -1,11 +1,8 @@
 """
-Walpurgis Mask — Adaptive Sparsification
-==========================================
-Derived from D2STGNN mask.py.
-
-Change: uses a learnable temperature parameter for the soft-threshold
-instead of fixed top-k masking. The network learns how aggressive
-the sparsification should be.
+Walpurgis v2 Mask — Per-Row Adaptive Soft Thresholding
+========================================================
+Delta: global temperature → *per-row* adaptive threshold derived from
+each row's statistics, giving heterogeneous sparsity across nodes.
 """
 
 import torch
@@ -14,46 +11,37 @@ import torch.nn.functional as F
 
 
 class Mask(nn.Module):
-    """Sparsify distance matrix using soft thresholding.
-    
-    Upstream D2STGNN uses hard top-k masking. Walpurgis uses a learnable
-    temperature-controlled sigmoid: entries below threshold get suppressed
-    but not hard-zeroed, preserving gradient flow.
-    
-    mask(x) = x * sigmoid(τ * (x - threshold))
-    where τ (temperature) is learnable.
+    """Per-row adaptive soft-threshold mask.
+
+    Each row's threshold = sigmoid(α) × row_mean.
+    Nodes with inherently sparser neighbourhoods get a lower threshold
+    than hub nodes.  α is learnable.
     """
-    
-    _call_count = 0
-    
-    def __init__(self, **model_args):
+
+    _n = 0
+
+    def __init__(self, **kw):
         super().__init__()
-        self.temperature = nn.Parameter(torch.tensor(10.0))
-        self.threshold_ratio = nn.Parameter(torch.tensor(0.5))  # fraction of max to keep
-        self._debug_on = True
-    
+        self._alpha = nn.Parameter(torch.tensor(0.0))   # controls threshold level
+        self._sharpness = nn.Parameter(torch.tensor(8.0))  # soft-mask steepness
+        self._debug = True
+
     def forward(self, dist_mx):
-        """
-        Args:
-            dist_mx: [B, N, N] pairwise distances
-        Returns:
-            masked: [B, N, N] sparsified distances
-        """
-        Mask._call_count += 1
-        
-        # Compute adaptive threshold as fraction of per-row max
-        row_max = dist_mx.max(dim=-1, keepdim=True)[0]
-        threshold = torch.sigmoid(self.threshold_ratio) * row_max
-        
-        # Soft mask: sigmoid with learnable temperature
-        tau = F.softplus(self.temperature)  # ensure positive
-        mask = torch.sigmoid(tau * (dist_mx - threshold))
-        masked = dist_mx * mask
-        
-        if self._debug_on and Mask._call_count % 200 == 1:
-            density = (masked.abs() > 1e-6).float().mean().item()
-            print(f"        [Mask #{Mask._call_count}] "
-                  f"τ={tau.item():.2f} thresh_ratio={torch.sigmoid(self.threshold_ratio).item():.4f} "
-                  f"density={density:.4f}")
-        
+        Mask._n += 1
+        # Per-row adaptive threshold
+        row_mean = dist_mx.mean(dim=-1, keepdim=True)  # [B, N, 1]
+        thresh = torch.sigmoid(self._alpha) * row_mean
+
+        tau = F.softplus(self._sharpness)
+        soft_mask = torch.sigmoid(tau * (dist_mx - thresh))
+        masked = dist_mx * soft_mask
+
+        if self._debug and Mask._n % 200 == 1:
+            dens = (masked.abs() > 1e-6).float().mean().item()
+            print(
+                f"        [Mask #{Mask._n}] α={torch.sigmoid(self._alpha).item():.4f} "
+                f"τ={tau.item():.2f} density={dens:.4f} "
+                f"thresh_μ={thresh.mean().item():.5f}"
+            )
+
         return masked

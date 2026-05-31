@@ -1,12 +1,9 @@
 """
-Walpurgis Normalizer and Multi-Order — Graph Normalization Utilities
-=====================================================================
-Derived from D2STGNN normalizer.py.
-
-Changes:
-  - Normalizer: uses symmetric normalization D^{-1/2} A D^{-1/2} instead
-    of row normalization D^{-1}A for better spectral properties
-  - MultiOrder: adds spectral radius logging for debugging
+Walpurgis v2 Normalizer & MultiOrder
+======================================
+Delta: symmetric norm → *degree-scalable* norm with learnable exponent γ.
+D^{-γ} A D^{-(1-γ)}.  γ=0.5 recovers symmetric; γ=1.0 gives row-norm.
+The network can interpolate between the two.
 """
 
 import torch
@@ -14,78 +11,66 @@ import torch.nn as nn
 
 
 class Normalizer(nn.Module):
-    """Symmetric graph normalization: D^{-1/2} A D^{-1/2}.
-    
-    Upstream D2STGNN uses row normalization (D^{-1}A), which creates
-    asymmetric transition matrices. Symmetric normalization preserves
-    the spectral structure of the graph and typically gives better
-    gradient properties in GCN layers.
+    """Degree-scalable normalisation: D^{-γ} A D^{-(1-γ)}.
+
+    γ is a learnable scalar (sigmoid-bounded to [0.1, 0.9]).
     """
-    
-    _call_count = 0
-    
+
+    _n = 0
+
     def __init__(self):
         super().__init__()
-        self._debug_on = True
-    
+        self._gamma_logit = nn.Parameter(torch.tensor(0.0))  # sigmoid → 0.5 initially
+        self._debug = True
+
     def forward(self, adj):
-        """
-        Args:
-            adj: [B, N, N] adjacency matrix
-        Returns:
-            normalized: [B, N, N] symmetrically normalized
-        """
-        Normalizer._call_count += 1
-        
-        # Symmetric normalization: D^{-1/2} A D^{-1/2}
-        degree = adj.abs().sum(dim=-1).clamp(min=1e-8)  # [B, N]
-        d_inv_sqrt = degree.pow(-0.5)  # [B, N]
-        d_inv_sqrt = torch.where(torch.isinf(d_inv_sqrt), 
-                                 torch.zeros_like(d_inv_sqrt), d_inv_sqrt)
-        
-        # D^{-1/2} A D^{-1/2} via element-wise: (d_i^{-1/2} * a_ij * d_j^{-1/2})
-        normalized = adj * d_inv_sqrt.unsqueeze(-1) * d_inv_sqrt.unsqueeze(-2)
-        
-        if self._debug_on and Normalizer._call_count % 200 == 1:
-            print(f"        [SymNorm #{Normalizer._call_count}] "
-                  f"in_range=[{adj.min().item():.4f},{adj.max().item():.4f}] "
-                  f"out_range=[{normalized.min().item():.4f},{normalized.max().item():.4f}] "
-                  f"degree_μ={degree.mean().item():.4f}")
-        
-        return normalized
+        Normalizer._n += 1
+        gamma = torch.sigmoid(self._gamma_logit) * 0.8 + 0.1  # clamp to [0.1, 0.9]
+
+        degree = adj.abs().sum(dim=-1).clamp(min=1e-8)
+        d_left = degree.pow(-gamma)
+        d_right = degree.pow(-(1.0 - gamma))
+        d_left = torch.where(torch.isinf(d_left), torch.zeros_like(d_left), d_left)
+        d_right = torch.where(torch.isinf(d_right), torch.zeros_like(d_right), d_right)
+
+        normed = adj * d_left.unsqueeze(-1) * d_right.unsqueeze(-2)
+
+        if self._debug and Normalizer._n % 200 == 1:
+            print(
+                f"        [DegNorm #{Normalizer._n}] γ={gamma.item():.4f} "
+                f"in=[{adj.min().item():.4f},{adj.max().item():.4f}] "
+                f"out=[{normed.min().item():.4f},{normed.max().item():.4f}] "
+                f"deg_μ={degree.mean().item():.4f}"
+            )
+
+        return normed
 
 
 class MultiOrder(nn.Module):
-    """Compute multi-order graph powers: A, A², ..., Aᵏ.
-    
-    Each order captures k-hop neighborhood information.
-    """
-    
-    _call_count = 0
-    
+    """Multi-hop graph powers with spectral radius monitoring."""
+
+    _n = 0
+
     def __init__(self, order=2):
         super().__init__()
         self.order = order
-        self._debug_on = True
-    
+        self._debug = True
+
     def forward(self, adj):
-        """
-        Args:
-            adj: [B, N, N] normalized adjacency
-        Returns:
-            list of [list of [B, N, N]] — [[A¹, A², ..., Aᵏ]]
-        """
-        MultiOrder._call_count += 1
-        
+        MultiOrder._n += 1
         powers = [adj]
-        current = adj
+        cur = adj
         for k in range(2, self.order + 1):
-            current = torch.bmm(adj, current)
-            powers.append(current)
-        
-        if self._debug_on and MultiOrder._call_count % 200 == 1:
-            norms = [p.norm().item() for p in powers]
-            print(f"        [MultiOrder #{MultiOrder._call_count}] "
-                  f"order={self.order} power_norms={['%.3f'%n for n in norms]}")
-        
-        return [powers]  # wrap in list for compatibility with downstream
+            cur = torch.bmm(adj, cur)
+            powers.append(cur)
+
+        if self._debug and MultiOrder._n % 200 == 1:
+            norms = [f"{p.norm().item():.3f}" for p in powers]
+            # Spectral radius proxy: max eigenvalue ≈ max row-sum
+            rs = [p.abs().sum(-1).max().item() for p in powers]
+            print(
+                f"        [MultiOrder #{MultiOrder._n}] order={self.order} "
+                f"norms={norms} spectral_proxy={['%.2f'%r for r in rs]}"
+            )
+
+        return [powers]
