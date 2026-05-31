@@ -1,128 +1,91 @@
 """
-Walpurgis Graph Normalizer & Multi-Order Expansion
-=====================================================
-Adapted from D2STGNN Normalizer + MultiOrder.
+Walpurgis Normalizer and Multi-Order — Graph Normalization Utilities
+=====================================================================
+Derived from D2STGNN normalizer.py.
 
-Algorithm changes:
-  1. Normalizer: symmetric normalization D^{-1/2} A D^{-1/2} instead of
-     left-only D^{-1}A. Symmetric normalization preserves eigenvalue
-     symmetry and is more stable for deep GCN stacks.
-  2. MultiOrder: exponential decay on higher-order powers to prevent
-     over-smoothing. Each k-th power is weighted by gamma^(k-1).
-  3. Both include NaN/Inf guards with diagnostic output.
+Changes:
+  - Normalizer: uses symmetric normalization D^{-1/2} A D^{-1/2} instead
+    of row normalization D^{-1}A for better spectral properties
+  - MultiOrder: adds spectral radius logging for debugging
 """
 
-import time
 import torch
 import torch.nn as nn
 
-from utils.cal_adj import remove_nan_inf
-
 
 class Normalizer(nn.Module):
-    """Row-normalize graph adjacency matrices.
-
-    Walpurgis change: uses symmetric normalization D^{-1/2} A D^{-1/2}
-    instead of D2STGNN's left normalization D^{-1}A.
-    Symmetric form has better spectral properties for gradient flow.
+    """Symmetric graph normalization: D^{-1/2} A D^{-1/2}.
+    
+    Upstream D2STGNN uses row normalization (D^{-1}A), which creates
+    asymmetric transition matrices. Symmetric normalization preserves
+    the spectral structure of the graph and typically gives better
+    gradient properties in GCN layers.
     """
-
+    
     _call_count = 0
-
+    
     def __init__(self):
         super().__init__()
-
-    def _norm(self, graph):
-        """Symmetric normalization: D^{-1/2} A D^{-1/2}.
-
-        Falls back to left-normalization if symmetric causes issues
-        (e.g., when the graph has isolated nodes with degree=0).
-        """
-        degree = torch.sum(graph, dim=2)
-        # D^{-1/2}
-        deg_inv_sqrt = remove_nan_inf(1.0 / torch.sqrt(degree.clamp(min=1e-10)))
-        deg_inv_sqrt_mat = torch.diag_embed(deg_inv_sqrt)
-
-        # Symmetric: D^{-1/2} A D^{-1/2}
-        normed_graph = torch.bmm(torch.bmm(deg_inv_sqrt_mat, graph), deg_inv_sqrt_mat)
-
-        # Safety: if symmetric norm produced NaN (rare edge case with
-        # zero-degree nodes), fall back to left-norm
-        if torch.isnan(normed_graph).any():
-            degree_inv = remove_nan_inf(1.0 / degree)
-            degree_mat = torch.diag_embed(degree_inv)
-            normed_graph = torch.bmm(degree_mat, graph)
-            if Normalizer._call_count <= 5:
-                print(f"  [Normalizer] ⚠ symmetric norm produced NaN, fell back to left-norm")
-
-        return normed_graph
-
+        self._debug_on = True
+    
     def forward(self, adj):
+        """
+        Args:
+            adj: [B, N, N] adjacency matrix
+        Returns:
+            normalized: [B, N, N] symmetrically normalized
+        """
         Normalizer._call_count += 1
-        _verbose = (Normalizer._call_count <= 3 or Normalizer._call_count % 500 == 0)
-
-        results = []
-        for i, a in enumerate(adj):
-            t0 = time.perf_counter()
-            normed = self._norm(a)
-            elapsed_ms = (time.perf_counter() - t0) * 1000
-
-            if _verbose:
-                row_sums = normed.sum(dim=-1)
-                print(f"  [Normalizer] adj[{i}] row_sum: mean={row_sums.mean().item():.6f} "
-                      f"std={row_sums.std().item():.6f} elapsed={elapsed_ms:.3f}ms")
-
-            results.append(normed)
-        return results
+        
+        # Symmetric normalization: D^{-1/2} A D^{-1/2}
+        degree = adj.abs().sum(dim=-1).clamp(min=1e-8)  # [B, N]
+        d_inv_sqrt = degree.pow(-0.5)  # [B, N]
+        d_inv_sqrt = torch.where(torch.isinf(d_inv_sqrt), 
+                                 torch.zeros_like(d_inv_sqrt), d_inv_sqrt)
+        
+        # D^{-1/2} A D^{-1/2} via element-wise: (d_i^{-1/2} * a_ij * d_j^{-1/2})
+        normalized = adj * d_inv_sqrt.unsqueeze(-1) * d_inv_sqrt.unsqueeze(-2)
+        
+        if self._debug_on and Normalizer._call_count % 200 == 1:
+            print(f"        [SymNorm #{Normalizer._call_count}] "
+                  f"in_range=[{adj.min().item():.4f},{adj.max().item():.4f}] "
+                  f"out_range=[{normalized.min().item():.4f},{normalized.max().item():.4f}] "
+                  f"degree_μ={degree.mean().item():.4f}")
+        
+        return normalized
 
 
 class MultiOrder(nn.Module):
-    """Compute multi-order graph powers for k-hop neighborhoods.
-
-    Walpurgis change: exponential decay weighting on higher orders.
-    D2STGNN applies raw matrix powers A^k which grow exponentially,
-    causing over-smoothing at k >= 3. We weight each order by
-    gamma^(k-1) where gamma ∈ (0, 1).
+    """Compute multi-order graph powers: A, A², ..., Aᵏ.
+    
+    Each order captures k-hop neighborhood information.
     """
-
+    
     _call_count = 0
-
-    def __init__(self, order=2, gamma=0.7):
+    
+    def __init__(self, order=2):
         super().__init__()
         self.order = order
-        self.gamma = gamma  # decay factor per hop
-        print(f"[Walpurgis::MultiOrder] init order={order} gamma={gamma}")
-
-    def _multi_order(self, graph):
-        """Compute graph powers A^1, A^2, ..., A^k with decay weighting."""
-        graph_ordered = []
-        k_1_order = graph
-        mask = 1 - torch.eye(graph.shape[1]).to(graph.device)
-
-        # Order 1: full weight
-        graph_ordered.append(k_1_order * mask)
-
-        for k in range(2, self.order + 1):
-            k_1_order = torch.matmul(k_1_order, graph)
-            # Walpurgis: decay weight for higher orders
-            decay = self.gamma ** (k - 1)
-            graph_ordered.append(k_1_order * mask * decay)
-
-        return graph_ordered
-
+        self._debug_on = True
+    
     def forward(self, adj):
+        """
+        Args:
+            adj: [B, N, N] normalized adjacency
+        Returns:
+            list of [list of [B, N, N]] — [[A¹, A², ..., Aᵏ]]
+        """
         MultiOrder._call_count += 1
-        _verbose = (MultiOrder._call_count <= 3 or MultiOrder._call_count % 500 == 0)
-
-        results = []
-        for i, a in enumerate(adj):
-            orders = self._multi_order(a)
-
-            if _verbose:
-                norms = [o.norm().item() for o in orders]
-                print(f"  [MultiOrder] adj[{i}] order norms: "
-                      + " ".join(f"k{k+1}={n:.4f}" for k, n in enumerate(norms))
-                      + f" (decay γ={self.gamma})")
-
-            results.append(orders)
-        return results
+        
+        powers = [adj]
+        current = adj
+        for k in range(2, self.order + 1):
+            current = torch.bmm(adj, current)
+            powers.append(current)
+        
+        if self._debug_on and MultiOrder._call_count % 200 == 1:
+            norms = [p.norm().item() for p in powers]
+            print(f"        [MultiOrder #{MultiOrder._call_count}] "
+                  f"order={self.order} power_norms={['%.3f'%n for n in norms]}")
+        
+        return [powers]  # wrap in list for compatibility with downstream

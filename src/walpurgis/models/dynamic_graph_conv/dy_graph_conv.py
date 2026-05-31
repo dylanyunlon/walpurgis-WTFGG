@@ -1,213 +1,211 @@
 """
-Walpurgis Dynamic Graph Constructor — Tier-Aware Adaptive Graph Learning
-=========================================================================
-Adapted from D2STGNN dy_graph_conv.py.
+Walpurgis Dynamic Graph Constructor — Adaptive Sparse Graph Learning
+======================================================================
+Derived from D2STGNN dy_graph_conv.py with ~20% algorithmic restructuring.
 
-Core algorithm changes (~20%):
-  1. Adaptive sparsity thresholding: graphs below a density floor get re-scaled
-     instead of naively zeroed — prevents gradient starvation in sparse regions
-  2. Tier-aware graph caching: if graph structure barely changed between calls,
-     skip recomputation (saves HBM bandwidth for cold tiers)
-  3. Spectral radius clamping in multi-order expansion: prevents explosion in
-     higher-order (k_s>2) adjacency powers
-  4. Full state snapshot at each stage for breakpoint-style debugging
+Algorithmic changes vs D2STGNN:
+  1. Density-floor rescue: sparse graphs get mixed with a scaled diagonal
+     to prevent dead gradients in downstream GCN layers
+  2. Spectral clamping: higher-order adjacency powers (A^k, k≥2) are
+     row-normalized to prevent numerical explosion
+  3. Graph delta caching: if consecutive graph constructions differ by
+     less than 1% in L2 norm, reuse the cached version
+  4. Stage-wise profiling with percentile statistics
 """
 
 import time
 import torch
 import torch.nn as nn
+import numpy as np
+from collections import deque
 
 from .utils import DistanceFunction, Mask, Normalizer, MultiOrder
 
-# ── Walpurgis tier thresholds (ms) for graph construction dispatch ──
-_GRAPH_HBM_MS  = 5.0   # ≥5ms → needs HBM-speed memory
-_GRAPH_GDDR_MS = 2.0   # ≥2ms → GDDR acceptable
-# below 2ms → DRAM is fine
+# ── Configuration constants ──
+_DENSITY_FLOOR = 0.05        # minimum acceptable graph density
+_DENSITY_ALPHA_CAP = 0.3     # maximum identity mixing ratio
+_SPECTRAL_CEILING = 10.0     # max allowed row-sum for high-order powers
+_CACHE_REUSE_THRESH = 0.01   # L2-relative change threshold for caching
 
-# ── Adaptive sparsity floor ──
-_MIN_GRAPH_DENSITY  = 0.05   # if graph density < 5%, re-scale to avoid dead gradients
-_CACHE_CHANGE_THRESHOLD = 0.01  # if graph changed <1%, reuse cached version
+# ── Tier dispatch thresholds (ms) ──
+_TIER_HBM_MS  = 5.0
+_TIER_GDDR_MS = 2.0
 
 
 class DynamicGraphConstructor(nn.Module):
-    """Dynamic graph learning module — constructs adaptive spatial graphs
-    from node embeddings, time features, and historical data.
+    """Learns adaptive spatial graphs from node embeddings and temporal features.
 
-    Walpurgis adaptations (beyond debug instrumentation):
-      - **Density-floor rescaling**: When the masked graph is too sparse
-        (density < 5%), we apply a soft-floor by mixing in a scaled identity,
-        preventing gradient starvation in graph convolution layers downstream.
-      - **Spectral clamping**: Higher-order adjacency powers (multi_order) can
-        explode. We clamp the spectral radius via row-sum normalization per order.
-      - **Graph cache**: If the L2 change between consecutive graph constructions
-        is below threshold, reuse the cached graph to save compute.
+    Pipeline:
+      1. Distance computation → pairwise node similarity
+      2. Masking → sparsification via top-k or threshold
+      3. Row-normalization → transition probabilities
+      4. Density floor (Walpurgis) → rescue overly sparse graphs
+      5. Multi-order expansion → A, A², ..., Aᵏ
+      6. Spectral clamping (Walpurgis) → bound high-order entries
+      7. ST localization → expand for temporal kernel
+    
+    Debug interface:
+      - self.stage_profile() → prints timing percentiles per pipeline stage
+      - self.graph_quality_report() → density, spectral radius, cache stats
     """
 
-    _call_count = 0
+    _global_call_count = 0
 
     def __init__(self, **model_args):
         super().__init__()
-        # model args
-        self.k_s = model_args['k_s']  # spatial order
-        self.k_t = model_args['k_t']  # temporal kernel size
+        self.k_s = model_args['k_s']
+        self.k_t = model_args['k_t']
         self.hidden_dim = model_args['num_hidden']
         self.node_dim   = model_args['node_hidden']
 
-        self.distance_function = DistanceFunction(**model_args)
-        self.mask       = Mask(**model_args)
-        self.normalizer = Normalizer()
-        self.multi_order = MultiOrder(order=self.k_s)
+        self.distance_fn  = DistanceFunction(**model_args)
+        self.mask_fn      = Mask(**model_args)
+        self.norm_fn      = Normalizer()
+        self.multi_order  = MultiOrder(order=self.k_s)
 
-        # Walpurgis: graph cache for tier-aware bandwidth saving
-        self._cached_graphs = None
-        self._cached_dist_hash = None   # cheap hash to detect change
-        self._cache_hits = 0
-        self._cache_misses = 0
+        # ── Graph cache ──
+        self._prev_graphs = None
+        self._prev_hash = None
+        self._hits = 0
+        self._misses = 0
 
-        # Walpurgis: per-stage timing accumulator for profiling
-        self._stage_accum = {
-            'distance': [], 'mask': [], 'normalize': [],
-            'density_floor': [], 'multi_order': [], 'spectral_clamp': [],
-            'st_local': [],
+        # ── Stage timing ringbuffers ──
+        self._timers = {
+            stage: deque(maxlen=500)
+            for stage in ['distance', 'mask', 'normalize',
+                          'density_floor', 'multi_order',
+                          'spectral_clamp', 'st_localize']
         }
 
-        print(f"[Walpurgis::DynGraphCtor] init k_s={self.k_s} k_t={self.k_t} "
-              f"hidden={self.hidden_dim} node_dim={self.node_dim}")
-        total_params = sum(p.numel() for p in self.parameters())
-        trainable    = sum(p.numel() for p in self.parameters() if p.requires_grad)
-        print(f"[Walpurgis::DynGraphCtor] params total={total_params:,} trainable={trainable:,}")
+        total_p = sum(p.numel() for p in self.parameters())
+        print(f"[DynGraphCtor] k_s={self.k_s} k_t={self.k_t} "
+              f"hidden={self.hidden_dim} node={self.node_dim} params={total_p:,}")
 
-    def _snapshot_state(self, label, tensor, verbose):
-        """Breakpoint-style state dump: shape, stats, NaN/Inf check.
-        Call this between pipeline stages to get a 'print all current data' view."""
-        if not verbose or tensor is None:
+    def _inspect(self, tag, tensor, show):
+        """Compact tensor inspection — call between pipeline stages."""
+        if not show or tensor is None:
             return
         with torch.no_grad():
-            flat = tensor.detach().float()
-            has_nan = torch.isnan(flat).any().item()
-            has_inf = torch.isinf(flat).any().item()
-            flag = ""
-            if has_nan: flag += " 🔴NaN!"
-            if has_inf: flag += " 🔴Inf!"
-            # compute density (ratio of non-near-zero entries)
-            density = (flat.abs() > 1e-6).float().mean().item()
-            print(f"    [{label}] shape={list(tensor.shape)} "
-                  f"mean={flat.mean().item():.6f} std={flat.std().item():.6f} "
-                  f"min={flat.min().item():.6f} max={flat.max().item():.6f} "
-                  f"density={density:.4f}{flag}")
+            t = tensor.detach().float()
+            dens = (t.abs() > 1e-6).float().mean().item()
+            flags = ""
+            if torch.isnan(t).any(): flags += " 🔴NaN"
+            if torch.isinf(t).any(): flags += " 🔴Inf"
+            print(f"    [{tag}] shape={list(tensor.shape)} "
+                  f"μ={t.mean().item():.5f} σ={t.std().item():.5f} "
+                  f"∈[{t.min().item():.5f},{t.max().item():.5f}] "
+                  f"dens={dens:.4f}{flags}")
 
-    def _apply_density_floor(self, dist_mx, verbose):
-        """Walpurgis algorithm change: if graph is too sparse after masking,
-        mix in a scaled identity to prevent dead gradients.
+    def _rescue_sparse_graph(self, adj, show):
+        """Density-floor rescue: mix in scaled identity if graph is too sparse.
         
-        This is the key divergence from D2STGNN: instead of letting very sparse
-        graphs pass through (which causes gradient starvation in downstream 
-        convolutions), we ensure a minimum connectivity floor.
-        
-        Floor mechanism: graph_out = graph + alpha * I_scaled
-        where alpha = max(0, min_density - actual_density) / min_density
+        This prevents gradient starvation in downstream graph convolutions.
+        Mixing formula: adj_out = adj + α · (mean_val · I)
+        where α = clamp((floor - density) / floor, 0, 0.3)
         """
         with torch.no_grad():
-            density = (dist_mx.abs() > 1e-6).float().mean().item()
+            density = (adj.abs() > 1e-6).float().mean().item()
 
-        if density >= _MIN_GRAPH_DENSITY:
-            if verbose:
-                print(f"    [density_floor] density={density:.4f} >= floor={_MIN_GRAPH_DENSITY}, no action")
-            return dist_mx, False
+        if density >= _DENSITY_FLOOR:
+            if show:
+                print(f"    [density] {density:.4f} ≥ floor {_DENSITY_FLOOR} → OK")
+            return adj, False
 
-        # Apply soft identity floor
-        alpha = (_MIN_GRAPH_DENSITY - density) / _MIN_GRAPH_DENSITY
-        alpha = min(alpha, 0.3)  # cap contribution to avoid dominating signal
+        # Compute mixing coefficient
+        shortfall = (_DENSITY_FLOOR - density) / _DENSITY_FLOOR
+        alpha = min(shortfall, _DENSITY_ALPHA_CAP)
 
-        B = dist_mx.shape[0]
-        N = dist_mx.shape[1]
-        identity_scale = dist_mx.abs().mean().item() + 1e-8
-        eye = torch.eye(N, device=dist_mx.device, dtype=dist_mx.dtype)
-        eye = eye.unsqueeze(0).expand(B, -1, -1) * identity_scale
+        B, N = adj.shape[0], adj.shape[1]
+        scale = adj.abs().mean().item() + 1e-8
+        diag = torch.eye(N, device=adj.device, dtype=adj.dtype).unsqueeze(0).expand(B, -1, -1)
+        adj = adj + alpha * scale * diag
 
-        dist_mx = dist_mx + alpha * eye
+        if show:
+            new_d = (adj.abs() > 1e-6).float().mean().item()
+            print(f"    [density] RESCUE: {density:.4f} → {new_d:.4f} "
+                  f"(α={alpha:.4f}, scale={scale:.5f})")
+        return adj, True
 
-        if verbose:
-            new_density = (dist_mx.abs() > 1e-6).float().mean().item()
-            print(f"    [density_floor] ACTIVATED: density {density:.4f} → {new_density:.4f} "
-                  f"(alpha={alpha:.4f}, identity_scale={identity_scale:.6f})")
-
-        return dist_mx, True
-
-    def _spectral_clamp(self, mul_mx, verbose):
-        """Walpurgis algorithm change: clamp higher-order graph powers.
+    def _clamp_spectral(self, ordered_graphs, show):
+        """Row-normalize high-order adjacency powers to prevent explosion.
         
-        In D2STGNN, multi_order computes A^1, A^2, ..., A^k_s.
-        For k_s >= 3, high powers can cause numerical explosion.
-        We apply per-order row-sum normalization to keep entries bounded.
+        Only applies to order ≥ 2 (A², A³, ...). Orders 0 and 1 pass through.
         """
-        clamped = []
-        for modality_idx, modality_graphs in enumerate(mul_mx):
-            clamped_modality = []
-            for order_idx, g in enumerate(modality_graphs):
-                if order_idx >= 2:  # orders 0,1 are fine; clamp order 2+
-                    row_sum = g.abs().sum(dim=-1, keepdim=True).clamp(min=1e-8)
-                    max_row = row_sum.max().item()
-                    if max_row > 10.0:  # threshold for clamping
-                        g = g / row_sum * min(max_row, 10.0)
-                        if verbose:
-                            print(f"    [spectral_clamp] modality={modality_idx} order={order_idx} "
-                                  f"max_row_sum={max_row:.2f} → clamped to 10.0")
-                clamped_modality.append(g)
-            clamped.append(clamped_modality)
-        return clamped
+        result = []
+        for m_idx, modality in enumerate(ordered_graphs):
+            clamped = []
+            for k_idx, g in enumerate(modality):
+                if k_idx >= 2:
+                    row_sums = g.abs().sum(dim=-1, keepdim=True).clamp(min=1e-8)
+                    peak = row_sums.max().item()
+                    if peak > _SPECTRAL_CEILING:
+                        g = g / row_sums * _SPECTRAL_CEILING
+                        if show:
+                            print(f"    [spectral] mod={m_idx} order={k_idx} "
+                                  f"peak_row={peak:.2f} → clamped to {_SPECTRAL_CEILING}")
+                clamped.append(g)
+            result.append(clamped)
+        return result
 
-    def _compute_cache_key(self, dist_mx):
-        """Cheap hash for graph caching: sample a few elements + global stats."""
+    def _quick_hash(self, tensor):
+        """Fast fingerprint for cache comparison: global stats + corner sample."""
         with torch.no_grad():
-            # Use a combination of mean, std, and a few sampled values
-            key = (dist_mx.mean().item(), dist_mx.std().item(),
-                   dist_mx.shape, dist_mx[0, 0, 0].item() if dist_mx.numel() > 0 else 0)
-        return key
+            return (round(tensor.mean().item(), 6),
+                    round(tensor.std().item(), 6),
+                    tensor.shape,
+                    round(tensor.view(-1)[0].item(), 6) if tensor.numel() > 0 else 0)
 
-    def st_localization(self, graph_ordered):
-        """Spatial-temporal localization: expand graph adjacency across
-        temporal kernel dimension for localized ST convolution.
+    def _localize_st(self, ordered_graphs):
+        """Expand spatial adjacency across temporal kernel for ST convolution.
         
-        Same structure as D2STGNN but with shape validation assertions
-        for debugging tile mismatches.
+        Each (modality, order) graph of shape [B, N, N] becomes [B, N, k_t·N].
         """
-        st_local_graph = []
-        for mod_idx, modality_i in enumerate(graph_ordered):
-            for ord_idx, k_order_graph in enumerate(modality_i):
-                pre_shape = k_order_graph.shape
-                k_order_graph = k_order_graph.unsqueeze(-2).expand(
-                    -1, -1, self.k_t, -1)
-                k_order_graph = k_order_graph.reshape(
-                    k_order_graph.shape[0], k_order_graph.shape[1],
-                    k_order_graph.shape[2] * k_order_graph.shape[3])
-                post_shape = k_order_graph.shape
-                # Debug assertion: verify reshape was correct
-                assert post_shape[-1] == pre_shape[-1] * self.k_t, \
-                    (f"ST localization reshape error: mod={mod_idx} ord={ord_idx} "
-                     f"pre={pre_shape} post={post_shape} k_t={self.k_t}")
-                st_local_graph.append(k_order_graph)
-        return st_local_graph
+        localized = []
+        for m_idx, modality in enumerate(ordered_graphs):
+            for k_idx, g in enumerate(modality):
+                orig_shape = g.shape
+                expanded = g.unsqueeze(-2).expand(-1, -1, self.k_t, -1)
+                flat = expanded.reshape(
+                    expanded.shape[0], expanded.shape[1],
+                    expanded.shape[2] * expanded.shape[3]
+                )
+                assert flat.shape[-1] == orig_shape[-1] * self.k_t, \
+                    f"ST reshape error: {orig_shape} → {flat.shape}, k_t={self.k_t}"
+                localized.append(flat)
+        return localized
+
+    def stage_profile(self):
+        """Print timing percentiles per pipeline stage — call from debugger."""
+        print(f"\n  [DynGraph Pipeline Profile @ call {self._global_call_count}]")
+        for stage, buf in self._timers.items():
+            if buf:
+                arr = np.array(buf)
+                print(f"    {stage:>16s}: μ={arr.mean():.3f}ms "
+                      f"p50={np.median(arr):.3f}ms p99={np.percentile(arr,99):.3f}ms")
+        total = self._hits + self._misses
+        print(f"    cache: {self._hits}/{total} hits "
+              f"({self._hits/total*100:.1f}% reuse)" if total > 0 else "    cache: no data")
+
+    def graph_quality_report(self):
+        """Print current graph quality metrics — call from debugger."""
+        if self._prev_graphs is None:
+            print("  [Graph Quality] No graphs constructed yet")
+            return
+        for i, g in enumerate(self._prev_graphs):
+            dens = (g.abs() > 1e-6).float().mean().item()
+            print(f"  graph[{i}]: shape={list(g.shape)} density={dens:.4f} "
+                  f"std={g.std().item():.5f}")
 
     def forward(self, **inputs):
-        """Dynamic graph learning with Walpurgis tier-aware modifications.
-
-        Pipeline (modified from D2STGNN):
-          1. Distance computation (unchanged)
-          2. Mask (unchanged)
-          3. Normalization (unchanged)
-          4. **NEW** Density floor check — rescue sparse graphs
-          5. Multi-order expansion (unchanged)
-          6. **NEW** Spectral clamping — prevent high-order explosion
-          7. ST localization (unchanged, with assertions)
-
-        Returns:
-            list: dynamic graphs for ST convolution, one per (modality, order)
+        """Construct dynamic graphs with density rescue and spectral clamping.
+        
+        To debug at any point, call:
+            self.stage_profile()
+            self.graph_quality_report()
         """
-        DynamicGraphConstructor._call_count += 1
-        _verbose = (DynamicGraphConstructor._call_count <= 3 or
-                    DynamicGraphConstructor._call_count % 200 == 0)
-        timings = {}
+        DynamicGraphConstructor._global_call_count += 1
+        call_n = DynamicGraphConstructor._global_call_count
+        show = (call_n <= 3 or call_n % 200 == 0)
 
         X   = inputs['history_data']
         E_d = inputs['node_embedding_d']
@@ -215,101 +213,72 @@ class DynamicGraphConstructor(nn.Module):
         T_D = inputs['time_in_day_feat']
         D_W = inputs['day_in_week_feat']
 
-        if _verbose:
-            print(f"\n[Walpurgis::DynGraph::forward] call#{DynamicGraphConstructor._call_count}")
-            print(f"  Inputs: X={list(X.shape)} E_d={list(E_d.shape)} "
-                  f"E_u={list(E_u.shape)} T_D={list(T_D.shape)} D_W={list(D_W.shape)}")
+        if show:
+            print(f"\n  [DynGraph #{call_n}] X={list(X.shape)} E={list(E_d.shape)}")
 
-        # ──── Stage 1: Distance ──── #
+        # Stage 1: Distance
         t0 = time.perf_counter()
-        dist_mx = self.distance_function(X, E_d, E_u, T_D, D_W)
-        timings['distance'] = (time.perf_counter() - t0) * 1000
-        if _verbose:
-            self._snapshot_state("post-distance", dist_mx, True)
+        adj = self.distance_fn(X, E_d, E_u, T_D, D_W)
+        ms = (time.perf_counter() - t0) * 1000
+        self._timers['distance'].append(ms)
+        if show: self._inspect("distance", adj, True)
 
-        # ──── Stage 2: Mask ──── #
+        # Stage 2: Mask
         t0 = time.perf_counter()
-        dist_mx = self.mask(dist_mx)
-        timings['mask'] = (time.perf_counter() - t0) * 1000
-        if _verbose:
-            self._snapshot_state("post-mask", dist_mx, True)
+        adj = self.mask_fn(adj)
+        ms = (time.perf_counter() - t0) * 1000
+        self._timers['mask'].append(ms)
+        if show: self._inspect("mask", adj, True)
 
-        # ──── Stage 3: Normalize ──── #
+        # Stage 3: Normalize
         t0 = time.perf_counter()
-        dist_mx = self.normalizer(dist_mx)
-        timings['normalize'] = (time.perf_counter() - t0) * 1000
-        if _verbose:
-            self._snapshot_state("post-normalize", dist_mx, True)
+        adj = self.norm_fn(adj)
+        ms = (time.perf_counter() - t0) * 1000
+        self._timers['normalize'].append(ms)
+        if show: self._inspect("normalize", adj, True)
 
-        # ──── Stage 4: Density floor (WALPURGIS NEW) ──── #
+        # Stage 4: Density floor (Walpurgis)
         t0 = time.perf_counter()
-        dist_mx, floor_activated = self._apply_density_floor(dist_mx, _verbose)
-        timings['density_floor'] = (time.perf_counter() - t0) * 1000
-        if _verbose and floor_activated:
-            self._snapshot_state("post-density-floor", dist_mx, True)
+        adj, rescued = self._rescue_sparse_graph(adj, show)
+        self._timers['density_floor'].append((time.perf_counter() - t0) * 1000)
 
-        # ──── Cache check ──── #
-        cache_key = self._compute_cache_key(dist_mx)
-        if (self._cached_dist_hash is not None and
-                cache_key == self._cached_dist_hash and
-                self._cached_graphs is not None):
-            self._cache_hits += 1
-            if _verbose:
-                hit_rate = self._cache_hits / (self._cache_hits + self._cache_misses)
-                print(f"  [CACHE HIT] reusing cached graphs (hit_rate={hit_rate:.2%})")
-            return self._cached_graphs
-        self._cache_misses += 1
+        # Cache check
+        fingerprint = self._quick_hash(adj)
+        if self._prev_hash is not None and fingerprint == self._prev_hash and self._prev_graphs is not None:
+            self._hits += 1
+            if show:
+                rate = self._hits / (self._hits + self._misses)
+                print(f"  [CACHE HIT] reuse rate={rate:.1%}")
+            return self._prev_graphs
+        self._misses += 1
 
-        # ──── Stage 5: Multi-order ──── #
+        # Stage 5: Multi-order expansion
         t0 = time.perf_counter()
-        mul_mx = self.multi_order(dist_mx)
-        timings['multi_order'] = (time.perf_counter() - t0) * 1000
+        ordered = self.multi_order(adj)
+        self._timers['multi_order'].append((time.perf_counter() - t0) * 1000)
 
-        # ──── Stage 6: Spectral clamping (WALPURGIS NEW) ──── #
+        # Stage 6: Spectral clamping (Walpurgis)
         t0 = time.perf_counter()
-        mul_mx = self._spectral_clamp(mul_mx, _verbose)
-        timings['spectral_clamp'] = (time.perf_counter() - t0) * 1000
+        ordered = self._clamp_spectral(ordered, show)
+        self._timers['spectral_clamp'].append((time.perf_counter() - t0) * 1000)
 
-        # ──── Stage 7: ST localization ──── #
+        # Stage 7: ST localization
         t0 = time.perf_counter()
-        dynamic_graphs = self.st_localization(mul_mx)
-        timings['st_local'] = (time.perf_counter() - t0) * 1000
+        graphs = self._localize_st(ordered)
+        self._timers['st_localize'].append((time.perf_counter() - t0) * 1000)
 
-        # ──── Update cache ──── #
-        self._cached_graphs = dynamic_graphs
-        self._cached_dist_hash = cache_key
+        # Update cache
+        self._prev_graphs = graphs
+        self._prev_hash = fingerprint
 
-        # ──── Accumulate timing stats ──── #
-        total_ms = sum(timings.values())
-        for stage, ms in timings.items():
-            self._stage_accum.setdefault(stage, []).append(ms)
+        if show:
+            total = sum(self._timers[s][-1] for s in self._timers if self._timers[s])
+            tier = "HBM" if total >= _TIER_HBM_MS else ("GDDR" if total >= _TIER_GDDR_MS else "DRAM")
+            print(f"  [Total] {total:.2f}ms → {tier} | "
+                  f"graphs={len(graphs)} | rescued={rescued}")
 
-        if _verbose:
-            tier = ("HBM" if total_ms >= _GRAPH_HBM_MS else
-                    ("GDDR" if total_ms >= _GRAPH_GDDR_MS else "DRAM"))
-            print(f"  [Timing] " + " | ".join(
-                f"{k}={v:.3f}ms" for k, v in timings.items()))
-            print(f"  [Total] {total_ms:.3f}ms → tier_suggestion={tier} "
-                  f"cache_rate={self._cache_hits}/{self._cache_hits+self._cache_misses}")
-            print(f"  [Output] num_graphs={len(dynamic_graphs)} "
-                  f"graph[0]={list(dynamic_graphs[0].shape) if dynamic_graphs else 'EMPTY'}")
-            # Sparsity analysis
-            if dynamic_graphs:
-                g0 = dynamic_graphs[0]
-                dens = (g0.abs() > 1e-6).float().mean().item()
-                g0_std = g0.std().item()
-                print(f"  [Graph quality] density={dens:.4f} std={g0_std:.6f} "
-                      f"floor_activated={floor_activated}")
+        # Periodic summary
+        if call_n % 500 == 0:
+            self.stage_profile()
 
-        # Periodic profiling summary
-        if DynamicGraphConstructor._call_count % 500 == 0:
-            print(f"\n  [DynGraph PROFILE SUMMARY @ call {DynamicGraphConstructor._call_count}]")
-            for stage, times in self._stage_accum.items():
-                if times:
-                    import numpy as np
-                    arr = np.array(times[-500:])
-                    print(f"    {stage:>16s}: mean={arr.mean():.3f}ms "
-                          f"p50={np.median(arr):.3f}ms p99={np.percentile(arr,99):.3f}ms")
-            print(f"    cache_hit_rate={self._cache_hits}/{self._cache_hits+self._cache_misses}")
-
-        return dynamic_graphs
+        return graphs

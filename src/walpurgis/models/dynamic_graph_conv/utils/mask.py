@@ -1,93 +1,59 @@
 """
-Walpurgis Graph Mask — Topology-Constrained Graph Filtering
-=============================================================
-Adapted from D2STGNN Mask.
+Walpurgis Mask — Adaptive Sparsification
+==========================================
+Derived from D2STGNN mask.py.
 
-Algorithm changes:
-  1. Adaptive epsilon: instead of fixed 1e-7 floor, use a fraction of the
-     mask's mean value. This prevents the epsilon from dominating when
-     the predefined graph has very small edge weights.
-  2. Soft thresholding: after masking, entries below a dynamic threshold
-     (based on the masked matrix's statistics) are zeroed to promote
-     sparsity. This reduces effective graph density without hard cutoffs.
-  3. Per-mask statistics tracking for debug.
+Change: uses a learnable temperature parameter for the soft-threshold
+instead of fixed top-k masking. The network learns how aggressive
+the sparsification should be.
 """
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 class Mask(nn.Module):
-    """Apply predefined adjacency masks to learned dynamic graphs.
-
-    Walpurgis: adaptive epsilon + soft sparsification post-mask.
+    """Sparsify distance matrix using soft thresholding.
+    
+    Upstream D2STGNN uses hard top-k masking. Walpurgis uses a learnable
+    temperature-controlled sigmoid: entries below threshold get suppressed
+    but not hard-zeroed, preserving gradient flow.
+    
+    mask(x) = x * sigmoid(τ * (x - threshold))
+    where τ (temperature) is learnable.
     """
-
+    
     _call_count = 0
-
+    
     def __init__(self, **model_args):
         super().__init__()
-        self.mask = model_args['adjs']
-        self._mask_stats = []  # track per-call sparsity changes
-
-        # Precompute mask statistics for adaptive epsilon
-        for i, m in enumerate(self.mask):
-            m_abs_mean = m.abs().mean().item()
-            nnz_ratio = (m.abs() > 1e-10).float().mean().item()
-            print(f"[Walpurgis::Mask] predefined mask[{i}] shape={list(m.shape)} "
-                  f"abs_mean={m_abs_mean:.6f} nnz_ratio={nnz_ratio:.4f}")
-
-    def _mask(self, index, adj):
-        """Apply mask with adaptive epsilon.
-
-        D2STGNN uses fixed eps=1e-7 which can dominate for small-weight graphs.
-        Walpurgis: eps = max(1e-8, 0.01 * mask_mean) — scales with the mask.
+        self.temperature = nn.Parameter(torch.tensor(10.0))
+        self.threshold_ratio = nn.Parameter(torch.tensor(0.5))  # fraction of max to keep
+        self._debug_on = True
+    
+    def forward(self, dist_mx):
         """
-        mask_template = self.mask[index]
-        mask_mean = mask_template.abs().mean().item()
-        eps = max(1e-8, 0.01 * mask_mean)
-        mask = mask_template + torch.ones_like(mask_template) * eps
-        return mask.to(adj.device) * adj
-
-    def _soft_threshold(self, adj, percentile=0.1):
-        """Zero out the bottom `percentile` fraction of entries.
-
-        This promotes sparsity in the masked graph without requiring
-        a fixed threshold. Adaptive to the actual value distribution.
+        Args:
+            dist_mx: [B, N, N] pairwise distances
+        Returns:
+            masked: [B, N, N] sparsified distances
         """
-        with torch.no_grad():
-            flat = adj.abs().view(-1)
-            if flat.numel() == 0:
-                return adj
-            k = max(1, int(flat.numel() * percentile))
-            threshold = flat.kthvalue(k).values.item()
-        # Soft zero: entries below threshold are multiplied by a very small factor
-        # rather than hard-zeroed, preserving gradient flow
-        below_mask = (adj.abs() < threshold).float()
-        adj = adj * (1.0 - below_mask * 0.99)  # keep 1% of sub-threshold signal
-        return adj
-
-    def forward(self, adj):
         Mask._call_count += 1
-        _verbose = (Mask._call_count <= 3 or Mask._call_count % 500 == 0)
-
-        result = []
-        for index, a in enumerate(adj):
-            # Pre-mask density
-            pre_density = (a.abs() > 1e-8).float().mean().item() if _verbose else 0
-
-            masked = self._mask(index, a)
-
-            # Walpurgis: soft sparsification
-            masked = self._soft_threshold(masked, percentile=0.1)
-
-            # Post-mask density
-            post_density = (masked.abs() > 1e-8).float().mean().item() if _verbose else 0
-
-            if _verbose:
-                print(f"  [Mask] adj[{index}] density: {pre_density:.4f} → {post_density:.4f} "
-                      f"(sparsified {(pre_density - post_density)*100:.1f}%)")
-
-            result.append(masked)
-
-        return result
+        
+        # Compute adaptive threshold as fraction of per-row max
+        row_max = dist_mx.max(dim=-1, keepdim=True)[0]
+        threshold = torch.sigmoid(self.threshold_ratio) * row_max
+        
+        # Soft mask: sigmoid with learnable temperature
+        tau = F.softplus(self.temperature)  # ensure positive
+        mask = torch.sigmoid(tau * (dist_mx - threshold))
+        masked = dist_mx * mask
+        
+        if self._debug_on and Mask._call_count % 200 == 1:
+            density = (masked.abs() > 1e-6).float().mean().item()
+            print(f"        [Mask #{Mask._call_count}] "
+                  f"τ={tau.item():.2f} thresh_ratio={torch.sigmoid(self.threshold_ratio).item():.4f} "
+                  f"density={density:.4f}")
+        
+        return masked
