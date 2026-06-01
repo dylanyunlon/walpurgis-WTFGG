@@ -1,20 +1,18 @@
 ---
 # ═══════════════════════════════════════════════════════════════
-# Walpurgis Configuration — PEMS08 (traffic flow, 170 sensors)
+# Walpurgis v3 Configuration — PEMS08 (traffic flow, 170 sensors)
+#
+# v3 deltas: tikhonov regularization, JSD drift, blocked shuffle,
+#            EMA epoch logging, canary mode for pipeline validation
 #
 # Tier placement notes:
 #   - batch_size 32 × 170 nodes × 32 hidden = ~0.7 MB per layer
-#   - Dynamic graph: O(170^2) = ~115 KB per adjacency
 #   - Smallest sensor graph → lowest memory pressure
-#   - Good candidate for single-tier (HBM-only) baseline comparison
+#   - Good candidate for single-tier (HBM-only) baseline
 #   - Uses MinMax normalization (flow data)
-#   - 300 epochs with patience 100 — full convergence run
 #
 # PEMS08 is the "canary" dataset: smallest, fastest to iterate.
-# Use this config to validate pipeline changes before PEMS04/BAY.
-#
-# Tier migration is less impactful here (everything fits in HBM),
-# but the debug infrastructure still exercises the same code paths.
+# Use this config to validate v3 pipeline changes before PEMS04/BAY.
 # ═══════════════════════════════════════════════════════════════
 
 start_up:
@@ -34,6 +32,14 @@ walpurgis:
   checkpoint_struct_dump: True
   mem_budget_mb: 16.0
   canary_mode: True
+  # v3 additions
+  tikhonov_eps: 1.0e-6
+  block_shuffle_factor: 4
+  jsd_alert_threshold: 0.1
+  ema_alpha: 0.1
+  integrity_scan: True
+  scaler_bound_sigma: 8
+  spectral_snapshot_k: 6
 
 data_args:
   data_dir: datasets/PEMS08

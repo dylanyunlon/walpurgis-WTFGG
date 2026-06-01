@@ -1,13 +1,14 @@
 ---
 # ═══════════════════════════════════════════════════════════════
-# Walpurgis Configuration — PEMS-BAY (traffic speed, 325 sensors)
+# Walpurgis v3 Configuration — PEMS-BAY (traffic speed, 325 sensors)
+#
+# v3 deltas: tikhonov regularization, JSD drift, blocked shuffle,
+#            EMA epoch logging, Welford scaler with sentinel
 #
 # Tier placement notes:
 #   - batch_size 64 × 325 nodes × 32 hidden = ~2.5 MB per batch
-#   - Dynamic graph: O(325^2) = ~420 KB per adjacency snapshot
-#   - Largest sensor count in the suite → highest memory pressure
+#   - Largest sensor count → highest memory pressure
 #   - Uses StandardScaler normalization (speed data)
-#   - 100 epochs — moderate convergence, benefits from tier rebalance
 #
 # Memory budget estimate (fp32, single GPU):
 #   model params:           ~2.1M × 4B = ~8.4 MB
@@ -33,6 +34,14 @@ walpurgis:
   tier_placement_log: True
   checkpoint_struct_dump: True
   mem_budget_mb: 36.0
+  # v3 additions
+  tikhonov_eps: 1.0e-6
+  block_shuffle_factor: 4
+  jsd_alert_threshold: 0.1
+  ema_alpha: 0.1
+  integrity_scan: True
+  scaler_bound_sigma: 8
+  spectral_snapshot_k: 6
 
 data_args:
   data_dir: datasets/PEMS-BAY

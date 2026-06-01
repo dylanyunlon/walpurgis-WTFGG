@@ -1,9 +1,16 @@
 """
-Walpurgis v2 Diffusion Forecast Head
-=======================================
-Delta: spatial dropout → *channel-shuffle then standard dropout*.
-Channel shuffle provides inter-node feature mixing before dropout,
-acting as implicit regularisation.
+Walpurgis v2 Diffusion Forecast Head — Squeeze-Excite Regularization
+========================================================================
+Delta vs prior:
+  - Channel-shuffle dropout → *squeeze-and-excite* (SE) attention before
+    dropout.  SE produces a per-channel importance weight via global
+    average pool → FC → sigmoid, which acts as learned feature selection
+    complementary to dropout's random selection.
+  - SE ratio is r=4 (reduces channels by 4x in the bottleneck).
+  - Tracks output norm ratio for gradient flow diagnostics.
+
+Breakpoint helpers:
+    self._diag_last    # dict with last forward stats
 """
 import torch
 import torch.nn as nn
@@ -18,30 +25,49 @@ class Forecast(nn.Module):
         self.fc_in = nn.Linear(hidden_dim, forecast_dim)
         self.fc_out = nn.Linear(forecast_dim, output_seq_len // gap)
         self.drop_rate = 0.1
+        # Squeeze-and-Excite channel attention
+        se_mid = max(forecast_dim // 4, 8)
+        self._se_fc1 = nn.Linear(forecast_dim, se_mid)
+        self._se_fc2 = nn.Linear(se_mid, forecast_dim)
         self._debug = True
+        self._diag_last = {}
 
-    def _channel_shuffle(self, x, groups=4):
-        """Shuffle feature channels across groups for inter-node mixing."""
-        B, N, C = x.shape
-        if C % groups != 0:
-            return x
-        x = x.view(B, N, groups, C // groups)
-        x = x.transpose(2, 3).contiguous()
-        return x.view(B, N, C)
+    def _squeeze_excite(self, h):
+        """Channel attention via SE block."""
+        # Global average pool across spatial dim
+        squeezed = h.mean(dim=1, keepdim=True) if h.dim() == 3 else h.unsqueeze(1)
+        squeezed = squeezed.squeeze(1)  # [B, C]
+        gate = torch.sigmoid(self._se_fc2(F.relu(self._se_fc1(squeezed))))
+        # Expand and apply
+        if h.dim() == 3:
+            gate = gate.unsqueeze(1)
+        return h * gate
 
     def forward(self, hidden):
         Forecast._n += 1
         h = hidden.mean(dim=1)
+        in_norm = h.norm().item() if self._debug else 0
+
         h = F.relu(self.fc_in(h))
 
         if self.training:
-            h = self._channel_shuffle(h)
+            h = self._squeeze_excite(h)
             h = F.dropout(h, p=self.drop_rate)
 
-        if self._debug and Forecast._n % 1000 == 1:
-            print(
-                f"        [DifForecast #{Forecast._n}] "
-                f"in_norm={hidden.norm(dim=-1).mean().item():.4f} "
-                f"out_norm={h.norm().item():.4f}"
-            )
+        if self._debug:
+            with torch.no_grad():
+                out_norm = h.norm().item()
+                self._diag_last = {
+                    "step": Forecast._n,
+                    "in_norm": round(in_norm, 4),
+                    "out_norm": round(out_norm, 4),
+                    "ratio": round(out_norm / (in_norm + 1e-8), 4),
+                }
+            if Forecast._n % 1000 == 1:
+                d = self._diag_last
+                print(
+                    f"        [DifForecast #{Forecast._n}] "
+                    f"in_‖={d['in_norm']:.4f} out_‖={d['out_norm']:.4f} "
+                    f"ratio={d['ratio']:.4f} | SE active"
+                )
         return h

@@ -1,0 +1,72 @@
+---
+# ═══════════════════════════════════════════════════════════════
+# Walpurgis Configuration — PEMS04 (traffic flow, 307 sensors)
+#
+# Tier placement notes:
+#   - batch_size 32 × 307 nodes × 32 hidden = ~1.2 MB per layer
+#   - Dynamic graph: O(307^2) = ~370 KB per adjacency
+#   - Uses MinMax normalization (flow data, not speed)
+#   - 300 epochs — long training benefits from tier migration
+#   - Curriculum learning over 3 epochs per horizon step
+#
+# Memory tier waterfall for PEMS04:
+#   HBM  (tier-0): dynamic graph conv weights + attention (hot path)
+#   GDDR (tier-1): static adjacency cache, embedding tables
+#   DRAM (tier-2): input buffer, checkpoint storage, gradient history
+#
+# Debugging notes:
+#   - Set walpurgis.debug_interval to 50 for first-run diagnostics
+#   - Enable walpurgis.profile to get per-layer CUDA timing
+#   - walpurgis.nan_guard inserts check_nan_inf after every forward
+# ═══════════════════════════════════════════════════════════════
+
+start_up:
+  mode: scratch
+  resume_epoch: 0
+  model_name: D2STGNN
+  device: cuda:0
+  load_pkl: False
+
+walpurgis:
+  debug_interval: 200
+  profile: False
+  tier_sim: False
+  nan_guard: True
+  log_grad_norms: True
+  tier_placement_log: True
+  checkpoint_struct_dump: True
+  mem_budget_mb: 28.0
+
+data_args:
+  data_dir: datasets/PEMS04
+  adj_data_path: datasets/sensor_graph/adj_mx_04.pkl
+  adj_type: doubletransition
+
+model_args:
+  batch_size: 32
+  num_feat: 1
+  num_hidden: 32
+  node_hidden: 12
+  time_emb_dim: 12
+  dropout: 0.1
+  seq_length: 12
+  k_t: 3
+  k_s: 2
+  gap: 3
+  num_modalities: 2
+
+optim_args:
+  lrate: 0.002
+  print_model: False
+  wdecay: 1.0e-5
+  eps: 1.0e-8
+  lr_schedule: True
+  lr_sche_steps: [1, 30, 38, 46, 54, 200]
+  lr_decay_ratio: 0.5
+  if_cl: True
+  cl_epochs: 3
+  output_seq_len: 12
+  warm_epochs: 30
+  epochs: 300
+  patience: 100
+  seq_length: 12

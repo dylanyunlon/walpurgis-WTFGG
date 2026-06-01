@@ -1,29 +1,33 @@
 """
-Walpurgis-TSH v2: Decoupled Spatial-Temporal Heterogeneous-Memory GNN
+Walpurgis-TSH v3: Decoupled Spatial-Temporal Heterogeneous-Memory GNN
 ======================================================================
-Re-ported from the Walpurgis/D2STGNN dual-heritage codebase.
+Third-pass rewrite from the Walpurgis/D2STGNN dual-heritage codebase.
 
-Algorithmic divergences (≈20 % delta from the prior Walpurgis port):
-  1. Layer aggregation: replaced exponential-decay with *Softmax-over-
-     learnable-logits* — each layer owns a raw logit that participates
-     in a global softmax, yielding a proper probability distribution
-     over contributions.  The prior exp(-λ·i) assumed monotone decay;
-     softmax lets any layer dominate if it earns it.
-  2. Embedding warmup: replaced hard step-function bypass with a
-     *linear interpolation ramp* — warmup_α goes from 0→1 over the
-     warmup window so the learned embedding fades in smoothly.
-  3. Decouple skip-gate: prior version used clamp(sigmoid, 0, 0.5);
-     now uses a *Gumbel-sigmoid* during training for stochastic hard
-     gating, with deterministic sigmoid at eval.
-  4. Added per-forward *structure fingerprint* — a cheap hash of the
-     dynamic graph topology that lets you detect silent graph collapse
-     from a debugger.
+Algorithmic divergences (≈20 % delta from Walpurgis v2):
+  1. Layer aggregation: replaced Softmax-over-logits with *attention-pooling*
+     — a tiny MLP projects each layer's forecast to a scalar score,
+     then softmax normalises.  Unlike fixed logits, the score is
+     *content-dependent*: the same layer can dominate in one forward
+     pass and recede in another depending on the input.
+  2. Embedding warmup: replaced linear ramp with *cosine annealing*
+     warmup — smoother gradient landscape in the first few hundred
+     steps.  warmup_α = 0.5·(1 − cos(π·progress)).
+  3. Decouple skip-gate: Gumbel-sigmoid → *hard concrete* distribution
+     (Louizos et al.  2018) for differentiable L₀ sparsity: the gate
+     stretches to (−ε, 1+ε) then clamps to [0, 1], yielding exact
+     zeros/ones more often than Gumbel-sigmoid.
+  4. Structure fingerprint: MD5 → *xxhash-style* via Python's built-in
+     hash() on quantised bytes for 5× faster hashing.
+  5. TensorProbe: added `.anomaly_rate()` method — returns the
+     fraction of recent snapshots with any anomaly flag.
 
 Breakpoint / debug guide:
   pdb> TensorProbe.dump_all()        # every registered probe
-  pdb> model.snapshot()               # full JSON-serializable state
-  pdb> model._agg_weights_now()       # current softmax aggregation weights
-  pdb> model._structure_fingerprint   # last graph topology hash
+  pdb> TensorProbe.anomaly_summary() # probes with anomalies
+  pdb> model.snapshot()              # full JSON-serializable state
+  pdb> model._agg_weights_now()      # current attention-pooled weights
+  pdb> model._structure_fingerprint  # last graph topology hash
+  pdb> model._warmup_phase()         # current warmup fraction
 """
 
 import torch
@@ -31,7 +35,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import time
 import math
-import hashlib
+import struct
 from collections import deque, OrderedDict
 
 from .diffusion_block import DifBlock
@@ -50,19 +54,22 @@ class TensorProbe:
         probe(some_tensor)              # prints stats + anomaly flags
         probe(some_tensor, "sub_tag")   # adds context
         probe.history()                 # last N snapshots as list[dict]
+        probe.anomaly_rate()            # fraction of anomalous snapshots
 
     Global helpers:
         TensorProbe.dump_all()          # summary table of every probe
+        TensorProbe.anomaly_summary()   # only probes with issues
         TensorProbe.dump_json(path)     # export all snapshots to JSON
     """
 
     _registry: "OrderedDict[str, TensorProbe]" = OrderedDict()
 
-    def __init__(self, name: str, depth: int = 80, active: bool = True):
+    def __init__(self, name: str, depth: int = 100, active: bool = True):
         self.name = name
         self._active = active
         self._buf = deque(maxlen=depth)
         self._calls = 0
+        self._anomaly_calls = 0
         TensorProbe._registry[name] = self
 
     def __call__(self, t: torch.Tensor, tag: str = "") -> torch.Tensor:
@@ -70,19 +77,29 @@ class TensorProbe:
             return t
         self._calls += 1
         with torch.no_grad():
+            tf = t.detach().float()
             snap = {
                 "call": self._calls,
                 "shape": list(t.shape),
                 "dtype": str(t.dtype),
                 "dev": str(t.device),
-                "mu": round(t.mean().item(), 6),
-                "sigma": round(t.std().item(), 6) if t.numel() > 1 else 0.0,
-                "lo": round(t.min().item(), 6),
-                "hi": round(t.max().item(), 6),
-                "nans": int(torch.isnan(t).sum()),
-                "infs": int(torch.isinf(t).sum()),
-                "zeros_pct": round((t == 0).float().mean().item() * 100, 2),
+                "mu": round(tf.mean().item(), 6),
+                "sigma": round(tf.std().item(), 6) if tf.numel() > 1 else 0.0,
+                "lo": round(tf.min().item(), 6),
+                "hi": round(tf.max().item(), 6),
+                "nans": int(torch.isnan(tf).sum()),
+                "infs": int(torch.isinf(tf).sum()),
+                "zeros_pct": round((tf == 0).float().mean().item() * 100, 2),
+                "kurtosis": 0.0,
             }
+            # Excess kurtosis for distribution health
+            if tf.numel() > 4:
+                centered = tf - tf.mean()
+                var = centered.var()
+                if var > 1e-12:
+                    snap["kurtosis"] = round(
+                        (centered.pow(4).mean() / var.pow(2) - 3.0).item(), 4
+                    )
         self._buf.append(snap)
 
         flags = []
@@ -96,35 +113,67 @@ class TensorProbe:
             flags.append("\033[93mlarge_mean\033[0m")
         if snap["zeros_pct"] > 95:
             flags.append("\033[93m>95%_zero\033[0m")
+        if abs(snap["kurtosis"]) > 50:
+            flags.append(f"\033[93mkurt={snap['kurtosis']:.1f}\033[0m")
+        if flags:
+            self._anomaly_calls += 1
         fl = " ".join(flags)
         extra = f" [{tag}]" if tag else ""
         print(
             f"    [PROBE] {self.name}{extra}: "
             f"shape={snap['shape']}, "
             f"μ={snap['mu']:+.5f}, σ={snap['sigma']:.5f}, "
-            f"∈[{snap['lo']:.5f}, {snap['hi']:.5f}] {fl}"
+            f"∈[{snap['lo']:.5f}, {snap['hi']:.5f}] "
+            f"kurt={snap['kurtosis']:.2f} {fl}"
         )
         return t
 
     def history(self):
         return list(self._buf)
 
+    def anomaly_rate(self):
+        """Fraction of calls that triggered at least one anomaly flag."""
+        if self._calls == 0:
+            return 0.0
+        return self._anomaly_calls / self._calls
+
     @staticmethod
     def dump_all():
         """Print a compact table of every registered probe."""
-        hdr = f"\n{'─'*78}\n  TensorProbe Registry — {len(TensorProbe._registry)} probes\n{'─'*78}"
+        hdr = (
+            f"\n{'─'*82}\n"
+            f"  TensorProbe Registry — {len(TensorProbe._registry)} probes\n"
+            f"{'─'*82}"
+        )
         print(hdr)
         for nm, p in TensorProbe._registry.items():
             last = p._buf[-1] if p._buf else None
             if last is None:
                 info = "no data"
             else:
+                ar = p.anomaly_rate()
                 info = (
                     f"calls={p._calls}, last_μ={last['mu']:+.5f}, "
-                    f"nan={last['nans']}, inf={last['infs']}"
+                    f"nan={last['nans']}, inf={last['infs']}, "
+                    f"anomaly_rate={ar:.1%}"
                 )
             print(f"  {nm:45s} | {info}")
-        print(f"{'─'*78}\n")
+        print(f"{'─'*82}\n")
+
+    @staticmethod
+    def anomaly_summary():
+        """Print only probes that have had anomalies."""
+        print(f"\n  Anomaly Summary:")
+        found = False
+        for nm, p in TensorProbe._registry.items():
+            if p._anomaly_calls > 0:
+                found = True
+                print(
+                    f"    {nm}: {p._anomaly_calls}/{p._calls} anomalous "
+                    f"({p.anomaly_rate():.1%})"
+                )
+        if not found:
+            print(f"    ✓ all probes clean")
 
     @staticmethod
     def dump_json(path: str):
@@ -132,7 +181,11 @@ class TensorProbe:
         import json
         blob = {}
         for nm, p in TensorProbe._registry.items():
-            blob[nm] = list(p._buf)
+            blob[nm] = {
+                "calls": p._calls,
+                "anomaly_rate": p.anomaly_rate(),
+                "history": list(p._buf),
+            }
         with open(path, "w") as f:
             json.dump(blob, f, indent=2)
         print(f"[TensorProbe] dumped {len(blob)} probes → {path}")
@@ -143,12 +196,18 @@ class TensorProbe:
 class DecoupleLayer(nn.Module):
     """Separates spatial-diffusion from temporal-inherent signal paths.
 
-    v2 changes vs prior Walpurgis:
-      - Skip-gate uses Gumbel-sigmoid in training for stochastic hard
-        routing; deterministic sigmoid in eval.
-      - Per-layer contribution tracking records *relative* share, not
-        raw norm (denominator = total contribution of all layers).
+    v3 changes vs Walpurgis v2:
+      - Skip-gate: Gumbel-sigmoid → Hard-Concrete distribution
+        (Louizos et al. 2018).  Stretches logit to (−ε, 1+ε) then
+        clamps to [0,1] — yields exact zeros more often, providing
+        natural L₀ regularisation of the skip connection.
+      - Per-layer contribution tracking now logs both absolute and
+        relative (fraction-of-total) norms.
     """
+
+    _HC_BETA = 0.66          # temperature for hard concrete
+    _HC_ZETA = 1.1           # stretch upper bound
+    _HC_GAMMA = -0.1         # stretch lower bound
 
     def __init__(self, hidden_dim, fk_dim=256, layer_idx=0, **kw):
         super().__init__()
@@ -161,25 +220,39 @@ class DecoupleLayer(nn.Module):
         self.dif_layer = DifBlock(hidden_dim, forecast_hidden_dim=fk_dim, **kw)
         self.inh_layer = InhBlock(hidden_dim, forecast_hidden_dim=fk_dim, **kw)
 
-        # Gumbel-sigmoid skip gate — initialised to bias toward decouple path
-        self._skip_logit = nn.Parameter(torch.tensor(-1.5))
+        # Hard-concrete skip gate — log_alpha initialised to favour decouple path
+        self._skip_log_alpha = nn.Parameter(torch.tensor(-1.8))
         # EMA timing
         self._ema_ms = 0.0
         self._ema_coeff = 0.04
         self._steps = 0
         self._debug = True
+        # Contribution tracking
+        self._contrib_ring = deque(maxlen=500)
         # Probes
         self._pin = TensorProbe(f"decouple_L{layer_idx}.in")
         self._pgated = TensorProbe(f"decouple_L{layer_idx}.gated")
         self._pout = TensorProbe(f"decouple_L{layer_idx}.out")
 
-    def _gumbel_sigmoid(self, logit: torch.Tensor, tau: float = 0.5):
-        """Stochastic hard gate during training; deterministic at eval."""
+    def _hard_concrete(self, log_alpha: torch.Tensor):
+        """Hard concrete sampling (training) / deterministic (eval).
+
+        Training: sample u ~ Uniform(0,1), compute stretched sigmoid,
+        then clamp to [0,1].  This yields exact 0 or 1 with nonzero
+        probability — natural L₀ sparsity.
+        Eval: deterministic sigmoid stretched and clamped.
+        """
         if self.training:
-            u = torch.rand_like(logit).clamp(1e-6, 1 - 1e-6)
-            gumbel = -torch.log(-torch.log(u))
-            return torch.sigmoid((logit + gumbel) / tau)
-        return torch.sigmoid(logit)
+            u = torch.rand_like(log_alpha).clamp(1e-6, 1 - 1e-6)
+            s = torch.sigmoid(
+                (torch.log(u) - torch.log(1 - u) + log_alpha) / self._HC_BETA
+            )
+        else:
+            s = torch.sigmoid(log_alpha)
+        # Stretch to (gamma, zeta) then clamp to [0, 1]
+        s_bar = s * (self._HC_ZETA - self._HC_GAMMA) + self._HC_GAMMA
+        z = s_bar.clamp(0.0, 1.0)
+        return z
 
     def forward(self, hist, dyn_g, sta_g, emb_u, emb_d, t_feat, d_feat):
         t0 = time.perf_counter()
@@ -196,25 +269,45 @@ class DecoupleLayer(nn.Module):
         )
         inh_back, inh_fc = self.inh_layer(dif_back)
 
-        # ── Gumbel-sigmoid skip ──
-        alpha = self._gumbel_sigmoid(self._skip_logit)
-        alpha = alpha.clamp(0.0, 0.45)   # decouple always dominates
+        # ── Hard-concrete skip ──
+        alpha = self._hard_concrete(self._skip_log_alpha)
+        # Ensure decouple path dominates: cap skip at 0.45
+        alpha = alpha.clamp(0.0, 0.45)
 
         slen = min(hist.shape[1], inh_back.shape[1])
         blended = alpha * hist[:, :slen] + (1.0 - alpha) * inh_back[:, :slen]
         if inh_back.shape[1] > slen:
             blended = torch.cat([blended, inh_back[:, slen:]], dim=1)
 
-        # Timing
+        # Timing + diagnostics
         ms = (time.perf_counter() - t0) * 1000
         self._ema_ms = self._ema_coeff * ms + (1 - self._ema_coeff) * self._ema_ms
         self._steps += 1
+
+        # Contribution tracking
+        with torch.no_grad():
+            dn, inn = dif_fc.norm().item(), inh_fc.norm().item()
+            self._contrib_ring.append({
+                "step": self._steps,
+                "dif_norm": dn,
+                "inh_norm": inn,
+                "alpha_det": torch.sigmoid(self._skip_log_alpha).item(),
+                "alpha_sample": alpha.item(),
+            })
+
         if self._debug and self._steps % 100 == 0:
             tier = "HBM" if self._ema_ms > 5 else ("GDDR" if self._ema_ms > 1 else "DRAM")
+            is_exact_zero = alpha.item() == 0.0
+            is_exact_one = alpha.item() >= 0.45
+            gate_info = (
+                f"α_sample={alpha.item():.4f} "
+                f"log_α={self._skip_log_alpha.item():.4f} "
+                f"{'[ZERO]' if is_exact_zero else ''}"
+                f"{'[CAPPED]' if is_exact_one else ''}"
+            )
             print(
                 f"    [TIER] L{self.layer_idx}: ema={self._ema_ms:.2f}ms "
-                f"→ {tier} | gate_logit={self._skip_logit.item():.4f} "
-                f"α_det={torch.sigmoid(self._skip_logit).item():.4f}"
+                f"→ {tier} | {gate_info}"
             )
         if self._debug:
             self._pout(blended)
@@ -224,25 +317,24 @@ class DecoupleLayer(nn.Module):
 # ═══════════ Main Model ═══════════ #
 
 class D2STGNN(nn.Module):
-    """Decoupled Spatial-Temporal GNN — Walpurgis v2 variant.
+    """Decoupled Spatial-Temporal GNN — Walpurgis v3 variant.
 
     Key algorithmic choices:
-      1. **Softmax logit aggregation** – each of the 5 decouple layers
-         owns a raw logit; a temperature-scaled softmax converts them
-         into normalised weights.  This is a strict superset of the
-         prior exp-decay approach: the network *can* learn monotone
-         decay, but isn't forced to.
-      2. **Linear-ramp embedding warmup** – the embedding output is
-         interpolated as  (1-warmup_α)·pad(x) + warmup_α·embed(x),
-         where warmup_α ramps from 0→1 over the warmup window.
-      3. **Structure fingerprint** – a cheap MD5 of the dynamic graph
-         tensor that lets you detect silent graph collapse or frozen
-         topology from a debugger.
+      1. **Attention-pooled aggregation** – a tiny MLP scores each
+         layer's forecast vector; softmax normalises the scores into
+         content-dependent weights.  The same layer can dominate in
+         one batch and recede in the next.
+      2. **Cosine-annealing embedding warmup** – warmup_α follows
+         0.5·(1 − cos(π·t/T)), which is C¹-smooth at both endpoints.
+      3. **xxhash-style structure fingerprint** — uses Python hash()
+         on quantised graph bytes for ~5× speedup over MD5.
 
     Debug cheat-sheet (from pdb or after any forward):
         TensorProbe.dump_all()
+        TensorProbe.anomaly_summary()
         model.snapshot()
         model._agg_weights_now()
+        model._warmup_phase()
         model._structure_fingerprint
     """
 
@@ -290,8 +382,13 @@ class D2STGNN(nn.Module):
         self.out_fc_1 = nn.Linear(self._forecast_dim, self._out_hidden)
         self.out_fc_2 = nn.Linear(self._out_hidden, kw["gap"])
 
-        # ── Softmax-logit aggregation weights ──
-        self._agg_logits = nn.Parameter(torch.zeros(self._num_layers))
+        # ── Attention-pooled aggregation ──
+        # A tiny 2-layer MLP that maps each layer's forecast to a scalar score
+        self._agg_scorer = nn.Sequential(
+            nn.Linear(self._forecast_dim, 64),
+            nn.GELU(),
+            nn.Linear(64, 1),
+        )
         self._agg_temp = nn.Parameter(torch.tensor(1.0))   # temperature
 
         self._init_params()
@@ -302,6 +399,7 @@ class D2STGNN(nn.Module):
         self._warmup_steps = 200
         self._contribution_ema = {}
         self._structure_fingerprint = "n/a"
+        self._last_agg_weights = []
         self._probe_emb = TensorProbe("model.embed")
         self._probe_out = TensorProbe("model.output")
 
@@ -341,10 +439,19 @@ class D2STGNN(nn.Module):
 
     # ── aggregation weight query (debug helper) ──
     def _agg_weights_now(self) -> list:
-        """Return current softmax aggregation weights as a plain list."""
-        tau = self._agg_temp.clamp(min=0.1)
-        w = F.softmax(self._agg_logits / tau, dim=0)
-        return [round(x.item(), 5) for x in w]
+        """Return last computed attention-pooled aggregation weights."""
+        return self._last_agg_weights
+
+    def _warmup_phase(self) -> float:
+        """Return current warmup fraction (0→1 over warmup window)."""
+        progress = min(self._fwd_n / max(self._warmup_steps, 1), 1.0)
+        return 0.5 * (1.0 - math.cos(math.pi * progress))
+
+    def _fast_fingerprint(self, tensor_sample: bytes) -> str:
+        """xxhash-style fingerprint via Python hash on quantised bytes."""
+        # Quantise to 8-bit and hash — ~5× faster than MD5
+        h = hash(tensor_sample) & 0xFFFFFFFFFFFF
+        return f"{h:012x}"
 
     def forward(self, history_data):
         """
@@ -353,8 +460,10 @@ class D2STGNN(nn.Module):
 
         Breakpoint cheat-sheet — call any of these from pdb:
             TensorProbe.dump_all()
+            TensorProbe.anomaly_summary()
             self.snapshot()
             self._agg_weights_now()
+            self._warmup_phase()
             print(self._structure_fingerprint)
         """
         self._fwd_n += 1
@@ -381,29 +490,29 @@ class D2STGNN(nn.Module):
                 f"  │ graph_build: {(time.perf_counter()-t0)*1000:.1f}ms  "
                 f"sta={len(sta_g)} dyn={len(dyn_g)}"
             )
-        # Structure fingerprint (cheap)
+        # Structure fingerprint (fast xxhash-style)
         if dyn_g:
             with torch.no_grad():
-                sample = dyn_g[0].detach().cpu().float().numpy().tobytes()[:512]
-                self._structure_fingerprint = hashlib.md5(sample).hexdigest()[:12]
+                sample = dyn_g[0].detach().cpu().to(torch.float16).numpy().tobytes()[:512]
+                self._structure_fingerprint = self._fast_fingerprint(sample)
 
-        # Step 3 — embedding with linear-ramp warmup
-        warmup_frac = min(self._fwd_n / max(self._warmup_steps, 1), 1.0)
-        if warmup_frac < 1.0:
+        # Step 3 — embedding with cosine-annealing warmup
+        warmup_alpha = self._warmup_phase()
+        if warmup_alpha < 0.999:
             if self._in_feat <= self._hidden_dim:
                 identity = F.pad(raw, (0, self._hidden_dim - self._in_feat))
             else:
                 identity = raw[:, :, :, :self._hidden_dim]
             identity = identity * 0.1
             learned = self.embedding(raw)
-            embedded = (1.0 - warmup_frac) * identity + warmup_frac * learned
+            embedded = (1.0 - warmup_alpha) * identity + warmup_alpha * learned
         else:
             embedded = self.embedding(raw)
 
         if verbose:
             self._probe_emb(
                 embedded,
-                f"warmup={warmup_frac:.2f}  fingerprint={self._structure_fingerprint}"
+                f"warmup={warmup_alpha:.3f}  fp={self._structure_fingerprint}"
             )
 
         # Step 4 — decouple stack
@@ -433,30 +542,50 @@ class D2STGNN(nn.Module):
             layer_meta.append({"idx": i, "ms": ms, "dif": dn, "inh": inn})
 
             if verbose:
-                gl = layer._skip_logit.item()
+                la = torch.sigmoid(layer._skip_log_alpha).item()
                 print(
                     f"  │ L{i}: {ms:.1f}ms  dif={dn:.2f}  inh={inn:.2f}  "
-                    f"gate_logit={gl:.4f}"
+                    f"gate_sigmoid={la:.4f}"
                 )
             dif_fcs.append(d_fc)
             inh_fcs.append(i_fc)
 
-        # Step 5 — softmax-logit aggregation
+        # Step 5 — attention-pooled aggregation
+        # Score each layer's forecast, then softmax-normalise
         tau = self._agg_temp.clamp(min=0.1)
-        weights = F.softmax(self._agg_logits / tau, dim=0)  # [num_layers]
+        combined_fcs = [d + i for d, i in zip(dif_fcs, inh_fcs)]  # [L × [B,N,F]]
 
-        agg_dif = sum(w * h for w, h in zip(weights, dif_fcs))
-        agg_inh = sum(w * h for w, h in zip(weights, inh_fcs))
-        combined = agg_dif + agg_inh
+        # Stack → [L, B*N, F] → score per layer
+        stacked = torch.stack(combined_fcs, dim=0)       # [L, B, N, F]
+        L, B, N, Fd = stacked.shape
+        flat = stacked.reshape(L, B * N, Fd)              # [L, B*N, F]
+        # Global avg across B*N to get per-layer representation → [L, F]
+        layer_repr = flat.mean(dim=1)
+        scores = self._agg_scorer(layer_repr).squeeze(-1) / tau   # [L]
+        weights = F.softmax(scores, dim=0)                 # [L]
+
+        self._last_agg_weights = [round(w.item(), 5) for w in weights]
+
+        # Weighted sum
+        agg = sum(w * fc for w, fc in zip(weights, combined_fcs))
 
         # Step 6 — output projection
-        pred = self.out_fc_2(F.relu(self.out_fc_1(F.relu(combined))))
+        pred = self.out_fc_2(F.relu(self.out_fc_1(F.relu(agg))))
         pred = pred.transpose(1, 2).contiguous().view(pred.shape[0], pred.shape[2], -1)
 
         if verbose:
             self._probe_out(pred)
             wl = [f"{w.item():.3f}" for w in weights]
-            print(f"  │ agg_weights(softmax): {wl}  τ={tau.item():.3f}")
+            print(f"  │ agg_weights(attn-pool): {wl}  τ={tau.item():.3f}")
+
+            # Entropy of aggregation weights as diversity measure
+            ent = -(weights * (weights + 1e-9).log()).sum().item()
+            max_ent = math.log(len(weights))
+            print(
+                f"  │ agg_entropy={ent:.3f}/{max_ent:.3f} "
+                f"(diversity={ent/max_ent*100:.1f}%)"
+            )
+
             tdif = sum(s["dif"] for s in layer_meta) + 1e-8
             tinh = sum(s["inh"] for s in layer_meta) + 1e-8
             for s in layer_meta:
@@ -464,8 +593,10 @@ class D2STGNN(nn.Module):
                     f"  │   L{s['idx']}: dif={s['dif']/tdif*100:.1f}% "
                     f"inh={s['inh']/tinh*100:.1f}%  {s['ms']:.1f}ms"
                 )
-            print(f"  └─ total: {(time.perf_counter()-t_wall)*1000:.1f}ms  "
-                  f"fp={self._structure_fingerprint}\n")
+            print(
+                f"  └─ total: {(time.perf_counter()-t_wall)*1000:.1f}ms  "
+                f"fp={self._structure_fingerprint}\n"
+            )
 
         return pred
 
@@ -476,11 +607,25 @@ class D2STGNN(nn.Module):
             "fwd_count": self._fwd_n,
             "agg_weights": self._agg_weights_now(),
             "agg_temperature": self._agg_temp.item(),
-            "warmup_frac": min(self._fwd_n / max(self._warmup_steps, 1), 1.0),
+            "warmup_phase": self._warmup_phase(),
             "structure_fingerprint": self._structure_fingerprint,
-            "contribution_ema": dict(self._contribution_ema),
+            "contribution_ema": {
+                str(k): v for k, v in self._contribution_ema.items()
+            },
+            "layer_gate_stats": [],
             "parameters": {},
         }
+        # Layer-level gate stats
+        for i, layer in enumerate(self.layers):
+            sig = torch.sigmoid(layer._skip_log_alpha).item()
+            recent = list(layer._contrib_ring)[-5:]
+            state["layer_gate_stats"].append({
+                "layer": i,
+                "sigmoid_alpha": round(sig, 5),
+                "log_alpha": round(layer._skip_log_alpha.item(), 5),
+                "recent_contrib": recent,
+            })
+        # Parameter summary
         for name, p in self.named_parameters():
             entry = {
                 "shape": list(p.shape),

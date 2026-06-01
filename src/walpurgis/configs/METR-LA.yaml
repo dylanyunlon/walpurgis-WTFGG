@@ -1,6 +1,13 @@
 ---
 # ═══════════════════════════════════════════════════════════════
-# Walpurgis Configuration — METR-LA (traffic speed, 207 sensors)
+# Walpurgis v3 Configuration — METR-LA (traffic speed, 207 sensors)
+#
+# v3 deltas:
+#   - Tikhonov ε for degree-matrix regularisation (cal_adj)
+#   - Blocked shuffle factor for DataLoader temporal coherence
+#   - JSD drift threshold replaces KL
+#   - EMA α for TrainLogger epoch smoothing
+#   - Welford scaler with output sentinel bounds
 #
 # Tier placement notes:
 #   - batch_size 64 × 207 nodes × 32 hidden = ~1.6 MB per batch
@@ -8,11 +15,6 @@
 #   - Uses StandardScaler normalization (speed data, not flow)
 #   - 80 epochs default — faster convergence than PEMS datasets
 #   - doubletransition adj: 2 matrices → tier migration cost × 2
-#
-# Debug knobs:
-#   walpurgis.debug_interval: print full state every N steps
-#   walpurgis.profile: enable per-layer timing breakdown
-#   walpurgis.nan_guard: check tensors for NaN/Inf after each layer
 # ═══════════════════════════════════════════════════════════════
 
 start_up:
@@ -30,6 +32,14 @@ walpurgis:
   log_grad_norms: True
   tier_placement_log: True
   checkpoint_struct_dump: True
+  # v3 additions
+  tikhonov_eps: 1.0e-6
+  block_shuffle_factor: 4
+  jsd_alert_threshold: 0.1
+  ema_alpha: 0.1
+  integrity_scan: True
+  scaler_bound_sigma: 8
+  spectral_snapshot_k: 6
 
 data_args:
   data_dir: datasets/METR-LA
