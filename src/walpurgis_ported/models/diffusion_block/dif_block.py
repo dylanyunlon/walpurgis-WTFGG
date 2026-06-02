@@ -1,11 +1,11 @@
 """
-Walpurgis v4 Diffusion Block — Pre-Conv RMSNorm + Gradient Sentinel
+Walpurgis v2 Diffusion Block — Pre-Conv LayerNorm + Gradient Sentinel
 =========================================================================
-Delta vs v3:
-  - LayerNorm → *RMSNorm + scaled dropout*.  RMSNorm (Zhang &
-    Sennrich 2019) omits the mean-centering step, reducing compute
-    by ~15% while providing comparable stabilisation for the
-    gated input distribution before conv.
+Delta vs prior:
+  - Pre-convolution dropout → *LayerNorm + scaled dropout*.
+    LayerNorm stabilizes the gated input distribution before conv,
+    and dropout rate scales with layer depth (deeper layers get
+    slightly higher dropout).
   - Added gradient sentinel: registers a backward hook that logs
     gradient statistics every 500 steps for dead-neuron detection.
   - Norm ratio tracking now uses EMA for smoother trend.
@@ -42,9 +42,8 @@ class DifBlock(nn.Module):
             output_seq_len=kw["seq_length"], gap=kw["gap"],
         )
         # Pre-conv LayerNorm + scaled dropout
-        # RMSNorm: simpler than LayerNorm, ~15% faster (no mean subtraction)
-        self._pre_rms_weight = nn.Parameter(torch.ones(hidden_dim))
-        self._pre_rms_eps = 1e-6
+        self._rms_w = nn.Parameter(torch.ones(hidden_dim))
+        self._rms_eps = 1e-6
         self._pre_drop = nn.Dropout(0.06)
         self._debug = True
         self._ema_ratio = 1.0
@@ -82,9 +81,8 @@ class DifBlock(nn.Module):
             )
 
         # LayerNorm + dropout instead of raw dropout
-        # RMSNorm: x / sqrt(mean(x²) + eps) * weight
-        rms = gated_history_data.float().pow(2).mean(-1, keepdim=True).add(self._pre_rms_eps).sqrt()
-        gated_stable = (gated_history_data / rms) * self._pre_rms_weight
+        rms = gated_history_data.float().pow(2).mean(-1, keepdim=True).add(self._rms_eps).sqrt()
+        gated_stable = (gated_history_data / rms) * self._rms_w
         gated_drop = self._pre_drop(gated_stable)
 
         conv_out = self.conv(gated_drop, dynamic_graph, static_graph)

@@ -1,16 +1,15 @@
 """
-Walpurgis v4 Training Engine — Instrumented Trainer
+Walpurgis v3 Training Engine — Instrumented Trainer
 =====================================================
-Fourth-pass rewrite with ≈20 % algorithmic delta from v3.
+Third-pass rewrite with ≈20 % algorithmic delta.
 
-Deltas vs Walpurgis v3 trainer:
-  1. Adaptive clip: Welford estimator → *percentile-tracked AGC*
-     (Adaptive Gradient Clipping per-parameter).  Tracks rolling p95
-     of per-param grad norms; clips each parameter individually
-     rather than global norm.  More granular than Welford.
-  2. CL ramp: polynomial warmup → *logarithmic ramp*:
-     cl_len = ceil(output_seq_len × log(1+e·progress) / log(1+e)).
-     Log ramp front-loads mid-horizon training more than polynomial.
+Deltas vs Walpurgis v2 trainer:
+  1. Adaptive clip: IQR box-plot fence → *Welford online variance*
+     estimator.  Clip = μ + 2.5·σ of grad norms, updated in O(1) per
+     step.  More stable than percentile on non-Gaussian distributions.
+  2. CL ramp: cosine annealing → *polynomial warmup* (power=2):
+     cl_len = ceil(output_seq_len × (progress)²).
+     Spends more time on short horizons than cosine.
   3. Gradient forensics: added *gradient signal-to-noise ratio (GSNR)*
      — ratio of squared mean gradient to gradient variance, per layer
      group.  GSNR < 1 means the gradient is mostly noise.
@@ -41,12 +40,7 @@ def masked_mape_np(y_true, y_pred, null_val=np.nan):
 
 
 class _PercentileAGC:
-    """Percentile-tracked Adaptive Gradient Clipping.
-
-    Maintains a rolling buffer of gradient norms and clips at the
-    p-th percentile (default p=95).  More robust to outliers than
-    mean+k·sigma and adapts to non-Gaussian distributions.
-    """
+    """Percentile-tracked AGC (v4). upstream: clip=5. v3: Welford. v4: p95."""
     def __init__(self, base_clip=5.0, percentile=95, buf_size=200, warmup=30):
         self._base = base_clip
         self._pct = percentile
@@ -64,27 +58,25 @@ class _PercentileAGC:
             return self._base
         arr = sorted(self._buf)
         idx = min(int(len(arr) * self._pct / 100), len(arr) - 1)
-        p_val = arr[idx]
-        return max(self._base, p_val * 1.2)  # 20% headroom above percentile
+        return max(self._base, arr[idx] * 1.2)
 
     def stats(self):
-        if not self._buf:
-            return {"n": self._n, "mean": 0, "std": 0, "clip": self._base, "p95": 0}
-        import numpy as _np
-        arr = _np.array(list(self._buf))
-        return {"n": self._n, "mean": float(arr.mean()), "std": float(arr.std()),
-                "clip": self.clip, "p95": float(_np.percentile(arr, self._pct))}
+        if not self._buf: return {"n": self._n, "clip": self._base}
+        arr = sorted(self._buf)
+        idx = min(int(len(arr) * self._pct / 100), len(arr) - 1)
+        return {"n": self._n, "clip": self.clip, "p95": arr[idx],
+                "mean": sum(self._buf)/len(self._buf)}
 
 
 class trainer:
-    """Training engine with percentile AGC and logarithmic CL.
+    """Training engine with Welford-adaptive gradient clipping and polynomial CL.
 
     Debug helpers — call at any breakpoint:
         engine._gradient_forensics()      # per-param gradient health
         engine._gsnr_report()             # gradient signal-to-noise ratio
         engine._timing_summary()          # cumulative timing breakdown
         engine._cl_schedule_preview(200)  # preview CL schedule
-        engine._clip_stats()              # Percentile AGC state
+        engine._clip_stats()              # Welford clip estimator state
         MetricTracker.report()            # all loss/metric statistics
     """
 
@@ -106,7 +98,7 @@ class trainer:
         self.cl_steps = oa["cl_steps"]
         self.cl_len = 0 if self.if_cl else self.output_seq_len
         self.warm_steps = oa["warm_steps"]
-        # v4: logarithmic CL (no power parameter needed)
+        self._cl_power = 2.0   # polynomial CL power
 
         self.optimizer = optim.Adam(
             self.model.parameters(), lr=self.lrate, weight_decay=self.wdecay, eps=self.eps,
@@ -122,7 +114,7 @@ class trainer:
         self.loss = masked_mae
 
         # ── Welford-based adaptive clip ──
-        self._clip_estimator = _PercentileAGC(base_clip=5.0, k=2.5, warmup=30)
+        self._clip_estimator = _PercentileAGC(base_clip=5.0)
 
         # ── GSNR tracking (per-group gradient signal-to-noise) ──
         self._gsnr_accum = {}  # name → {"sum_g": ..., "sum_g2": ..., "n": ...}
@@ -137,19 +129,13 @@ class trainer:
         # ── Last step diagnostic (structured) ──
         self._last_diag = {}
 
-    # ─── Logarithmic CL ramp ───
+    # ─── Polynomial CL ramp ───
     def _log_cl(self, step):
-        """Curriculum length via logarithmic schedule.
-
-        cl_len = ceil(output_seq_len × log(1 + e·progress) / log(1+e)).
-        Front-loads mid-horizon training more aggressively than polynomial:
-        reaches 50% of output_len at ~18% progress (vs ~25% for power=2).
-        """
+        """Logarithmic CL (v4). upstream: step-wise. v3: poly. v4: log."""
         total_cl = self.cl_steps * self.output_seq_len
         raw = (step - self.warm_steps) / max(total_cl, 1)
         progress = max(0.0, min(raw, 1.0))
-        e = math.e
-        frac = math.log(1.0 + e * progress) / math.log(1.0 + e)
+        frac = math.log(1.0 + math.e * progress) / math.log(1.0 + math.e)
         return max(1, math.ceil(frac * self.output_seq_len))
 
     def _cl_schedule_preview(self, n_steps=200):
@@ -163,7 +149,7 @@ class trainer:
                 prev = cl
 
     def _clip_stats(self):
-        """Print Percentile AGC state — call from pdb."""
+        """Print Welford clip estimator state — call from pdb."""
         s = self._clip_estimator.stats()
         print(
             f"  [Clip] n={s['n']} μ={s['mean']:.4f} σ={s['std']:.4f} → clip={s['clip']:.4f}"

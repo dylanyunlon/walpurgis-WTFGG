@@ -1,8 +1,8 @@
 ---
 # ═══════════════════════════════════════════════════════════════
-# Walpurgis v4 Configuration — METR-LA (traffic speed, 207 sensors)
+# Walpurgis v3 Configuration — METR-LA (traffic speed, 207 sensors)
 #
-# v4 deltas (from v3): adaptive reservoir shuffle, log-cosh loss,
+# v3 deltas:
 #   - Tikhonov ε for degree-matrix regularisation (cal_adj)
 #   - Blocked shuffle factor for DataLoader temporal coherence
 #   - JSD drift threshold replaces KL

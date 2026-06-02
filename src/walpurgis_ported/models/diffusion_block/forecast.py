@@ -1,8 +1,8 @@
 """
-Walpurgis v4 Diffusion Forecast Head — CBAM-Lite Channel Attention
+Walpurgis v2 Diffusion Forecast Head — Squeeze-Excite Regularization
 ========================================================================
 Delta vs prior:
-  - SE attention → *CBAM-lite* channel attention with max-pool branch before
+  - Channel-shuffle dropout → *squeeze-and-excite* (SE) attention before
     dropout.  SE produces a per-channel importance weight via global
     average pool → FC → sigmoid, which acts as learned feature selection
     complementary to dropout's random selection.
@@ -33,18 +33,16 @@ class Forecast(nn.Module):
         self._diag_last = {}
 
     def _squeeze_excite(self, h):
-        """CBAM-lite channel attention: avg-pool + max-pool branches."""
-        # Dual-pool branch (CBAM-style)
-        if h.dim() == 3:
-            avg_pool = h.mean(dim=1)  # [B, C]
-            max_pool = h.max(dim=1).values  # [B, C]
+        """CBAM-lite (v4): avg+max pool. upstream: none. v3: SE."""
+        if h.dim() >= 3 and h.shape[1] > 1:
+            avg_p, max_p = h.mean(dim=1), h.max(dim=1).values
         else:
-            avg_pool = h
-            max_pool = h
-        # Shared MLP on both branches
-        avg_gate = self._se_fc2(F.relu(self._se_fc1(avg_pool)))
-        max_gate = self._se_fc2(F.relu(self._se_fc1(max_pool)))
-        gate = torch.sigmoid(avg_gate + max_gate)  # combine branches
+            avg_p = h.squeeze(1) if h.dim()==3 else h
+            max_p = avg_p
+        gate = torch.sigmoid(
+            self._se_fc2(F.relu(self._se_fc1(avg_p))) +
+            self._se_fc2(F.relu(self._se_fc1(max_p)))
+        )
         # Expand and apply
         if h.dim() == 3:
             gate = gate.unsqueeze(1)
@@ -75,6 +73,6 @@ class Forecast(nn.Module):
                 print(
                     f"        [DifForecast #{Forecast._n}] "
                     f"in_‖={d['in_norm']:.4f} out_‖={d['out_norm']:.4f} "
-                    f"ratio={d['ratio']:.4f} | CBAM-lite active"
+                    f"ratio={d['ratio']:.4f} | SE active"
                 )
         return h

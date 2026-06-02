@@ -1,9 +1,9 @@
 """
-Walpurgis v4 Residual Decomposition — Affine Scale+Shift with ELU Gate
+Walpurgis v2 Residual Decomposition — Affine Scale+Shift with ELU Gate
 =========================================================================
-Delta vs v3:
-  - ELU-gated → *Mish-gated* per-channel affine (Misra 2020):
-      g = mish(linear(backcast_mean)) + 1      # per-channel, ≥-0.31+1≈0.69
+Delta vs prior:
+  - sigmoid(scalar_scale) → *ELU-gated* per-channel affine:
+      g = 1 + elu(linear(backcast_mean))      # per-channel, ≥0
       residual = LN(input − g · backcast − shift)
     This allows the scale to exceed 1 (unlike sigmoid) while remaining
     non-negative via the ELU+1 trick — the network can *amplify* backcast
@@ -38,10 +38,10 @@ class ResidualDecomp(nn.Module):
         self._gate_samples = deque(maxlen=200)
 
     def _mish_gate(self, backcast):
-        """Mish+1 gate: smooth, non-monotonic, ≥ 0.69."""
-        summary = backcast.mean(dim=tuple(range(backcast.dim() - 1)))  # [D]
+        """Mish+1 gate (v4). upstream: relu+LN. v3: ELU+1. v4: Mish+1."""
+        summary = backcast.mean(dim=tuple(range(backcast.dim() - 1)))
         raw = self._gate_proj(summary)
-        return 1.0 + F.mish(raw)  # mish(x) = x·tanh(softplus(x)), min≈-0.31
+        return 1.0 + F.mish(raw)
 
     def scale_histogram(self, bins=10):
         """Print gate value distribution — call from pdb."""

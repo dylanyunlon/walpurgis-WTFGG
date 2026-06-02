@@ -1,21 +1,5 @@
 """Generate training/validation/test data splits for PEMS08 (traffic flow) dataset.
 
-# ═══════════════════════════════════════════════════════════════════
-# Walpurgis v4 Data Generator — PEMS08
-# ═══════════════════════════════════════════════════════════════════
-# Fourth-pass rewrite.  Changes from v3:
-#   1. Added SHA-256 integrity checksums for generated .npz files
-#   2. Enhanced progress reporting with ETA estimation
-#   3. Memory-mapped output for large datasets (>1GB)
-#   4. Validation split stratification by temporal variance
-#
-# Breakpoint guide:
-#   pdb> python -m pdb generate_training_data.py
-#   pdb> b generate_train_val_test    # break at split generation
-#   pdb> p x_train.shape, x_val.shape, x_test.shape
-#   pdb> p np.isnan(x_train).sum()    # check for NaN contamination
-# ═══════════════════════════════════════════════════════════════════
-
 Walpurgis adaptations:
 - Per-stage timing and memory reporting
 - MinMax normalization diagnostics (range, clipping)
@@ -244,42 +228,3 @@ if __name__ == "__main__":
     else:
         os.makedirs(args.output_dir)
     generate_train_val_test(args)
-
-
-def _v4_integrity_check(filepath):
-    """Compute SHA-256 checksum of generated data file (v4 addition).
-
-    Call after generation to verify file integrity:
-      python -c "from generate_training_data import _v4_integrity_check; _v4_integrity_check('train.npz')"
-
-    Breakpoint guide:
-      pdb> h = _v4_integrity_check("train.npz")
-      pdb> print(f"SHA-256: {h}")
-    """
-    import hashlib
-    sha = hashlib.sha256()
-    with open(filepath, 'rb') as f:
-        for chunk in iter(lambda: f.read(8192), b''):
-            sha.update(chunk)
-    digest = sha.hexdigest()
-    print(f"[v4-integrity] {filepath}: SHA-256 = {digest}")
-    return digest
-
-
-def _v4_variance_stratify(data, n_splits=3):
-    """Stratify temporal windows by variance for balanced splits (v4).
-
-    Instead of pure sequential splitting, groups windows into
-    variance terciles and samples proportionally from each.
-    Prevents the validation set from being accidentally all-quiet
-    or all-spiky.
-
-    Breakpoint guide:
-      pdb> indices = _v4_variance_stratify(x_data, n_splits=3)
-      pdb> print(f"strata sizes: {[len(s) for s in indices]}")
-    """
-    import numpy as np
-    variances = np.var(data.reshape(data.shape[0], -1), axis=1)
-    sorted_idx = np.argsort(variances)
-    strata = np.array_split(sorted_idx, n_splits)
-    return strata

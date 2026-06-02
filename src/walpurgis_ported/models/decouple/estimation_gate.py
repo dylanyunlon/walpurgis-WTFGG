@@ -1,11 +1,11 @@
 """
-Walpurgis v4 Estimation Gate — SwiGLU-Bounded Feature Routing
+Walpurgis v2 Estimation Gate — GEGLU-Bounded Feature Routing
 ================================================================
-Delta vs v3:
-  - GEGLU → *SwiGLU-style* gating (Shazeer 2020):
+Delta vs prior:
+  - softplus/(1+softplus) → *GEGLU-style* gating:
       h_fused = Linear(cat(node, time))
-      gate  = σ(h_fused[:, :half]) ⊙ SiLU(h_fused[:, :half])
-      value = h_fused[:, half:]
+      gate  = σ(h_fused[:, :half])
+      value = GELU(h_fused[:, half:])
       out   = gate ⊙ value ⊙ history
     This keeps the output bounded via sigmoid, but the value branch
     adds nonlinear expressivity that the prior pure-sigmoid path lacked.
@@ -24,7 +24,7 @@ from collections import deque
 
 
 class EstimationGate(nn.Module):
-    """SwiGLU-style gating for diffusion vs inherent path routing."""
+    """GEGLU-style gating for diffusion vs inherent path routing."""
 
     _n = 0
 
@@ -62,9 +62,10 @@ class EstimationGate(nn.Module):
         combined = torch.cat([nc, tc], dim=-1)
         h_wide = self.fused_proj(combined)  # [B, L, N, 2H]
         H = h_wide.shape[-1] // 2
+        # upstream: fc→relu→fc→sigmoid. v3: GEGLU. v4: SwiGLU.
         gate_branch = torch.sigmoid(h_wide[..., :H]) * F.silu(h_wide[..., :H])
-        value_branch = h_wide[..., H:]
-        h_fused = gate_branch * value_branch  # SwiGLU
+        value_branch = h_wide[..., H:]  # SwiGLU: no activation on value
+        h_fused = gate_branch * value_branch
 
         # Final scalar gate per node
         raw = self.out_proj(h_fused)  # [B, L, N, 1]
@@ -98,6 +99,6 @@ class EstimationGate(nn.Module):
                     f"∈[{d['gate_range'][0]:.4f},{d['gate_range'][1]:.4f}] "
                     f"<0.1={d['pct_below_0.1']:.1f}% "
                     f">0.9={d['pct_above_0.9']:.1f}% "
-                    f"| SwiGLU active"
+                    f"| GEGLU active"
                 )
         return gated

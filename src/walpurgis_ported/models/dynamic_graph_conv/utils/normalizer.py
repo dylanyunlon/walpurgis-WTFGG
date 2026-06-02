@@ -1,8 +1,8 @@
 """
-Walpurgis v4 Normalizer & MultiOrder — Spectral-Aware Mixed-Norm
+Walpurgis v2 Normalizer & MultiOrder — Mixed-Norm with Power Monitoring
 ==========================================================================
-Delta vs v3:
-  - Mixed norm → *spectral-aware mixed norm* that additionally monitors
+Delta vs prior:
+  - Degree-scalable norm: learnable γ → *mixed norm* that interpolates
     between symmetric (D^{-0.5} A D^{-0.5}) and random-walk (D^{-1} A)
     via  α·sym + (1-α)·rw  with α learned.  This is strictly more
     expressive than the single-exponent approach since the two norms
@@ -54,6 +54,16 @@ class Normalizer(nn.Module):
         sym = self._sym_norm(adj)
         rw = self._rw_norm(adj)
         normed = alpha * sym + (1.0 - alpha) * rw
+
+        # v4: spectral radius check — warn if graph becomes ill-conditioned
+        if not self.training and normed.shape[-1] <= 512:
+            with torch.no_grad():
+                try:
+                    sr = torch.linalg.eigvalsh(normed.float())[-1].item()
+                    if sr > 1.5:
+                        print(f"    [WARN] spectral_radius={sr:.3f}>1.5")
+                except Exception:
+                    pass
 
         if self._debug and Normalizer._n % 200 == 1:
             with torch.no_grad():

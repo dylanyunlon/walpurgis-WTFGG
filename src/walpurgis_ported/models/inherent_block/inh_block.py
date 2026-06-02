@@ -1,10 +1,9 @@
 """
-Walpurgis v4 Inherent Block — Temporal Pathway with Cosine-Cyclic Drop
+Walpurgis v2 Inherent Block — Temporal Pathway with Scheduled Drop
 ====================================================================
-Delta vs v3:
-  - Scheduled drop → *cosine-cyclic drop*: drop probability follows
-    a cosine cycle p(t) = p_max/2 · (1 - cos(2π·t/T)), providing
-    periodic regularisation bursts rather than monotone increase.  This
+Delta vs prior:
+  - Stochastic depth (fixed p) → *scheduled drop*: drop probability
+    starts at 0 and linearly increases to p_max over training.  This
     lets the transformer contribute fully during early learning when
     the representations are most fragile, then regularises later.
   - Added explicit gradient checkpoint boundary around the transformer
@@ -44,11 +43,10 @@ class InhBlock(nn.Module):
         self._diag_last = {}
 
     def _current_drop_prob(self):
-        """Current cosine-cyclic drop probability — call from pdb."""
-        import math as _m
+        """Cosine-cyclic drop (v4). upstream: none. v3: linear."""
         t = InhBlock._global_step
         T = max(self._drop_warmup_steps, 1)
-        return self._drop_p_max * 0.5 * (1.0 - _m.cos(2 * _m.pi * t / T))
+        return self._drop_p_max * 0.5 * (1.0 - math.cos(2 * math.pi * t / T))
 
     def forward(self, dif_back):
         InhBlock._n += 1

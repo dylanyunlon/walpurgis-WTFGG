@@ -1,15 +1,15 @@
 """
-Walpurgis v4 ST Localized Convolution — Stochastic Expert Routing on Supports
+Walpurgis v2 ST Localized Convolution — Top-K Sparse Attention on Supports
 =============================================================================
-Delta vs v3:
-  - Top-K sparse attention → *stochastic expert routing*
+Delta vs prior:
+  - Attention-weighted (informational-only) → *Top-K sparse attention*
     that actually re-weights the support aggregations.  After computing
     attention scores, only the top-K supports (K=ceil(0.7·n_supports))
     contribute to the output.  This provides genuine learned sparsity
     over the graph modalities.
   - Residual uses GatedLinearUnit (GLU) instead of LayerNorm for the
     skip connection — GLU can selectively suppress the residual when
-    the conv signal is strong.  Added dropout on support scores.
+    the conv signal is strong.
   - Detailed per-support contribution tracking in debug_state.
 
 Breakpoint helpers:
@@ -124,7 +124,7 @@ class STLocalizedConv(nn.Module):
             # Top-K selection
             topk_vals, topk_idx = torch.topk(scores, K, dim=-1)
             topk_weights = torch.softmax(topk_vals, dim=-1)  # [B, K]
-            # v4: stochastic routing — dropout on weights during training
+            # v4: stochastic routing dropout
             if self.training:
                 topk_weights = F.dropout(topk_weights, p=0.1, training=True)
 

@@ -1,7 +1,7 @@
 """
-Walpurgis v4 Data Loading — Welford Scaler, JSD Drift & Feature Diagnostics
+Walpurgis v3 Data Loading — Welford Scaler, JSD Drift & Feature Diagnostics
 ==============================================================================
-Delta vs v3:
+Delta vs v2:
   1. StandardScaler: Welford online algorithm for incremental mean/var
      updates (supports streaming data or re-fitting on subsets).
   2. drift_check: Jensen-Shannon divergence (symmetric, bounded [0, ln2])
@@ -402,61 +402,6 @@ def load_dataset(data_dir, batch_size, valid_batch_size, test_batch_size,
           f"{len(data['x_train'])}/{len(data['x_val'])}/{len(data['x_test'])}")
     _tier_budget(data)
     return data
-
-
-def _v4_temporal_continuity_check(timestamps, tolerance_sec=300):
-    """Check for temporal discontinuities in time series (v4).
-
-    Scans timestamp array for gaps larger than `tolerance_sec` seconds.
-    Reports total gaps found and their locations.
-
-    Breakpoint guide:
-      pdb> gaps = _v4_temporal_continuity_check(ts_array, tolerance_sec=300)
-      pdb> print(f"Found {len(gaps)} gaps")
-      pdb> for g in gaps[:5]: print(f"  gap at index {g['index']}: {g['duration_sec']}s")
-    """
-    import numpy as np
-    if timestamps is None or len(timestamps) < 2:
-        return []
-    diffs = np.diff(timestamps)
-    median_dt = np.median(diffs)
-    gaps = []
-    for i, dt in enumerate(diffs):
-        if dt > tolerance_sec and dt > 3 * median_dt:
-            gaps.append({"index": i, "duration_sec": float(dt),
-                        "expected_sec": float(median_dt)})
-    if gaps:
-        print(f"[v4-continuity] Found {len(gaps)} temporal gaps "
-              f"(threshold: {tolerance_sec}s, median_dt: {median_dt:.1f}s)")
-    return gaps
-
-
-def _v4_split_distribution_check(train, val, test):
-    """Verify train/val/test splits have similar distributions (v4).
-
-    Uses Kolmogorov-Smirnov test to flag significant distribution
-    shifts between splits that could bias evaluation.
-
-    Breakpoint guide:
-      pdb> _v4_split_distribution_check(x_train, x_val, x_test)
-    """
-    import numpy as np
-    for name_a, data_a, name_b, data_b in [
-        ("train", train, "val", val),
-        ("train", train, "test", test),
-        ("val", val, "test", test)
-    ]:
-        flat_a = data_a.flatten()[:10000]  # subsample for speed
-        flat_b = data_b.flatten()[:10000]
-        # Simple KS-like check: compare means and stds
-        mu_a, sig_a = flat_a.mean(), flat_a.std()
-        mu_b, sig_b = flat_b.mean(), flat_b.std()
-        mu_shift = abs(mu_a - mu_b) / max(sig_a, 1e-8)
-        print(f"[v4-split] {name_a} vs {name_b}: "
-              f"μ_shift={mu_shift:.3f}σ, "
-              f"σ_ratio={sig_b/max(sig_a,1e-8):.3f}")
-        if mu_shift > 0.5:
-            print(f"[v4-split] ⚠ Significant mean shift between {name_a}/{name_b}")
 
 
 def load_adj(file_path, adj_type):

@@ -1,8 +1,8 @@
 """
-Walpurgis v4 Distance Function — Asymmetric Kernel Similarity with Gated Fusion
+Walpurgis v2 Distance Function — Bilinear Similarity with Gated Fusion
 ==========================================================================
-Delta vs v3:
-  - Bilinear similarity → *asymmetric kernel* similarity with per-modality
+Delta vs prior:
+  - Scaled dot-product → *bilinear* similarity with per-modality
     learnable weight matrix W:  sim(a,b) = a^T W b / τ.
     Bilinear allows asymmetric similarity (node A similar to B doesn't
     imply B similar to A), which better models directed traffic flow.
@@ -69,9 +69,12 @@ class DistanceFunction(nn.Module):
         B, L, N, _ = X.shape
         taus = self._taus.clamp(min=1.0)
 
-        # Node modality — bilinear (asymmetric)
-        nl = self.node_proj_l(E_d)  # [N, H]
-        nr = self.node_proj_r(E_d)  # [N, H]
+        # Node modality — asymmetric kernel (v4)
+        # upstream: QK^T/√d (linear projections).
+        # v3: separate L/R linear projections + scaled dot-product.
+        # v4: + ELU nonlinearity makes φ_L ≠ φ_R in function space.
+        nl = F.elu(self.node_proj_l(E_d))   # [N, H]
+        nr = F.elu(self.node_proj_r(E_d))   # [N, H]
         node_sim = torch.mm(nl, nr.T) / taus[0]
         node_sim = torch.softmax(node_sim, dim=-1)
         node_sim = node_sim.unsqueeze(0).expand(B, -1, -1)

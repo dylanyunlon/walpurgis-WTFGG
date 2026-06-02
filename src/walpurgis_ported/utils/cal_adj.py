@@ -1,7 +1,7 @@
 """
-Walpurgis v4 Adjacency Utilities — Regularized Graph Normalization & Spectral Diagnostics
+Walpurgis v3 Adjacency Utilities — Regularized Graph Normalization & Spectral Diagnostics
 ============================================================================================
-Delta vs v3:
+Delta vs v2:
   1. Tikhonov-regularized degree inversion (D + εI)^{-1/2} replaces raw D^{-1/2}
      to avoid catastrophic division for near-isolated nodes.
   2. Scaled Laplacian: optional Lanczos-estimated λ_max when lambda_max=None,

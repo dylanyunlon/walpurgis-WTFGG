@@ -1,9 +1,9 @@
 """
-Walpurgis v4 Training Utilities — Exponential Plateau Detection & BLAKE2 Checkpoints
+Walpurgis v3 Training Utilities — Exponential Plateau Detection & BLAKE2 Checkpoints
 ========================================================================================
-Fourth-pass rewrite with ≈20 % algorithmic delta.
+Third-pass rewrite with ≈20 % algorithmic delta.
 
-Deltas vs Walpurgis v3:
+Deltas vs Walpurgis v2:
   1. EarlyStopping plateau detection: CV-based → *exponentially weighted
      moving deviation (EWMD)*.  EWMD tracks the EMA of absolute deviations
      from the running mean.  More responsive to regime changes than

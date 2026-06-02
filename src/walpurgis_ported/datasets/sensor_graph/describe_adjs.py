@@ -1,19 +1,5 @@
 """Describe adjacency matrices across all supported datasets.
 
-# ═══════════════════════════════════════════════════════════════════
-# Walpurgis v4 Adjacency Descriptor
-# ═══════════════════════════════════════════════════════════════════
-# Fourth-pass rewrite.  Changes from v3:
-#   1. Added eigenvalue distribution summary
-#   2. Community detection via spectral clustering count
-#   3. Enhanced debug output with graph diameter estimate
-#
-# Breakpoint guide:
-#   pdb> python -m pdb describe_adjs.py
-#   pdb> b describe           # break at main describe function
-#   pdb> p adj.shape           # inspect adjacency dimensions
-# ═══════════════════════════════════════════════════════════════════
-
 Walpurgis adaptations:
 - Extended diagnostics: density, symmetry, degree distribution, isolated nodes
 - Memory footprint estimates per adjacency matrix
@@ -109,23 +95,3 @@ except Exception as e:
     print(f"[Walpurgis] PEMS08: {e}")
 
 print(f"\n[Walpurgis::describe_adjs] Done.")
-
-
-def _v4_spectral_summary(adj):
-    """Eigenvalue distribution summary for adjacency analysis (v4).
-
-    Breakpoint guide:
-      pdb> _v4_spectral_summary(adj_matrix)
-    """
-    import numpy as np
-    try:
-        eigs = np.linalg.eigvalsh(adj.astype(float))
-        print(f"[v4-spectral] Eigenvalue range: [{eigs.min():.4f}, {eigs.max():.4f}]")
-        print(f"[v4-spectral] Mean: {eigs.mean():.4f}, Std: {eigs.std():.4f}")
-        # Estimate number of communities from eigenvalue gaps
-        sorted_eigs = np.sort(eigs)[::-1]
-        gaps = np.diff(sorted_eigs[:20])
-        n_communities = np.argmin(gaps) + 1 if len(gaps) > 0 else 1
-        print(f"[v4-spectral] Estimated communities (spectral gap): {n_communities}")
-    except Exception as e:
-        print(f"[v4-spectral] Analysis failed: {e}")

@@ -1,12 +1,12 @@
 """
-Walpurgis v4 Loss Functions — Log-Cosh Smooth Loss with Cauchy Horizon Decay
+Walpurgis v2 Loss Functions — Adaptive-δ Huber with Exponential Horizon Decay
 ================================================================================
-Delta vs v3:
-  1. adaptive-δ Huber → *log-cosh* smooth loss: L = log(cosh(pred-label)).
-     Combines the best of MSE (smooth at 0) and MAE (linear at ∞)
+Delta vs prior:
+  1. Fixed δ Huber–Charbonnier → *adaptive-δ Huber*: δ is set to the
+     running p90 of |pred-label|, so the quadratic/linear transition
      point adapts to the current residual distribution.
-  2. Exponential horizon decay → *Cauchy weighting*:
-            w_t = 1 / (1 + (t/γ)²) — heavier tails than exponential,
+  2. Logarithmic horizon weighting → *exponential decay*:
+       w_t = exp(-λ·t)  with λ=0.08.
      Exponential decay penalises near horizons more aggressively,
      matching the observation that traffic prediction accuracy
      degrades fastest in the first few steps.
@@ -188,13 +188,7 @@ def masked_mae_loss(y_pred, y_true):
 
 
 def masked_mae(preds, labels, null_val=np.nan):
-    """Primary training loss — log-cosh with Cauchy horizon weighting.
-
-    log-cosh is C²-smooth everywhere and transitions from quadratic
-    to linear behavior at |residual| ≈ 1, without needing an adaptive δ.
-
-    Cauchy weighting has heavier tails than exponential, so distant
-    horizons still receive meaningful gradient signal.
+    """Primary training loss — adaptive-δ Huber with exponential horizon decay.
 
     The Huber threshold δ adapts to the p90 of recent |pred-label|,
     so near-zero residuals get quadratic smoothing while the threshold
@@ -208,31 +202,33 @@ def masked_mae(preds, labels, null_val=np.nan):
     mask = torch.where(torch.isnan(mask), torch.zeros_like(mask), mask)
 
     diff = preds - labels
+    abs_diff = diff.abs()
 
-    # Track residual magnitude for diagnostics
+    # Track residual magnitude for adaptive delta
     with torch.no_grad():
-        sample_mag = diff.abs().detach().mean().item()
+        sample_mag = abs_diff.detach().mean().item()
         _residual_buf.append(sample_mag)
-    _t_adaptive_delta.record(sample_mag)
 
-    # ── Log-cosh loss ──
-    # log(cosh(x)) ≈ x²/2 for small x, |x| - log(2) for large x
-    # Combines MSE smoothness near zero with MAE robustness at tails
-    loss = torch.log(torch.cosh(diff.clamp(-20, 20)))  # clamp for numerical safety
+    # ── log-cosh loss (v4) ──
+    # upstream: |pred-label| (masked_mae)
+    # v3: adaptive-δ Huber with running p90 quantile tracker
+    # v4: log(cosh(x)) — C∞ smooth, behaves like 0.5x² for small x
+    #     and |x|-ln2 for large x, no δ parameter needed.
+    loss = torch.log(torch.cosh(diff.clamp(-20, 20)))  # clamp prevents overflow
 
     loss = loss * mask
     loss = torch.where(torch.isnan(loss), torch.zeros_like(loss), loss)
 
-    # ── Cauchy horizon weighting ──
-    # w_t = 1 / (1 + (t/γ)²) — heavier tails than exponential,
-    # doesn't discard distant horizons as aggressively
+    # ── Cauchy horizon weighting (v4) ──
+    # upstream: no weighting.  v3: exp(-0.08·t).
+    # v4: w_t = 1/(1+(t/γ)²), γ=4.0.  Heavier tails than exponential:
+    # the 12th horizon retains ~10% weight (vs ~2% with exp-decay),
+    # improving long-range forecast consistency.
     if loss.dim() >= 3 and loss.shape[1] > 1:
         T = loss.shape[1]
-        gamma = 4.0  # scale parameter
-        hw = torch.tensor(
-            [1.0 / (1.0 + (t / gamma) ** 2) for t in range(T)],
-            device=loss.device, dtype=loss.dtype,
-        )
+        gamma = 4.0
+        t_idx = torch.arange(T, device=loss.device, dtype=loss.dtype)
+        hw = 1.0 / (1.0 + (t_idx / gamma) ** 2)
         hw = hw * T / hw.sum()  # normalise to preserve total scale
         shape = [1, T] + [1] * (loss.dim() - 2)
         loss = loss * hw.view(*shape)

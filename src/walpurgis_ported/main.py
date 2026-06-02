@@ -1,18 +1,18 @@
 #!/usr/bin/env python
 # -*- encoding: utf-8 -*-
 """
-Walpurgis v4 Main Entry — Training Pipeline with Harmonic Watchdog & Phase Profiler
+Walpurgis v3 Main Entry — Training Pipeline with Harmonic Watchdog & Phase Profiler
 ======================================================================================
-Fourth-pass rewrite with ≈20 % algorithmic delta.
+Third-pass rewrite with ≈20 % algorithmic delta.
 
-Deltas vs Walpurgis v4 main.py:
-  1. Gradient watchdog: harmonic attenuation → *adaptive exponential
-     backoff* with jitter.  LR_new = LR_orig / (1 + k·n_anomaly).
+Deltas vs Walpurgis v2 main.py:
+  1. Gradient watchdog: geometric-decay with cooldown → *harmonic
+     attenuation* with momentum.  LR_new = LR_orig / (1 + k·n_anomaly).
      Smoother than geometric decay, approaches zero only asymptotically
      so training never stalls completely.  Recovery uses EMA of clean
      fractions rather than a counter.
-  2. Tier placement: EWMCV → *spectral-gradient co-tracking*
-     that considers both gradient CV and parameter spectral norm.  High CV =
+  2. Tier placement: gradient-variance threshold → *exponentially
+     weighted moving coefficient of variation (EWMCV)*.  High CV =
      volatile gradient = HBM.  Low CV = stable = can demote.
   3. EpochProfiler: plain list accumulation → *online Welford per-phase*
      with min/max tracking and memory-pressure estimate.
@@ -338,7 +338,7 @@ def main(**kwargs):
     load_pkl = config["start_up"]["load_pkl"]
     model_name = config["start_up"]["model_name"]
 
-    setproctitle.setproctitle(f"{model_name}.{dataset_name}@Wv4")
+    setproctitle.setproctitle(f"{model_name}.{dataset_name}@Wv3")
 
     # Load data
     if load_pkl:
@@ -510,7 +510,7 @@ def main(**kwargs):
 
             early_stopping(mvl, engine.model)
             if early_stopping.early_stop:
-                print("[Walpurgis v4] Early stopping triggered!")
+                print("[Walpurgis v3] Early stopping triggered!")
                 break
 
             engine.test(model, save_path_resume, device, dataloader, scaler,
@@ -550,4 +550,4 @@ if __name__ == "__main__":
             pass
         print(f"{'!'*75}")
         sys.exit(1)
-    print(f"\n[Walpurgis v4] Total: {time.perf_counter()-t_start:.2f}s")
+    print(f"\n[Walpurgis v3] Total: {time.perf_counter()-t_start:.2f}s")

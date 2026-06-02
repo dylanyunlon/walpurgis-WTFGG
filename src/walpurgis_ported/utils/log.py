@@ -1,9 +1,9 @@
 """
-Walpurgis v4 Training Logger — Structured JSONL + Content-Addressed Archive
+Walpurgis v3 Training Logger — Structured JSONL + Content-Addressed Archive
 ==============================================================================
-Fourth-pass rewrite with ≈20 % algorithmic delta.
+Third-pass rewrite with ≈20 % algorithmic delta.
 
-Deltas vs Walpurgis v3 log.py:
+Deltas vs Walpurgis v2 log.py:
   1. Run archival: mtime-based selective copy → *content-addressed*
      deduplication.  Each file's BLAKE2b hash is checked before copy;
      identical content across runs is never duplicated.  This saves
@@ -98,50 +98,6 @@ def _blake2b_file(path, digest_size=8):
     return h.hexdigest()
 
 
-class _V4JsonFormatter:
-    """JSON-lines formatter for structured training logs (v4).
-
-    Outputs one JSON object per log event for machine-parseable
-    training analysis.  Each line contains:
-    {timestamp, step, event, metrics, tags}
-
-    Breakpoint guide:
-      pdb> fmt = _V4JsonFormatter("experiment_001")
-      pdb> fmt.log_event("train_step", {"loss": 0.5, "lr": 0.001}, step=100)
-      pdb> fmt.flush()  # write buffered events to disk
-    """
-    def __init__(self, experiment_id, buffer_size=50):
-        self._exp_id = experiment_id
-        self._buffer = []
-        self._buffer_size = buffer_size
-
-    def log_event(self, event_type, metrics, step=None, tags=None):
-        import json, time
-        entry = {
-            "timestamp": time.time(),
-            "experiment": self._exp_id,
-            "event": event_type,
-            "step": step,
-            "metrics": metrics,
-            "tags": tags or [],
-            "version": "v4"
-        }
-        self._buffer.append(json.dumps(entry))
-        if len(self._buffer) >= self._buffer_size:
-            self.flush()
-
-    def flush(self):
-        """Write buffered events — call from pdb to force-flush."""
-        # In production, would write to file; here just clears buffer
-        n = len(self._buffer)
-        self._buffer.clear()
-        return n
-
-    def summary(self):
-        return {"experiment": self._exp_id, "buffered": len(self._buffer),
-                "version": "v4"}
-
-
 class TrainLogger:
     """Training run logger with JSONL epoch logging and content-addressed archival.
 
@@ -158,7 +114,7 @@ class TrainLogger:
         self._model = model_name
         self._dataset = dataset
         self._meta = {"model": model_name, "dataset": dataset,
-                      "timestamp": ts, "version": "v4", "args": {}}
+                      "timestamp": ts, "version": "v3", "args": {}}
         self._prev_metrics = {}
         self._epoch_start = None
 

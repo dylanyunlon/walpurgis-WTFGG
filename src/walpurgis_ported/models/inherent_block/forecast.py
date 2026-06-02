@@ -1,8 +1,8 @@
 """
-Walpurgis v4 Inherent Forecast — Gradient Highway with Adaptive α
+Walpurgis v2 Inherent Forecast — Selective Checkpoint with Norm Monitor
 ==========================================================================
-Delta vs v3:
-  - Selective checkpoint → *gradient highway with adaptive α* — only checkpoints
+Delta vs prior:
+  - Gradient checkpointing: always-on → *selective* — only checkpoints
     when the hidden dimension exceeds a threshold (256), avoiding the
     recomputation overhead for small models.
   - Added residual connection from input to output with a learnable
@@ -28,8 +28,10 @@ class Forecast(nn.Module):
         self.fc_in = nn.Linear(hidden_dim, forecast_dim)
         self.fc_out = nn.Linear(forecast_dim, output_seq_len // gap)
         self.drop = 0.1
-        # Learnable residual mixing: output = α·skip + (1-α)·transformed
+        # v4: content-dependent residual highway (vs v3's scalar α)
+        # Gate learns to route more signal through skip when gradients vanish.
         self._res_alpha = nn.Parameter(torch.tensor(0.1))
+        self._highway_gate = nn.Linear(hidden_dim, 1)
         self._ckpt_threshold = 256
         self._debug = True
         self._diag_last = {}
@@ -57,8 +59,11 @@ class Forecast(nn.Module):
         else:
             h = self._inner(h)
 
-        # Learnable residual mixing
-        alpha = torch.sigmoid(self._res_alpha)
+        # v4: content-dependent highway gate
+        # v3: static α. v4: α modulated by input signal.
+        base_alpha = torch.sigmoid(self._res_alpha)
+        gate_mod = torch.sigmoid(self._highway_gate(skip)).squeeze(-1)
+        alpha = base_alpha * gate_mod.mean()
         if skip.shape[-1] != h.shape[-1]:
             # Dimension mismatch: project skip
             skip_proj = F.linear(skip, self.fc_in.weight[:, :skip.shape[-1]])

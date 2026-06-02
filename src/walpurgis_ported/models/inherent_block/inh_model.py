@@ -1,12 +1,12 @@
 """
-Walpurgis v4 Temporal Models — LSTM + RoPE-Lite Transformer
+Walpurgis v2 Temporal Models — LSTM + ALiBi Transformer
 ==========================================================
 Deltas vs prior:
-  - LSTM (unchanged from v3) with forget-gate bias init (+1.0).  LSTM's explicit
+  - BiGRU → *LSTM* with forget-gate bias init (+1.0).  LSTM's explicit
     cell state provides better long-range gradient flow than GRU's
     hidden-only architecture.  Forward-only (not bidirectional) to
     match the causal nature of traffic forecasting.
-  - ALiBi → *RoPE-lite* (simplified Rotary Position Embeddings): instead of rotating
+  - RoPE → *ALiBi* (Attention with Linear Biases): instead of rotating
     Q/K, ALiBi adds a linear distance penalty directly to attention
     scores.  This is simpler (no trig), extrapolates better to unseen
     lengths, and has zero learnable parameters for position encoding.
@@ -65,21 +65,21 @@ class RNNLayer(nn.Module):
         return out
 
 
-def _alibi_slopes(n_heads):
-    """Geometric slopes for ALiBi: m_i = 2^{-8/H · (i+1)}."""
-    ratio = 2.0 ** (-8.0 / n_heads)
-    return torch.tensor([ratio ** (i + 1) for i in range(n_heads)])
+def _rope_freqs(dim, seq_len, device, base=10000.0):
+    """RoPE frequencies (v4). upstream: sinusoidal PE. v3: ALiBi. v4: RoPE."""
+    freqs = 1.0 / (base ** (torch.arange(0, dim, 2, device=device).float() / dim))
+    t = torch.arange(seq_len, device=device).float()
+    angles = torch.outer(t, freqs)
+    return torch.cos(angles), torch.sin(angles)
 
 
-def _alibi_bias(n_heads, seq_len, device):
-    """Compute ALiBi position bias matrix: slopes × distance."""
-    slopes = _alibi_slopes(n_heads).to(device)  # [H]
-    # Distance matrix: |i - j|
-    pos = torch.arange(seq_len, device=device).float()
-    dist = (pos.unsqueeze(0) - pos.unsqueeze(1)).abs()  # [L, L]
-    # Bias = -slope * distance (closer = higher attention)
-    bias = -slopes.unsqueeze(-1).unsqueeze(-1) * dist.unsqueeze(0)  # [H, L, L]
-    return bias
+def _apply_rope(x, cos_f, sin_f):
+    """Apply rotary embedding to x: [B, H, L, dh]."""
+    d2 = x.shape[-1] // 2
+    x1, x2 = x[..., :d2], x[..., d2:]
+    c = cos_f[:x.shape[-2], :d2].unsqueeze(0).unsqueeze(0)
+    s = sin_f[:x.shape[-2], :d2].unsqueeze(0).unsqueeze(0)
+    return torch.cat([x1*c - x2*s, x2*c + x1*s], dim=-1)
 
 
 class TransformerLayer(nn.Module):
@@ -108,7 +108,8 @@ class TransformerLayer(nn.Module):
         )
         self._debug = True
         self._attn_entropy = None
-        self._cached_bias = None
+        self._cached_cos = None
+        self._cached_sin = None
         self._cached_len = -1
 
     def forward(self, x):
@@ -122,15 +123,15 @@ class TransformerLayer(nn.Module):
         qkv = self.qkv(normed).reshape(B, L, 3, H, dh).permute(2, 0, 3, 1, 4)
         q, k, v = qkv[0], qkv[1], qkv[2]
 
-        # Scaled dot-product + ALiBi bias
+        # RoPE (v4): rotate Q, K before dot-product
+        if self._cached_len != L:
+            self._cached_cos, self._cached_sin = _rope_freqs(dh, L, x.device)
+            self._cached_len = L
+        q = _apply_rope(q, self._cached_cos, self._cached_sin)
+        k = _apply_rope(k, self._cached_cos, self._cached_sin)
+
         scale = math.sqrt(dh)
         attn_logits = torch.matmul(q, k.transpose(-2, -1)) / scale
-
-        # ALiBi: cache bias for fixed seq_len
-        if self._cached_len != L:
-            self._cached_bias = _alibi_bias(H, L, x.device)
-            self._cached_len = L
-        attn_logits = attn_logits + self._cached_bias.unsqueeze(0)  # broadcast over batch
 
         attn = torch.softmax(attn_logits, dim=-1)
         out = torch.matmul(attn, v).transpose(1, 2).reshape(B, L, D)

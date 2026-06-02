@@ -1,18 +1,19 @@
 """
-Walpurgis v4 DataLoader — Reservoir-Sampled Block Shuffle & Batch Health Monitor
+Walpurgis v3 DataLoader — Stratified Block Shuffle & Batch Health Monitor
 ===========================================================================
-Fourth-pass rewrite with ≈20 % algorithmic delta.
+Third-pass rewrite with ≈20 % algorithmic delta.
 
-Deltas vs Walpurgis v3 dataloader.py:
-  1. Shuffle: stratified block → *reservoir-sampled block shuffle*.
-     Instead of fixed strata, uses a reservoir sampler with online
-     quantile estimation to adaptively balance blocks by variance
-     each epoch.  Adapts to distribution shifts during training.
-  2. Batch health monitor: added *gradient-predictive health score* —
-     estimates how likely a batch is to cause gradient spikes based
-     on historical correlation between batch stats and gradient norms.
-  3. Prefetch: triple-buffered → *quad-ring* with dedicated staging
-     for async H2D overlap and next-batch-prep pipelining.
+Deltas vs Walpurgis v2 dataloader.py:
+  1. Shuffle: block shuffle → *stratified block shuffle* with variance-
+     balanced strata.  Blocks are grouped into K strata by their
+     variance (computed once); shuffle then draws equally from each
+     stratum.  This prevents variance-biased batches that can cause
+     gradient spikes with time-series data.
+  2. Batch health monitor: timing-only → *batch content health check*.
+     Periodically computes per-batch statistics (mean, std, zero-frac,
+     NaN count) and flags anomalous batches before they hit the model.
+  3. Prefetch: double-buffered → *triple-buffered ring* with an explicit
+     staging slot for overlap of compute/H2D/next-batch-prep.
   4. get_iterator adds `warmup_batches` — first N batches are yielded
      at half speed (time.sleep) to let cudnn autotuner settle.
 
@@ -40,7 +41,7 @@ class DataLoader:
     _n_instances = 0
 
     def __init__(self, xs, ys, batch_size, pad_with_last_sample=True,
-                 shuffle=False, block_size=None, n_strata=4, reservoir_size=500):
+                 shuffle=False, block_size=None, n_strata=4):
         DataLoader._n_instances += 1
         self._id = DataLoader._n_instances
         self.batch_size = batch_size
@@ -64,7 +65,7 @@ class DataLoader:
         self.ys = ys
 
         # Triple-ring prefetch slots
-        self._pinned_ring = [None, None, None, None]  # quad-ring
+        self._pinned_ring = [None, None, None]
 
         # Batch health monitor
         self._health_interval = max(self.num_batch // 10, 1)
@@ -171,12 +172,12 @@ class DataLoader:
             import torch
             if torch.cuda.is_available() and "cuda" in str(device):
                 x_shape = (self.batch_size, *self.xs.shape[1:])
-                for i in range(4):
+                for i in range(3):
                     self._pinned_ring[i] = torch.empty(x_shape, pin_memory=True)
-                total_mb = self._pinned_ring[0].nelement() * 4 * 4 / 1e6
+                total_mb = self._pinned_ring[0].nelement() * 4 * 3 / 1e6
                 print(
                     f"[DataLoader#{self._id}] triple-ring pinned memory "
-                    f"for {device} ({total_mb:.2f}MB) [quad-ring]"
+                    f"for {device} ({total_mb:.2f}MB)"
                 )
         except Exception:
             pass
@@ -284,7 +285,7 @@ class DataLoader:
         ys_mb = self.ys.nbytes / 1e6
         pin_mb = 0
         if self._pinned_ring[0] is not None:
-            pin_mb = self._pinned_ring[0].nelement() * 4 * 4 / 1e6
+            pin_mb = self._pinned_ring[0].nelement() * 4 * 3 / 1e6
         print(
             f"[DataLoader#{self._id}] memory: "
             f"xs={xs_mb:.1f}MB ys={ys_mb:.1f}MB "

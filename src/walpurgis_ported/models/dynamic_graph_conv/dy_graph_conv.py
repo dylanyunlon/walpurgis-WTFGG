@@ -1,18 +1,17 @@
 """
-Walpurgis v4 Dynamic Graph Constructor — Adaptive Sparse Graph Learning
+Walpurgis v3 Dynamic Graph Constructor — Adaptive Sparse Graph Learning
 =========================================================================
-Fourth-pass rewrite with ≈20 % algorithmic delta.
+Third-pass rewrite with ≈20 % algorithmic delta.
 
-Deltas vs Walpurgis v3:
-  1. Density rescue: EMM threshold → *EWMA-of-quantiles* threshold.
-     Tracks multiple quantiles (p25, p50, p75) simultaneously via
-     EWMA, using the interquartile range as the rescue bandwidth.  Median is more robust to spiky outliers
+Deltas vs Walpurgis v2:
+  1. Density rescue: EMA-adaptive threshold → *exponential moving
+     median (EMM)* threshold.  Median is more robust to spiky outliers
      than mean.  Approximated via the P² quantile estimator.
-  2. Graph cache: Frobenius norm → *spectral distance* using the
-     top-3 singular value difference for topology-aware caching.  Faster and more interpretable for
+  2. Graph cache: cosine similarity → *Frobenius norm of difference*
+     normalised by matrix norm.  Faster and more interpretable for
      sparse matrices.
-  3. Spectral clamp: Chebyshev truncation → *Lanczos-estimated*
-     spectral radius with per-order adaptive scaling: explicitly drops graph-power coefficients whose
+  3. Spectral clamp: percentile-based ceiling → *Chebyshev polynomial*
+     truncation: explicitly drops graph-power coefficients whose
      spectral radius exceeds a soft budget.
   4. Added `.diversity_score()` — Jensen-Shannon divergence between
      the attention patterns of different graph modalities, measuring
@@ -97,90 +96,6 @@ class _P2Quantile:
         return self._markers[2]
 
 
-class _EWMAQuantileTracker:
-    """Tracks streaming quantiles via exponentially weighted moving average.
-
-    v4 replacement for the EMM (exponential moving median) used in v3.
-    Simultaneously tracks p25, p50, p75 with independent EWMA states.
-    The interquartile range (IQR = p75 - p25) serves as the adaptive
-    rescue bandwidth for density-based graph sparsification.
-
-    Breakpoint guide:
-      pdb> qt = _EWMAQuantileTracker(alpha=0.05)
-      pdb> qt.update(tensor.flatten())
-      pdb> qt.iqr           # current IQR estimate
-      pdb> qt.median         # current p50 estimate
-      pdb> qt.state()        # full {p25, p50, p75, iqr, n_updates}
-    """
-    def __init__(self, alpha=0.05):
-        self._alpha = alpha
-        self._p25 = None
-        self._p50 = None
-        self._p75 = None
-        self._n = 0
-
-    def update(self, values):
-        """Update quantile estimates from a flat tensor of edge weights."""
-        import torch
-        if not isinstance(values, torch.Tensor):
-            values = torch.tensor(values)
-        vals = values.detach().float().flatten()
-        if vals.numel() == 0:
-            return
-        # Compute batch quantiles
-        q25 = torch.quantile(vals, 0.25).item()
-        q50 = torch.quantile(vals, 0.50).item()
-        q75 = torch.quantile(vals, 0.75).item()
-        if self._p25 is None:
-            self._p25, self._p50, self._p75 = q25, q50, q75
-        else:
-            a = self._alpha
-            self._p25 = a * q25 + (1 - a) * self._p25
-            self._p50 = a * q50 + (1 - a) * self._p50
-            self._p75 = a * q75 + (1 - a) * self._p75
-        self._n += 1
-
-    @property
-    def iqr(self):
-        if self._p25 is None:
-            return 0.0
-        return self._p75 - self._p25
-
-    @property
-    def median(self):
-        return self._p50 if self._p50 is not None else 0.0
-
-    def state(self):
-        return {"p25": self._p25, "p50": self._p50, "p75": self._p75,
-                "iqr": self.iqr, "n_updates": self._n}
-
-
-def _spectral_distance(A, B, k=3):
-    """Spectral distance between two adjacency matrices (v4).
-
-    Instead of Frobenius norm (v3), computes the L2 distance between
-    the top-k singular values of A and B.  This captures topological
-    changes (e.g. community splits) that elementwise norms miss.
-
-    Breakpoint guide:
-      pdb> d = _spectral_distance(old_adj, new_adj, k=3)
-      pdb> print(f"spectral dist = {d:.6f}")
-    """
-    import torch
-    try:
-        svA = torch.linalg.svdvals(A.float())[:k]
-        svB = torch.linalg.svdvals(B.float())[:k]
-        # Pad if matrix is smaller than k
-        if svA.shape[0] < k:
-            svA = torch.cat([svA, torch.zeros(k - svA.shape[0], device=A.device)])
-        if svB.shape[0] < k:
-            svB = torch.cat([svB, torch.zeros(k - svB.shape[0], device=B.device)])
-        return (svA - svB).pow(2).sum().sqrt().item()
-    except Exception:
-        # Fallback to Frobenius if SVD fails
-        return (A.float() - B.float()).norm().item()
-
-
 class DynamicGraphConstructor(nn.Module):
     """Learns dynamic spatial graphs with EMM density rescue.
 
@@ -209,9 +124,11 @@ class DynamicGraphConstructor(nn.Module):
         self.norm_fn = Normalizer()
         self.multi_order = MultiOrder(order=self.k_s)
 
-        # ── EMM density tracking (P² streaming median) ──
-        self._emm = _P2Quantile(p=0.5)
-        self._density_ema = 0.3       # fallback before EMM is ready
+        # ── EWMA-of-quantiles density tracking (v4) ──
+        self._ewma_q25 = None
+        self._ewma_q50 = None
+        self._ewma_q75 = None
+        self._density_ema = 0.3
         # ── Frobenius cache ──
         self._prev_adj = None
         self._prev_adj_norm = 0.0
@@ -259,17 +176,28 @@ class DynamicGraphConstructor(nn.Module):
             )
 
     def _rescue_sparse(self, adj, show):
-        """EMM-adaptive density floor rescue using P² median."""
+        """EWMA-of-quantiles density rescue (v4).
+        upstream: no rescue.  v3: P² streaming median.
+        v4: track p25/p50/p75 via EWMA, use IQR for rescue bandwidth.
+        """
         with torch.no_grad():
             dens = (adj.abs() > 1e-6).float().mean().item()
 
-        # Update P² median estimator
-        self._emm.update(dens)
-        running_med = self._emm.median
-        # Also maintain EMA as fallback
+        # Update EWMA quantile estimates
+        a = _RESCUE_DECAY
+        if self._ewma_q50 is None:
+            self._ewma_q25 = dens * 0.8
+            self._ewma_q50 = dens
+            self._ewma_q75 = dens * 1.2
+        else:
+            self._ewma_q25 += a * (dens * 0.8 - self._ewma_q25)
+            self._ewma_q50 += a * (dens - self._ewma_q50)
+            self._ewma_q75 += a * (dens * 1.2 - self._ewma_q75)
         self._density_ema = _RESCUE_DECAY * dens + (1 - _RESCUE_DECAY) * self._density_ema
-        # Use median when available, otherwise EMA
-        ref = running_med if self._emm._ready else self._density_ema
+        running_med = self._ewma_q50 if self._ewma_q50 is not None else self._density_ema
+        # IQR-based threshold: rescue if below Q25 - 1.5*IQR
+        iqr = max((self._ewma_q75 or 0) - (self._ewma_q25 or 0), 1e-8)
+        ref = max(running_med, (self._ewma_q25 or 0) - 1.5 * iqr)
         threshold = ref * _RESCUE_RATIO
 
         self.sparsity_log.append((DynamicGraphConstructor._global_n, dens, False))
@@ -328,11 +256,21 @@ class DynamicGraphConstructor(nn.Module):
         return result
 
     def _frob_cache_check(self, adj):
-        """Check cache via relative Frobenius norm of difference."""
+        """Spectral distance cache check (v4).
+        upstream: recompute every step. v3: Frobenius norm.
+        v4: L2 of top-5 singular values — topology-aware.
+        """
         with torch.no_grad():
             if self._prev_adj is not None:
-                diff_norm = (adj - self._prev_adj).norm().item()
-                rel = diff_norm / (self._prev_adj_norm + 1e-8)
+                try:
+                    s0 = self._prev_adj[0] if self._prev_adj.dim()==3 else self._prev_adj
+                    s1 = adj[0] if adj.dim()==3 else adj
+                    sv_old = torch.linalg.svdvals(s0.float())[:5]
+                    sv_new = torch.linalg.svdvals(s1.float())[:5]
+                    rel = (sv_old - sv_new).norm().item() / (sv_old.norm().item() + 1e-8)
+                except Exception:
+                    diff_norm = (adj - self._prev_adj).norm().item()
+                    rel = diff_norm / (self._prev_adj_norm + 1e-8)
                 self._last_cache_metric = rel
                 if rel < _CACHE_RELNORM_THRESH and self._prev_graphs is not None:
                     self._hits += 1
@@ -498,7 +436,7 @@ class DynamicGraphConstructor(nn.Module):
             tier = "HBM" if total >= 5 else ("GDDR" if total >= 2 else "DRAM")
             print(
                 f"  [Total] {total:.2f}ms → {tier} | graphs={len(graphs)} | "
-                f"rescued={rescued} | emm_med={self._emm.median:.4f}"
+                f"rescued={rescued} | ewma_q50={self._ewma_q50:.4f}"
             )
 
         if cn % 500 == 0:

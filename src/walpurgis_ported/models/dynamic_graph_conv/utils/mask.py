@@ -1,8 +1,8 @@
 """
-Walpurgis v4 Mask — Quantile-Hysteresis Adaptive Sparse Gating
+Walpurgis v2 Mask — Percentile-Based Adaptive Sparse Gating
 ===============================================================
-Delta vs v3:
-  - Percentile threshold → *quantile with hysteresis*:
+Delta vs prior:
+  - Per-row mean threshold → *percentile-based* threshold:
       thresh_row = quantile(row, p)  where p = sigmoid(α)
     Using a quantile makes the threshold robust to skewed similarity
     distributions (common in traffic graphs with hub nodes).
@@ -29,6 +29,8 @@ class Mask(nn.Module):
         super().__init__()
         self._alpha = nn.Parameter(torch.tensor(0.0))  # sigmoid → quantile level
         self._slope = nn.Parameter(torch.tensor(10.0))  # leaky transition steepness
+        self._hyst_margin = 0.05  # v4: hysteresis band
+        self._last_thresh = None
         self._debug = True
         self._density_log = deque(maxlen=500)
         self._diag_last = {}
@@ -54,7 +56,16 @@ class Mask(nn.Module):
         # Use quantile along last dim for each row
         B = dist_mx.shape[0]
         q_level = quantile_level.item()
-        thresh = torch.quantile(dist_mx.float(), q_level, dim=-1, keepdim=True)
+        new_thresh = torch.quantile(dist_mx.float(), q_level, dim=-1, keepdim=True)
+        # v4: Schmitt hysteresis — stabilise threshold near decision boundary
+        if self._last_thresh is not None and self._last_thresh.shape == new_thresh.shape:
+            upper = self._last_thresh + self._hyst_margin
+            lower = self._last_thresh - self._hyst_margin
+            thresh = torch.where(new_thresh > upper, new_thresh,
+                      torch.where(new_thresh < lower, new_thresh, self._last_thresh))
+        else:
+            thresh = new_thresh
+        self._last_thresh = thresh.detach()
 
         # Leaky hard-tanh mask: smooth transition with guaranteed gradient
         diff = steepness * (dist_mx - thresh)

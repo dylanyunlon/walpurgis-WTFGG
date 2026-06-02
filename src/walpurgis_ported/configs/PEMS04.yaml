@@ -1,8 +1,8 @@
 ---
 # ═══════════════════════════════════════════════════════════════
-# Walpurgis v4 Configuration — PEMS04 (traffic flow, 307 sensors)
+# Walpurgis v3 Configuration — PEMS04 (traffic flow, 307 sensors)
 #
-# v4 deltas (from v3): adaptive reservoir shuffle, log-cosh loss, tikhonov regularization, JSD drift, blocked shuffle,
+# v3 deltas: tikhonov regularization, JSD drift, blocked shuffle,
 #            EMA epoch logging, integrity scan on first epoch
 #
 # Tier placement notes:
