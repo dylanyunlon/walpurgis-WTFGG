@@ -9,5 +9,4 @@ if __name__ == "__main__":
         output_dir="datasets/PEMS08",
         npz_path="datasets/raw_data/PEMS08/PEMS08.npz",
         train_ratio=0.6,
-        train_minus_one=True,
     )

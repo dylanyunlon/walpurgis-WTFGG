@@ -1,4 +1,6 @@
-"""Quick-inspect adjacency matrices for all four datasets."""
+"""
+Quick summary of all adjacency matrices: node count and edge count.
+"""
 import pickle
 
 
@@ -17,23 +19,16 @@ def _count_edges(adj):
                    if adj[i][j] != 0))
 
 
-def _report(tag, adj):
+def _describe(tag, path, unpack_idx=None):
+    raw = _load_pkl(path)
+    mx = raw[unpack_idx] if unpack_idx is not None else raw
+    n_edges = _count_edges(mx)
     print(f"{'='*20} {tag} {'='*20}")
-    print(f"  Nodes: {adj.shape[0]}")
-    print(f"  Edges: {_count_edges(adj)}")
+    print(f"  Nodes: {mx.shape[0]}    Edges: {n_edges}")
 
 
 if __name__ == "__main__":
-    # METR-LA
-    obj = _load_pkl("datasets/sensor_graph/adj_mx_la.pkl")
-    _report("METR-LA", obj[2])
-
-    # PEMS-BAY
-    obj = _load_pkl("datasets/sensor_graph/adj_mx_bay.pkl")
-    _report("PEMS-BAY", obj[2])
-
-    # PEMS04
-    _report("PEMS04", _load_pkl("datasets/sensor_graph/adj_mx_04.pkl"))
-
-    # PEMS08
-    _report("PEMS08", _load_pkl("datasets/sensor_graph/adj_mx_08.pkl"))
+    _describe("METR-LA",  "datasets/sensor_graph/adj_mx_la.pkl",  unpack_idx=2)
+    _describe("PEMS-BAY", "datasets/sensor_graph/adj_mx_bay.pkl", unpack_idx=2)
+    _describe("PEMS04",   "datasets/sensor_graph/adj_mx_04.pkl")
+    _describe("PEMS08",   "datasets/sensor_graph/adj_mx_08.pkl")
