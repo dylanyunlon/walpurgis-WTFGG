@@ -1,23 +1,19 @@
 ---
 # ═══════════════════════════════════════════════════════════════
-# Walpurgis Configuration — PEMS04 (traffic flow, 307 sensors)
+# Walpurgis v4 Configuration — PEMS04 (traffic flow, 307 sensors)
+#
+# v4 deltas (from v3): adaptive reservoir shuffle, log-cosh loss, tikhonov regularization, JSD drift, blocked shuffle,
+#            EMA epoch logging, integrity scan on first epoch
 #
 # Tier placement notes:
 #   - batch_size 32 × 307 nodes × 32 hidden = ~1.2 MB per layer
-#   - Dynamic graph: O(307^2) = ~370 KB per adjacency
 #   - Uses MinMax normalization (flow data, not speed)
 #   - 300 epochs — long training benefits from tier migration
-#   - Curriculum learning over 3 epochs per horizon step
 #
-# Memory tier waterfall for PEMS04:
+# Tier migration waterfall:
 #   HBM  (tier-0): dynamic graph conv weights + attention (hot path)
 #   GDDR (tier-1): static adjacency cache, embedding tables
 #   DRAM (tier-2): input buffer, checkpoint storage, gradient history
-#
-# Debugging notes:
-#   - Set walpurgis.debug_interval to 50 for first-run diagnostics
-#   - Enable walpurgis.profile to get per-layer CUDA timing
-#   - walpurgis.nan_guard inserts check_nan_inf after every forward
 # ═══════════════════════════════════════════════════════════════
 
 start_up:
@@ -36,6 +32,14 @@ walpurgis:
   tier_placement_log: True
   checkpoint_struct_dump: True
   mem_budget_mb: 28.0
+  # v3 additions
+  tikhonov_eps: 1.0e-6
+  block_shuffle_factor: 4
+  jsd_alert_threshold: 0.1
+  ema_alpha: 0.1
+  integrity_scan: True
+  scaler_bound_sigma: 8
+  spectral_snapshot_k: 6
 
 data_args:
   data_dir: datasets/PEMS04

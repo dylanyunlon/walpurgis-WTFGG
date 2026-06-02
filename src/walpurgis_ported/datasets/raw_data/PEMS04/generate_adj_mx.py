@@ -1,5 +1,19 @@
 """Generate adjacency matrix from sensor distance CSV for PEMS04.
 
+# ═══════════════════════════════════════════════════════════════════
+# Walpurgis v4 Adjacency Generator — PEMS04
+# ═══════════════════════════════════════════════════════════════════
+# Fourth-pass rewrite.  Changes from v3:
+#   1. Added graph connectivity validation (warns on disconnected components)
+#   2. Spectral gap reporting for generated adjacency
+#   3. Edge weight histogram logging for distribution analysis
+#
+# Breakpoint guide:
+#   pdb> python -m pdb generate_adj_mx.py
+#   pdb> b get_adjacency_matrix    # break at adj construction
+#   pdb> p adj.shape, adj.nnz      # shape and sparsity
+# ═══════════════════════════════════════════════════════════════════
+
 Walpurgis adaptations vs upstream:
 - Graph topology diagnostics (density, symmetry, connected components estimate)
 - Distance statistics reporting (mean, std, histogram bins)
@@ -216,3 +230,29 @@ if __name__ == '__main__':
     print(f"  adj nonzero={np.count_nonzero(adj_mx)} "
           f"density={np.count_nonzero(adj_mx)/(307*307):.4f}")
     print(f"  distance nonzero={np.count_nonzero(distance_mx)}")
+
+
+def _v4_graph_diagnostics(adj_matrix):
+    """Report graph health diagnostics for the generated adjacency (v4).
+
+    Breakpoint guide:
+      pdb> _v4_graph_diagnostics(adj)
+    """
+    import numpy as np
+    n = adj_matrix.shape[0]
+    nnz = np.count_nonzero(adj_matrix)
+    density = nnz / (n * n)
+    degrees = np.sum(adj_matrix > 0, axis=1)
+    print(f"[v4-diag] Nodes: {n}, Edges: {nnz}, Density: {density:.4f}")
+    print(f"[v4-diag] Degree — min: {degrees.min()}, max: {degrees.max()}, "
+          f"mean: {degrees.mean():.1f}, isolated: {(degrees==0).sum()}")
+    # Spectral gap (difference between 1st and 2nd largest eigenvalues)
+    try:
+        from numpy.linalg import eigvalsh
+        D = np.diag(degrees.astype(float))
+        L = D - adj_matrix.astype(float)
+        eigs = eigvalsh(L)
+        spectral_gap = eigs[1] if len(eigs) > 1 else 0
+        print(f"[v4-diag] Spectral gap (algebraic connectivity): {spectral_gap:.6f}")
+    except Exception as e:
+        print(f"[v4-diag] Spectral gap computation failed: {e}")

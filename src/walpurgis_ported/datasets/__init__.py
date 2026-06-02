@@ -1,4 +1,4 @@
-"""Walpurgis datasets — raw data preprocessing and adjacency generation.
+"""Walpurgis v4 datasets — raw data preprocessing and adjacency generation.
 
 Each subdirectory under raw_data/ contains scripts to convert raw
 traffic sensor recordings into the train/val/test .npz splits
