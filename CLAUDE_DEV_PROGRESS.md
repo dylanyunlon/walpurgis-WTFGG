@@ -72,42 +72,60 @@ M295-M299  v4 data generators + validation
 ```
 **产出**: 42个文件 v4版 (7632行), `src/walpurgis_ported/`
 
-### 第七位 Claude（当前）— M300-M324: 鲁迅式 v2 移植 upstream→walpurgis_ported_v2 ✅ 已完成
+### 第七位 Claude — M300-M324: 鲁迅式 v2 移植 upstream→walpurgis_ported_v2
 ```
-M300-M304  utils 层: cal_adj (dispatch dict重构), load_data (_adj_builders),
-           train (EarlyStopping重构), log (TrainLogger._print_table), __init__
-M305-M308  dataloader 层: dataloader.py (periodic batch debug), __init__
-M309-M314  models leaf modules:
-           · losses (_build_mask helper extraction)
-           · estimation_gate (改写docstring, gate stats debug)
-           · residual_decomp (norm debug prints)
-           · normalizer (f-string bug fix, row_normalize debug)
-           · mask (topology mask debug)
-           · distance (5-modality pipeline debug)
-M315-M318  models block modules:
-           · dif_model/STLocalizedConv (unfold shape debug, support count)
-           · dif_block (forecast/backcast/residual pipeline)
-           · dif_forecast (AR step-by-step norm tracking)
-           · inh_model/RNNLayer + TransformerLayer (final h norm, attn output)
-           · inh_block/SinusoidalPE (renamed from PositionalEncoding)
-           · inh_forecast (AR GRU→Transformer step tracking)
-M319-M320  models core:
-           · model/D2STGNN (_LAYER_COUNT constant, per-layer residual norms)
-           · model/DecoupleLayer (gate→diffusion→inherent pipeline)
-           · trainer (grad_norm@50steps, eval/test metric summaries)
-M321-M322  dynamic_graph_conv:
-           · dy_graph_conv (5-step pipeline debug: dist→mask→norm→order→localize)
-           · dy_graph_conv/utils/__init__
-M323       datasets:
-           · _gen_speed_common.py (METR-LA/PEMS-BAY shared logic)
-           · _gen_flow_common.py (PEMS04/PEMS08 shared logic)
-           · _gen_adj_common.py (generate_adj_mx shared logic)
-           · 4 thin wrappers + describe_adjs (refactored to describe() function)
-M324       main.py (TIMING prints, epoch log restructure, _timestamp helper)
-           + configs (4 YAML copied) + syntax verification (41/41 pass) + git commit
+M300-M324  见上一版本进度记录（略）
 ```
 **产出**: `src/walpurgis_ported_v2/` — 41 .py + 4 .yaml, 2615行 Python
-**改写特征**: 保留算法骨架, ~20%变量/docstring/控制流改写, 20+个_DBG_*调试开关
+
+### 第八位 Claude（当前）— M325-M349: 鲁迅式 v3 移植 upstream→walpurgis_ported_v3 ✅ 已完成
+```
+M325-M328  v3 utils层 — train.py (seed debug, EarlyStopping重构),
+           cal_adj.py (remove_nan_inf debug, transition_matrix probe),
+           load_data.py (dispatch-dict替代if-elif, StandardScaler probe),
+           log.py (TrainLogger._show_dict方法合并)
+M329-M330  v3 dataloader — dataloader.py (cursor重命名, batch range debug),
+           __init__.py (导出)
+M331-M334  v3 models leaf modules —
+           · losses.py (_build_mask抽取, per-loss debug probe)
+           · estimation_gate.py (forward签名简化, gate_mean/std probe)
+           · residual_decomp.py (relu→instance attr, out_std probe)
+           · normalizer.py (row_sum验证, MultiOrder power series debug)
+           · mask.py (density probe per idx)
+           · distance.py (scale=sqrt(d_h)常量化, A0/A1 mean probe)
+M335-M338  v3 models block modules —
+           · dif_model/STLocalizedConv (_expand_predef方法提取, gconv debug)
+           · dif_block (变量名精简: forecast→fcast, backcast_branch→bcast_fc)
+           · dif_forecast (gap参数直接存储, step-by-step norm)
+           · inh_model/RNNLayer (hx_norm probe), TransformerLayer (out_mean)
+           · inh_block/PositionalEncoding (drop命名, per-forward signal stats)
+           · inh_forecast (n_ar_steps显式变量, gru_norm tracking)
+M339-M342  v3 models core —
+           · model.py/D2STGNN (_d_前缀, _build_graphs方法, _split_inputs方法,
+             per-layer residual_norm + output range probe)
+           · model.py/DecoupleLayer (参数名重映射)
+           · trainer.py (_masked_mape_np保留, grad_norm@50 debug,
+             eval summary, test per-horizon formatting)
+M343-M344  v3 dynamic_graph_conv —
+           · dy_graph_conv (_st_localize方法, 5-step pipeline debug)
+           · utils/__init__.py (clean imports)
+M345-M349  v3 datasets —
+           · _gen_speed_common.py (METR-LA/PEMS-BAY共用逻辑提取)
+           · _gen_flow_common.py (PEMS04/PEMS08共用逻辑提取, train_ratio参数化)
+           · _gen_adj_common.py (unidirectional/bidirectional统一接口)
+           · 4 thin wrappers + describe_adjs (helper function重构)
+           · main.py (os.makedirs output, _ts helper, epoch log重组)
+           · 4 YAML configs (原样搬运) + __init__.py
+           + 完整性验证: 45 files, 17 directories, 2202行 Python
+```
+**产出**: `src/walpurgis_ported_v3/` — 41 .py + 4 .yaml + 3 common modules, 2202行 Python
+**改写策略**: upstream骨架 + ~20%变形(变量重命名/函数签名调整/dispatch-dict/方法提取) + 20个_DBG开关
+**调试开关**: `--debug-main`, `--debug-model`, `--debug-trainer`, `--debug-data`,
+             `--debug-adj`, `--debug-train`, `--debug-loss`, `--debug-gate`,
+             `--debug-stconv`, `--debug-difblk`, `--debug-diffc`, `--debug-inhblk`,
+             `--debug-inhmod`, `--debug-inhfc`, `--debug-dygraph`, `--debug-dist`,
+             `--debug-mask`, `--debug-norm`, `--debug-loader`, `--debug-log`,
+             `--debug-resdecomp`
 
 ---
 
@@ -122,23 +140,24 @@ M324       main.py (TIMING prints, epoch log restructure, _timestamp helper)
 | 第五位 | M256-M274 | v3 全量改写 | ✅ |
 | 第六位 | M275-M299 | v4 全量改写 | ✅ |
 | 第七位 | M300-M324 | 鲁迅式 v2 移植 (walpurgis_ported_v2) | ✅ |
-| 第八位 | M325-M349 | (待分配) | ⏳ |
+| 第八位 | M325-M349 | 鲁迅式 v3 移植 (walpurgis_ported_v3) | ✅ |
 | 第九位 | M350-M374 | (待分配) | ⏳ |
 | 第十位 | M375-M399 | (待分配) | ⏳ |
 | 第十一位 | M400-M424 | (待分配) | ⏳ |
 | 第十二位 | M425-M449 | (待分配) | ⏳ |
 
-## 文件统计快照 (第七位 Claude 完成后)
+## 文件统计快照 (第八位 Claude 完成后)
 
 ```
-src/walpurgis/             6,644 行 Python (v3, 19 files + inits + configs)
-src/walpurgis_ported/      7,632 行 Python (v4, 42 files)
-src/walpurgis_ported_v2/   2,615 行 Python (鲁迅式port, 41 files + 4 YAML)
-src/core/                 ~2,000 行 C++ (tiered allocator, seqlock, slab)
-src/bridge/               ~1,200 行 C++ (temporal bridge)
-src/scheduler/              ~600 行 C++ (migration scheduler)
-src/bench/                ~1,000 行 C++ (benchmarks)
-src/cuda/                   ~500 行 CUDA (device kernels)
+src/walpurgis/               6,644 行 Python (v3原版, 第五位产出)
+src/walpurgis_ported/        7,632 行 Python (v4, 第六位产出)
+src/walpurgis_ported_v2/     2,615 行 Python (鲁迅式port, 第七位产出)
+src/walpurgis_ported_v3/     2,202 行 Python (鲁迅式port, 第八位产出) ← NEW
+src/core/                   ~2,000 行 C++ (tiered allocator, seqlock, slab)
+src/bridge/                 ~1,200 行 C++ (temporal bridge)
+src/scheduler/                ~600 行 C++ (migration scheduler)
+src/bench/                  ~1,000 行 C++ (benchmarks)
+src/cuda/                     ~500 行 CUDA (device kernels)
 walpurgis_reconstructed.tex  ~32KB LaTeX (full paper)
 ```
 
@@ -146,11 +165,11 @@ walpurgis_reconstructed.tex  ~32KB LaTeX (full paper)
 
 1. `git log --oneline` 查看完整历史
 2. 本文件 (`CLAUDE_DEV_PROGRESS.md`) 了解全局进度
-3. `src/walpurgis/` 是 v3 代码 (第五位 Claude 产出)
-4. `src/walpurgis_ported/` 是 v4 代码 (第六位 Claude 产出)
-5. `src/walpurgis_ported_v2/` 是鲁迅式移植 (第七位 Claude 产出, 当前最新)
-6. `upstream/d2stgnn/` 是原始 D2STGNN 参考代码
-7. 每个 `.py` 文件头部的 docstring 记录了该文件的算法变更历史
-8. 编号规则: `M{三位数}`, 每位 Claude 分配连续区间
-9. commit message 格式: `M{start}-M{end}: 简述`
-10. walpurgis_ported_v2 的 debug 开关: `--debug-main`, `--debug-model`, `--debug-trainer`, 等 20+个
+3. `src/walpurgis/` = v3 (第五位), `src/walpurgis_ported/` = v4 (第六位)
+4. `src/walpurgis_ported_v2/` = 鲁迅式移植 (第七位), `src/walpurgis_ported_v3/` = 鲁迅式移植 (第八位)
+5. `upstream/d2stgnn/` = 原始 D2STGNN 参考代码
+6. 每个 `.py` 文件头部的 docstring 记录了该文件的变更
+7. 编号规则: `M{三位数}`, 每位 Claude 分配连续 25 个
+8. commit message 格式: `feat(vN): 简述 [Mxxx-Mxxx]`
+9. debug 开关: 运行时加 `--debug-xxx` 即可开启对应模块的状态打印
+10. **分配给你的里程碑区间**: 看上面表格中你是第几位
