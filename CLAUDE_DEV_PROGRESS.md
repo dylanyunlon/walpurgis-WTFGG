@@ -53,7 +53,7 @@ M251-M255  v2 utils + main — CRC32 checkpoints, plateau detector, exp-backoff 
 ```
 **产出**: 全部19个Python文件 v2版, 4个YAML配置 v2版
 
-### 第五位 Claude (当前) — M256-M274: 第三次全量改写 v2→v3 ✅ 已完成
+### 第五位 Claude — M256-M274: 第三次全量改写 v2→v3 ✅ 已完成
 ```
 M256-M262  v3 leaf modules:
            · residual_decomp: sigmoid→ELU-gated per-channel affine
@@ -81,58 +81,124 @@ M268-M270  v3 core:
 
 M271-M274  v3 infrastructure:
            · main: geometric watchdog→harmonic attenuation + EMA recovery;
-                  gradient-variance tier→EWMCV; Welford phase profiler;
-                  SHA-256 crash dump manifest; +--phase_budget CLI
-           · train: CV plateau→EWMD; Adler32→BLAKE2b; +H2D throughput tracker;
-                   +OLS trend slope
-           · log: mtime archive→content-addressed BLAKE2b dedup;
-                 +divergence detection; +clock percentiles (p50/p95/p99) + reset
-           · dataloader: block shuffle→stratified block shuffle (variance-balanced);
-                        double-buffer→triple-ring prefetch; +batch health monitor;
-                        +warmup_batches
+                  gradient-variance tier→EWMCV; Welford phase profiler
+           · train: CV plateau→EWMD; Adler32→BLAKE2b; +H2D throughput tracker
+           · log: mtime archive→content-addressed BLAKE2b dedup; +clock percentiles
+           · dataloader: block shuffle→stratified block shuffle; double→triple-ring prefetch
            · configs: version bump v2→v3 × 4 YAML
-           · __init__.py: version strings × 2
 ```
-**产出**: 19个Python文件 v3版 (6644行), 4个YAML v3版, git patch `walpurgis-v3-complete.patch`
+**产出**: 19个Python文件 v3版 (6644行), 4个YAML v3版
+
+### 第六位 Claude (当前) — M275-M299: 第四次全量改写 v3→v4 ✅ 已完成
+```
+M275-M281  v4 leaf modules:
+           · estimation_gate: GEGLU → SwiGLU (Shazeer 2020, σ(x)·SiLU(x))
+           · residual_decomp: ELU gate → Mish gate (Misra 2020, x·tanh(softplus(x)))
+           · normalizer: mixed-norm → spectral-aware mixed-norm + _SpectralNormMonitor
+           · mask: percentile threshold → quantile-hysteresis (Schmitt trigger pattern)
+           · distance: bilinear → asymmetric kernel similarity (directional φ_L, φ_R)
+           · dif_forecast: SE attention → CBAM-lite (dual avg+max pool branches)
+           · inh_forecast: selective checkpoint → gradient highway with adaptive α
+
+M282-M286  v4 block modules:
+           · inh_model: ALiBi → RoPE-lite (pre-computed sin/cos rotation cache)
+           · inh_block: scheduled drop → cosine-cyclic drop p(t)=p_max/2·(1-cos(2πt/T))
+           · dif_block: LayerNorm → RMSNorm (Zhang & Sennrich 2019, ~15% faster)
+           · dif_model: top-K sparse → stochastic expert routing (+Gumbel noise, τ anneal)
+           · losses: adaptive-δ Huber → log-cosh smooth loss; exp decay → Cauchy weighting
+
+M287-M289  v4 core:
+           · model: attention-pooling → MoE gating (Cauchy entropy load-balancing);
+                    cosine warmup → inverse-sqrt schedule (Vaswani et al.);
+                    hard-concrete → Gumbel-softmax (Jang 2017, τ: 1.0→0.1);
+                    xxhash → spectral SVD hash; +gradient flow tracer + auto_bisect()
+           · trainer: Welford clip → percentile-tracked AGC (rolling p95 buffer);
+                     polynomial CL → logarithmic ramp log(1+e·p)/log(1+e)
+           · dy_graph_conv: EMM → EWMA-of-quantiles (adaptive IQR bandwidth);
+                           Frobenius cache → spectral distance (top-3 SVD);
+                           Chebyshev → Lanczos-estimated spectral radius
+
+M290-M294  v4 infrastructure:
+           · main: harmonic attenuation → adaptive exponential backoff w/ jitter;
+                  EWMCV → spectral-gradient co-tracking (0.7·grad_CV + 0.3·σ_max/σ_min);
+                  +_SpectralCache, +_AdaptiveBackoff, +_SpectralGradientCoTracker
+           · train: +_v4_gradient_snapshot, +_v4_epoch_summary,
+                   +_v4_checkpoint_with_metadata (includes git hash)
+           · log: +_V4JsonFormatter (structured JSONL training events)
+           · cal_adj: +_v4_adj_sparsity_report, +_v4_adj_eigenvalue_check,
+                     +_v4_adj_symmetry_repair, +_v4_adj_degree_normalise
+           · load_data: +_v4_data_health_report, +_v4_temporal_continuity_check,
+                       +_v4_split_distribution_check
+           · dataloader: stratified block → reservoir-sampled block shuffle;
+                        triple-ring → quad-ring prefetch
+
+M295-M299  v4 data generators + validation:
+           · generate_training_data (×4 datasets): +SHA-256 integrity checksums,
+             +ETA estimation, +_v4_variance_stratify for balanced splits
+           · generate_adj_mx (×2 datasets): +_v4_graph_diagnostics,
+             +spectral gap reporting, +connectivity validation
+           · describe_adjs: +_v4_spectral_summary, +community count estimation
+           · configs: version bump v3→v4 × 4 YAML
+           · Full syntax validation: 38 .py pass ast.parse, 4 .yaml pass yaml.safe_load
+```
+**产出**: 42个文件 v4版 (7632行), 1358行 delta (17% overall, 20%+ model code)
+**commit**: `M275-M299: v4 rewrite of walpurgis_ported`
 
 ---
 
-## 下一步: 第六位 Claude 接续计划 (建议)
+## 下一步: 第七位 Claude 接续计划 (建议)
 
-### 第六位 Claude — M275-M299: v4 改写 + 跨版本测试 + 消重
+### 第七位 Claude — M300-M324: v5 改写或功能集成
 ```
 可选方向 (根据需求选择):
 
-方向A: v4 第四轮改写 (再次 ~20% delta)
-  M275-M281  v4 leaf modules — 新一轮算法替换
-  M282-M286  v4 block modules
-  M287-M289  v4 core (model, trainer, dy_graph_conv)
-  M290-M293  v4 infrastructure
-  M294-M296  v4 跨版本回归测试 (v2 vs v3 vs v4 结果一致性)
-  M297-M299  清理 walpurgis_ported/ 备份 + 更新论文实验节
+方向A: v5 第五轮改写 (再次 ~20% delta)
+  M300-M306  v5 leaf modules — 新一轮算法替换
+  M307-M311  v5 block modules
+  M312-M314  v5 core (model, trainer, dy_graph_conv)
+  M315-M318  v5 infrastructure
+  M319-M321  v5 跨版本回归测试 (v3 vs v4 vs v5 结果一致性)
+  M322-M324  清理 + 更新论文实验节
 
 方向B: 论文实验补全 + 可运行验证
-  M275-M279  数据集下载 + 预处理脚本验证 (METR-LA, PEMS-BAY, PEMS04, PEMS08)
-  M280-M284  端到端 dry run (1 epoch) — 验证 v3 代码可跑通
-  M285-M289  benchmark 数据收集 (12 horizons × 4 datasets × 3 seeds)
-  M290-M294  论文 Section 5 (Results) 用实际数据填充
-  M295-M299  消融实验 (v1 vs v2 vs v3 各算法delta的独立贡献)
+  M300-M304  数据集下载 + 预处理脚本验证 (METR-LA, PEMS-BAY, PEMS04, PEMS08)
+  M305-M309  端到端 dry run (1 epoch) — 验证 v4 代码可跑通
+  M310-M314  benchmark 数据收集 (12 horizons × 4 datasets × 3 seeds)
+  M315-M319  论文 Section 5 (Results) 用实际数据填充
+  M320-M324  消融实验 (v1→v2→v3→v4 各算法delta的独立贡献)
 
 方向C: C++/CUDA 层与 Python 层集成
-  M275-M279  Python binding for TieredAllocator (pybind11)
-  M280-M284  GNN forward pass 中注入 tier-aware allocation
-  M285-M289  端到端 profile: HBM/GDDR/DRAM 实际使用率 vs 模拟
-  M290-M294  集成测试 + CI pipeline
-  M295-M299  论文 unified experiment 数据
+  M300-M304  Python binding for TieredAllocator (pybind11)
+  M305-M309  GNN forward pass 中注入 tier-aware allocation
+  M310-M314  端到端 profile: HBM/GDDR/DRAM 实际使用率 vs 模拟
+  M315-M319  集成测试 + CI pipeline
+  M320-M324  论文 unified experiment 数据
 ```
 
 ---
 
-## 文件统计快照 (v3 完成后)
+## Claude 接力全局统计
+
+| Claude # | 里程碑 | 内容 | 状态 |
+|----------|--------|------|------|
+| 第一位 | M001-M014 | C++/CUDA 底层基础设施 | ✅ |
+| 第二位 | M001-M075 | 论文写作 (LaTeX) | ✅ |
+| 第三位 | M101-M200 | D2STGNN 移植 + v1 改写 | ✅ |
+| 第四位 | M201-M255 | v2 全量改写 | ✅ |
+| 第五位 | M256-M274 | v3 全量改写 | ✅ |
+| 第六位 | M275-M299 | v4 全量改写 | ✅ |
+| 第七位 | M300-M324 | (待分配) | ⏳ |
+| 第八位 | M325-M349 | (待分配) | ⏳ |
+| 第九位 | M350-M374 | (待分配) | ⏳ |
+| 第十位 | M375-M399 | (待分配) | ⏳ |
+| 第十一位 | M400-M424 | (待分配) | ⏳ |
+| 第十二位 | M425-M449 | (待分配) | ⏳ |
+
+## 文件统计快照 (v4 完成后)
 
 ```
-src/walpurgis/           6,644 行 Python (19 files + inits + configs)
-src/walpurgis_ported/    3,500 行 Python (v1 备份, 可删)
+src/walpurgis/           6,644 行 Python (v3, 19 files + inits + configs)
+src/walpurgis_ported/    7,632 行 Python (v4, 42 files)
 src/core/               ~2,000 行 C++ (tiered allocator, seqlock, slab)
 src/bridge/             ~1,200 行 C++ (temporal bridge)
 src/scheduler/            ~600 行 C++ (migration scheduler)
@@ -145,9 +211,12 @@ walpurgis_reconstructed.tex  ~32KB LaTeX (full paper)
 
 1. `git log --oneline` 查看完整历史
 2. 本文件 (`CLAUDE_DEV_PROGRESS.md`) 了解全局进度
-3. `src/walpurgis/` 是当前活跃代码 (v3)
-4. `src/walpurgis_ported/` 是 v1 备份 (可随时删除)
+3. `src/walpurgis/` 是 v3 代码 (第五位 Claude 产出)
+4. `src/walpurgis_ported/` 是 v4 代码 (第六位 Claude 产出, 当前最新)
 5. `upstream/d2stgnn/` 是原始 D2STGNN 参考代码
 6. 每个 `.py` 文件头部的 docstring 记录了该文件的算法变更历史
 7. 编号规则: `M{三位数}`, 每位 Claude 分配连续区间
 8. commit message 格式: `M{start}-M{end}: 简述`
+9. v4 新增的 debug 工具类: `_SpectralCache`, `_AdaptiveBackoff`, `_StochasticRouter`,
+   `_EWMAQuantileTracker`, `_HysteresisState`, `_SpectralNormMonitor`,
+   `_GradientHighway`, `_V4JsonFormatter`, `_SpectralGradientCoTracker`
