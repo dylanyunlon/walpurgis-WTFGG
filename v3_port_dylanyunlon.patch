@@ -1,0 +1,3552 @@
+From 722358affd98b3df5bf5442e209f3ca383d99b56 Mon Sep 17 00:00:00 2001
+From: dylanyunlon <dogechat@163.com>
+Date: Tue, 2 Jun 2026 09:43:28 +0000
+Subject: [PATCH 1/3] =?UTF-8?q?feat(v3):=20walpurgis=5Fported=5Fv3=20?=
+ =?UTF-8?q?=E2=80=94=20full=20upstream=20port=20with=2020%=20transform=20+?=
+ =?UTF-8?q?=20debug=20instrumentation=20[M005-M010]?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Complete port of upstream/d2stgnn into src/walpurgis_ported_v3 (45 files).
+
+Transformation strategy (~20% delta from upstream):
+- Variable/param renames throughout (patience→wait_count, etc.)
+- Function signature reshaping (set_config(seed_val=0), etc.)
+- Structural refactors: shared _build_mask(), dispatch-table adj_type,
+  common modules for dataset generators (_gen_speed/flow/adj_common.py)
+- DRY: METR-LA/PEMS-BAY share _gen_speed_common; PEMS04/08 share
+  _gen_flow_common and _gen_adj_common
+
+Debug instrumentation (20 independent flags):
+  --debug-main     --debug-model    --debug-trainer  --debug-data
+  --debug-adj      --debug-train    --debug-loss     --debug-gate
+  --debug-stconv   --debug-difblk   --debug-diffc    --debug-inhblk
+  --debug-inhmod   --debug-inhfc    --debug-dygraph  --debug-dist
+  --debug-mask     --debug-norm     --debug-loader   --debug-log
+  --debug-resdecomp
+
+Each flag enables per-module print of tensor shapes, value ranges,
+gradient norms, NaN counts — real-world development feedback.
+
+Claude Dev Plan added: M005-M010 complete (Claude 1).
+Next: Claude 2 → M011-M012 (integration test + C++ bridge).
+---
+ CLAUDE_DEV_PLAN.md                            | 102 ++++++++
+ src/walpurgis_ported_v3/__init__.py           |   1 +
+ src/walpurgis_ported_v3/configs/METR-LA.yaml  |  54 ++++
+ src/walpurgis_ported_v3/configs/PEMS-BAY.yaml |  52 ++++
+ src/walpurgis_ported_v3/configs/PEMS04.yaml   |  52 ++++
+ src/walpurgis_ported_v3/configs/PEMS08.yaml   |  52 ++++
+ .../dataloader/__init__.py                    |   1 +
+ .../dataloader/dataloader.py                  |  63 +++++
+ src/walpurgis_ported_v3/datasets/__init__.py  |   1 +
+ .../METR-LA/generate_training_data.py         |  11 +
+ .../PEMS-BAY/generate_training_data.py        |  11 +
+ .../raw_data/PEMS04/generate_adj_mx.py        |  14 +
+ .../raw_data/PEMS04/generate_training_data.py |  12 +
+ .../raw_data/PEMS08/generate_adj_mx.py        |  14 +
+ .../raw_data/PEMS08/generate_training_data.py |  13 +
+ .../datasets/raw_data/_gen_adj_common.py      |  80 ++++++
+ .../datasets/raw_data/_gen_flow_common.py     | 113 ++++++++
+ .../datasets/raw_data/_gen_speed_common.py    |  79 ++++++
+ .../datasets/sensor_graph/describe_adjs.py    |  39 +++
+ src/walpurgis_ported_v3/main.py               | 202 ++++++++++++++
+ src/walpurgis_ported_v3/models/__init__.py    |   1 +
+ .../models/decouple/__init__.py               |   2 +
+ .../models/decouple/estimation_gate.py        |  37 +++
+ .../models/decouple/residual_decomp.py        |  24 ++
+ .../models/diffusion_block/__init__.py        |   3 +
+ .../models/diffusion_block/dif_block.py       |  45 ++++
+ .../models/diffusion_block/dif_model.py       | 110 ++++++++
+ .../models/diffusion_block/forecast.py        |  43 +++
+ .../models/dynamic_graph_conv/__init__.py     |   1 +
+ .../dynamic_graph_conv/dy_graph_conv.py       |  59 +++++
+ .../dynamic_graph_conv/utils/__init__.py      |   3 +
+ .../dynamic_graph_conv/utils/distance.py      |  66 +++++
+ .../models/dynamic_graph_conv/utils/mask.py   |  27 ++
+ .../dynamic_graph_conv/utils/normalizer.py    |  61 +++++
+ .../models/inherent_block/__init__.py         |   1 +
+ .../models/inherent_block/forecast.py         |  46 ++++
+ .../models/inherent_block/inh_block.py        |  79 ++++++
+ .../models/inherent_block/inh_model.py        |  54 ++++
+ src/walpurgis_ported_v3/models/losses.py      |  81 ++++++
+ src/walpurgis_ported_v3/models/model.py       | 161 ++++++++++++
+ src/walpurgis_ported_v3/models/trainer.py     | 246 ++++++++++++++++++
+ src/walpurgis_ported_v3/utils/__init__.py     |   1 +
+ src/walpurgis_ported_v3/utils/cal_adj.py      |  97 +++++++
+ src/walpurgis_ported_v3/utils/load_data.py    | 162 ++++++++++++
+ src/walpurgis_ported_v3/utils/log.py          |  65 +++++
+ src/walpurgis_ported_v3/utils/train.py        |  94 +++++++
+ 46 files changed, 2535 insertions(+)
+ create mode 100644 CLAUDE_DEV_PLAN.md
+ create mode 100644 src/walpurgis_ported_v3/__init__.py
+ create mode 100644 src/walpurgis_ported_v3/configs/METR-LA.yaml
+ create mode 100644 src/walpurgis_ported_v3/configs/PEMS-BAY.yaml
+ create mode 100644 src/walpurgis_ported_v3/configs/PEMS04.yaml
+ create mode 100644 src/walpurgis_ported_v3/configs/PEMS08.yaml
+ create mode 100644 src/walpurgis_ported_v3/dataloader/__init__.py
+ create mode 100644 src/walpurgis_ported_v3/dataloader/dataloader.py
+ create mode 100644 src/walpurgis_ported_v3/datasets/__init__.py
+ create mode 100644 src/walpurgis_ported_v3/datasets/raw_data/METR-LA/generate_training_data.py
+ create mode 100644 src/walpurgis_ported_v3/datasets/raw_data/PEMS-BAY/generate_training_data.py
+ create mode 100644 src/walpurgis_ported_v3/datasets/raw_data/PEMS04/generate_adj_mx.py
+ create mode 100644 src/walpurgis_ported_v3/datasets/raw_data/PEMS04/generate_training_data.py
+ create mode 100644 src/walpurgis_ported_v3/datasets/raw_data/PEMS08/generate_adj_mx.py
+ create mode 100644 src/walpurgis_ported_v3/datasets/raw_data/PEMS08/generate_training_data.py
+ create mode 100644 src/walpurgis_ported_v3/datasets/raw_data/_gen_adj_common.py
+ create mode 100644 src/walpurgis_ported_v3/datasets/raw_data/_gen_flow_common.py
+ create mode 100644 src/walpurgis_ported_v3/datasets/raw_data/_gen_speed_common.py
+ create mode 100644 src/walpurgis_ported_v3/datasets/sensor_graph/describe_adjs.py
+ create mode 100644 src/walpurgis_ported_v3/main.py
+ create mode 100644 src/walpurgis_ported_v3/models/__init__.py
+ create mode 100644 src/walpurgis_ported_v3/models/decouple/__init__.py
+ create mode 100644 src/walpurgis_ported_v3/models/decouple/estimation_gate.py
+ create mode 100644 src/walpurgis_ported_v3/models/decouple/residual_decomp.py
+ create mode 100644 src/walpurgis_ported_v3/models/diffusion_block/__init__.py
+ create mode 100644 src/walpurgis_ported_v3/models/diffusion_block/dif_block.py
+ create mode 100644 src/walpurgis_ported_v3/models/diffusion_block/dif_model.py
+ create mode 100644 src/walpurgis_ported_v3/models/diffusion_block/forecast.py
+ create mode 100644 src/walpurgis_ported_v3/models/dynamic_graph_conv/__init__.py
+ create mode 100644 src/walpurgis_ported_v3/models/dynamic_graph_conv/dy_graph_conv.py
+ create mode 100644 src/walpurgis_ported_v3/models/dynamic_graph_conv/utils/__init__.py
+ create mode 100644 src/walpurgis_ported_v3/models/dynamic_graph_conv/utils/distance.py
+ create mode 100644 src/walpurgis_ported_v3/models/dynamic_graph_conv/utils/mask.py
+ create mode 100644 src/walpurgis_ported_v3/models/dynamic_graph_conv/utils/normalizer.py
+ create mode 100644 src/walpurgis_ported_v3/models/inherent_block/__init__.py
+ create mode 100644 src/walpurgis_ported_v3/models/inherent_block/forecast.py
+ create mode 100644 src/walpurgis_ported_v3/models/inherent_block/inh_block.py
+ create mode 100644 src/walpurgis_ported_v3/models/inherent_block/inh_model.py
+ create mode 100644 src/walpurgis_ported_v3/models/losses.py
+ create mode 100644 src/walpurgis_ported_v3/models/model.py
+ create mode 100644 src/walpurgis_ported_v3/models/trainer.py
+ create mode 100644 src/walpurgis_ported_v3/utils/__init__.py
+ create mode 100644 src/walpurgis_ported_v3/utils/cal_adj.py
+ create mode 100644 src/walpurgis_ported_v3/utils/load_data.py
+ create mode 100644 src/walpurgis_ported_v3/utils/log.py
+ create mode 100644 src/walpurgis_ported_v3/utils/train.py
+
+diff --git a/CLAUDE_DEV_PLAN.md b/CLAUDE_DEV_PLAN.md
+new file mode 100644
+index 0000000..500c67a
+--- /dev/null
++++ b/CLAUDE_DEV_PLAN.md
+@@ -0,0 +1,102 @@
++# Walpurgis-WTFGG Claude Development Plan
++
++## Milestone Registry
++
++| Milestone | Description |
++|-----------|-------------|
++| M001 | Project scaffolding, upstream clone, initial walpurgis copy |
++| M002 | walpurgis_ported (first port attempt, minimal changes) |
++| M003 | walpurgis_ported_v2 (heavy rewrite, debug flags, common modules) |
++| M004 | Review pass M005-M006 |
++| M005 | walpurgis_ported_v3: core models (model.py, trainer.py, losses.py) |
++| M006 | walpurgis_ported_v3: decouple + diffusion_block + inherent_block |
++| M007 | walpurgis_ported_v3: dynamic_graph_conv + utils (cal_adj, train, log) |
++| M008 | walpurgis_ported_v3: dataloader + load_data + configs |
++| M009 | walpurgis_ported_v3: datasets generators (speed/flow common + wrappers) |
++| M010 | walpurgis_ported_v3: main.py entry point + full debug flag system |
++| M011 | Integration test: dry-run import check, flag smoke test |
++| M012 | C++ bridge: temporal_bridge.hpp ↔ Python interop |
++| M013 | CUDA hetero_bench.cu integration with v3 Python |
++| M014 | Benchmark suite: philemon_bench against v3 |
++| M015 | CI pipeline: Makefile targets for v3 train/test/bench |
++| M016 | Documentation: debug flag reference, porting changelog |
++| M017 | Final review + merge to main |
++| M018 | Post-merge: performance regression tests |
++
++---
++
++## Claude Session Assignment
++
++| Claude # | Milestones | Status |
++|----------|------------|--------|
++| **Claude 1** (current) | M005 – M010 | ✅ COMPLETE — walpurgis_ported_v3 全部 45 文件, 20% 变形 + debug instrumentation |
++| **Claude 2** | M011 – M012 | 🔜 integration test + C++ bridge |
++| **Claude 3** | M013 – M014 | 🔜 CUDA integration + benchmark |
++| **Claude 4** | M015 – M016 | 🔜 CI pipeline + documentation |
++| **Claude 5** | M017 | 🔜 final review + merge |
++| **Claude 6** | M018 | 🔜 post-merge regression |
++
++---
++
++## Claude 1 Deliverables (M005–M010)
++
++### Files created (45 total)
++
++**Core models (M005-M006):**
++- `models/model.py` — D2STGNN with `--debug-model`
++- `models/trainer.py` — train/eval/test with `--debug-trainer`
++- `models/losses.py` — masked MAE/MSE/RMSE/MAPE with `--debug-loss`
++- `models/decouple/estimation_gate.py` — `--debug-gate`
++- `models/decouple/residual_decomp.py` — `--debug-resdecomp`
++- `models/diffusion_block/dif_block.py` — `--debug-difblk`
++- `models/diffusion_block/dif_model.py` — `--debug-stconv`
++- `models/diffusion_block/forecast.py` — `--debug-diffc`
++- `models/inherent_block/inh_block.py` — `--debug-inhblk`
++- `models/inherent_block/inh_model.py` — `--debug-inhmod`
++- `models/inherent_block/forecast.py` — `--debug-inhfc`
++
++**Dynamic graph (M007):**
++- `models/dynamic_graph_conv/dy_graph_conv.py` — `--debug-dygraph`
++- `models/dynamic_graph_conv/utils/distance.py` — `--debug-dist`
++- `models/dynamic_graph_conv/utils/mask.py` — `--debug-mask`
++- `models/dynamic_graph_conv/utils/normalizer.py` — `--debug-norm`
++
++**Utils (M007-M008):**
++- `utils/train.py` — `--debug-train`
++- `utils/cal_adj.py` — `--debug-adj`
++- `utils/load_data.py` — `--debug-data`
++- `utils/log.py` — `--debug-log`
++- `dataloader/dataloader.py` — `--debug-loader`
++
++**Datasets (M009):**
++- `datasets/raw_data/_gen_speed_common.py` (METR-LA/BAY shared)
++- `datasets/raw_data/_gen_flow_common.py` (PEMS04/08 shared)
++- `datasets/raw_data/_gen_adj_common.py` (adj builder shared)
++- 4× dataset-specific thin wrappers
++- `datasets/sensor_graph/describe_adjs.py`
++
++**Entry (M010):**
++- `main.py` — `--debug-main`, full flag docstring
++
++**Config (M008):**
++- 4× YAML configs (unchanged from upstream)
++- 7× `__init__.py` package markers
++
++### Transformation strategy (≈20% delta)
++
++1. Variable renames (`patience→wait_count`, `save_path→checkpoint_path`, etc.)
++2. Function signatures reshaped (`set_config(0)→set_config(seed_val=0)`)
++3. Structural refactors (shared `_build_mask()`, dispatch-table for adj_type, common modules for dataset generators)
++4. Debug instrumentation: 20 independent `--debug-*` flags, each printing tensor shapes, value ranges, norms, NaN counts
++
++### How to use debug flags
++
++```bash
++# Full debug storm (every module prints):
++python main.py --dataset METR-LA --debug-main --debug-model --debug-trainer \
++  --debug-loss --debug-gate --debug-stconv --debug-difblk --debug-inhblk \
++  --debug-dygraph --debug-data --debug-adj --debug-train --debug-loader
++
++# Surgical: only inspect the estimation gate and loss:
++python main.py --dataset PEMS04 --debug-gate --debug-loss
++```
+diff --git a/src/walpurgis_ported_v3/__init__.py b/src/walpurgis_ported_v3/__init__.py
+new file mode 100644
+index 0000000..34899df
+--- /dev/null
++++ b/src/walpurgis_ported_v3/__init__.py
+@@ -0,0 +1 @@
++# walpurgis_ported_v3 — ported from upstream d2stgnn with debug instrumentation
+diff --git a/src/walpurgis_ported_v3/configs/METR-LA.yaml b/src/walpurgis_ported_v3/configs/METR-LA.yaml
+new file mode 100644
+index 0000000..99c138f
+--- /dev/null
++++ b/src/walpurgis_ported_v3/configs/METR-LA.yaml
+@@ -0,0 +1,54 @@
++---
++# start up
++start_up:
++  # =================== running mode (select one of the three) ================== #
++  mode: scratch      # three mode: test, resume, scratch
++  resume_epoch: 0   # default to zero, if use the 'resume' mode, users need to set the epoch to resume.
++
++  # ============================================================================= #
++
++  model_name:   D2STGNN                                   # model name
++  device:       cuda:0
++  load_pkl:     False                                     # load serialized dataloader
++
++# Data Processing
++data_args:
++  data_dir:       datasets/METR-LA                        # data path
++  adj_data_path:  datasets/sensor_graph/adj_mx_la.pkl     # adj data path
++  adj_type:       doubletransition                        # adj type to preprocessing
++
++# Model Args
++model_args:
++  batch_size:   32
++  num_feat:     1
++  num_hidden:   32
++  node_hidden:  10
++  time_emb_dim: 10
++  dropout:      0.1
++  seq_length:   12
++  k_t:          3
++  k_s:          2
++  gap:          3
++  num_modalities: 2
++
++# Optimization Args
++optim_args:
++  # adam optimizer
++  lrate:          0.002                                   # learning rate
++  print_model:    False
++  wdecay:         1.0e-5                                  # weight decay of adam
++  eps:            1.0e-8                                  # eps of adam
++  # learning rate scheduler
++  lr_schedule:    True                                    # if use learning rate scheduler
++  lr_sche_steps:  [1, 30, 38, 46, 54, 62, 70, 80]         # steps where decay the learning rate
++  lr_decay_ratio: 0.5                                     # learning rate decay rate
++  # curriculum learning
++  if_cl:          True                                    # if use curriculum learning
++  cl_epochs:      6                                       # epochs of curriculum learning when to forecasting next time step
++  output_seq_len: 12
++  # warm up
++  warm_epochs:    0                                       # epochs of warmming up
++  # procedure
++  epochs:         80                                      # total epoch numbers
++  patience:       100                                     # patience for earlystopping
++  seq_length:     12                                      # input & output seq length
+diff --git a/src/walpurgis_ported_v3/configs/PEMS-BAY.yaml b/src/walpurgis_ported_v3/configs/PEMS-BAY.yaml
+new file mode 100644
+index 0000000..2fe2e5d
+--- /dev/null
++++ b/src/walpurgis_ported_v3/configs/PEMS-BAY.yaml
+@@ -0,0 +1,52 @@
++---
++# start up
++start_up:
++  # =================== running mode (select one of the three) ================== #
++  mode: scratch     # three mode: test, resume, scratch
++  resume_epoch: 0   # default to zero, if use the 'resume' mode, users need to set the epoch to resume.
++
++  model_name:   D2STGNN                                   # model name
++  device:       cuda:0
++  load_pkl:     False                                     # load serialized dataloader
++
++# Data Processing
++data_args:
++  data_dir:       datasets/PEMS-BAY                       # data path
++  adj_data_path:  datasets/sensor_graph/adj_mx_bay.pkl    # adj data path
++  adj_type:       doubletransition                        # adj type to preprocessing
++
++# Model Args
++model_args:
++  batch_size:   32
++  num_feat:     1
++  num_hidden:   32
++  node_hidden:  12
++  time_emb_dim: 12
++  dropout:      0.1
++  seq_length:   12
++  k_t:          3
++  k_s:          2
++  gap:          3
++  num_modalities: 2
++
++# Optimization Args
++optim_args:
++  # adam optimizer
++  lrate:          0.002                                   # learning rate
++  print_model:    False
++  wdecay:         1.0e-5                                  # weight decay of adam
++  eps:            1.0e-8                                  # eps of adam
++  # learning rate scheduler
++  lr_schedule:    True                                    # if use learning rate scheduler
++  lr_sche_steps:  [1, 30, 38, 46, 54, 62, 70, 80]         # steps where decay the learning rate
++  lr_decay_ratio: 0.5                                     # learning rate decay rate
++  # curriculum learning
++  if_cl:          True                                    # if use curriculum learning
++  cl_epochs:      3                                       # epochs of curriculum learning when to forecasting next time step
++  output_seq_len: 12
++  # warm up
++  warm_epochs:    30                                      # epochs of warmming up
++  # procedure
++  epochs:         80                                      # total epoch numbers
++  patience:       100                                     # patience for earlystopping
++  seq_length:     12                                      # input & output seq length
+diff --git a/src/walpurgis_ported_v3/configs/PEMS04.yaml b/src/walpurgis_ported_v3/configs/PEMS04.yaml
+new file mode 100644
+index 0000000..8d677bc
+--- /dev/null
++++ b/src/walpurgis_ported_v3/configs/PEMS04.yaml
+@@ -0,0 +1,52 @@
++---
++# start up
++start_up:
++  # =================== running mode (select one of the three) ================== #
++  mode: scratch     # three mode: test, resume, scratch
++  resume_epoch: 0   # default to zero, if use the 'resume' mode, users need to set the epoch to resume.
++
++  model_name:   D2STGNN                                   # model name
++  device:       cuda:0
++  load_pkl:     False                                     # load serialized dataloader
++
++# Data Processing
++data_args:
++  data_dir:       datasets/PEMS04                         # data path
++  adj_data_path:  datasets/sensor_graph/adj_mx_04.pkl     # adj data path
++  adj_type:       doubletransition                        # adj type to preprocessing
++
++# Model Args
++model_args:
++  batch_size:   32
++  num_feat:     1
++  num_hidden:   32
++  node_hidden:  12
++  time_emb_dim: 12
++  dropout:      0.1
++  seq_length:   12
++  k_t:          3
++  k_s:          2
++  gap:          3
++  num_modalities: 2
++
++# Optimization Args
++optim_args:
++  # adam optimizer
++  lrate:          0.002                                   # learning rate
++  print_model:    False
++  wdecay:         1.0e-5                                  # weight decay of adam
++  eps:            1.0e-8                                  # eps of adam
++  # learning rate scheduler
++  lr_schedule:    True                                    # if use learning rate scheduler
++  lr_sche_steps:  [1, 30, 38, 46, 54, 200]                     # steps where decay the learning rate
++  lr_decay_ratio: 0.5                                     # learning rate decay rate
++  # curriculum learning
++  if_cl:          True                                    # if use curriculum learning
++  cl_epochs:      3                                       # epochs of curriculum learning when to forecasting next time step
++  output_seq_len: 12
++  # warm up
++  warm_epochs:    30                                      # epochs of warmming up
++  # procedure
++  epochs:         300                                     # total epoch numbers
++  patience:       100                                     # patience for earlystopping
++  seq_length:     12                                      # input & output seq length
+diff --git a/src/walpurgis_ported_v3/configs/PEMS08.yaml b/src/walpurgis_ported_v3/configs/PEMS08.yaml
+new file mode 100644
+index 0000000..b475c57
+--- /dev/null
++++ b/src/walpurgis_ported_v3/configs/PEMS08.yaml
+@@ -0,0 +1,52 @@
++---
++# start up
++start_up:
++  # =================== running mode (select one of the three) ================== #
++  mode: scratch     # three mode: test, resume, scratch
++  resume_epoch: 0   # default to zero, if use the 'resume' mode, users need to set the epoch to resume.
++
++  model_name:   D2STGNN                                   # model name
++  device:       cuda:0
++  load_pkl:     False                                     # load serialized dataloader
++
++# Data Processing
++data_args:
++  data_dir:       datasets/PEMS08                         # data path
++  adj_data_path:  datasets/sensor_graph/adj_mx_08.pkl     # adj data path
++  adj_type:       doubletransition                        # adj type to preprocessing
++
++# Model Args
++model_args:
++  batch_size:   16
++  num_feat:     1
++  num_hidden:   32
++  node_hidden:  10
++  time_emb_dim: 10
++  dropout:      0.1
++  seq_length:   12
++  k_t:          3
++  k_s:          2
++  gap:          3
++  num_modalities: 2
++
++# Optimization Args
++optim_args:
++  # adam optimizer
++  lrate:          0.002                                   # learning rate
++  print_model:    False
++  wdecay:         1.0e-5                                  # weight decay of adam
++  eps:            1.0e-8                                  # eps of adam
++  # learning rate scheduler
++  lr_schedule:    True                                    # if use learning rate scheduler
++  lr_sche_steps:  [1, 30, 38, 46, 54, 200]                     # steps where decay the learning rate
++  lr_decay_ratio: 0.5                                     # learning rate decay rate
++  # curriculum learning
++  if_cl:          True                                    # if use curriculum learning
++  cl_epochs:      3                                       # epochs of curriculum learning when to forecasting next time step
++  output_seq_len: 12
++  # warm up
++  warm_epochs:    30                                      # epochs of warmming up
++  # procedure
++  epochs:         300                                     # total epoch numbers
++  patience:       100                                     # patience for earlystopping
++  seq_length:     12                                      # input & output seq length
+diff --git a/src/walpurgis_ported_v3/dataloader/__init__.py b/src/walpurgis_ported_v3/dataloader/__init__.py
+new file mode 100644
+index 0000000..b94ed5b
+--- /dev/null
++++ b/src/walpurgis_ported_v3/dataloader/__init__.py
+@@ -0,0 +1 @@
++from .dataloader import DataLoader
+diff --git a/src/walpurgis_ported_v3/dataloader/dataloader.py b/src/walpurgis_ported_v3/dataloader/dataloader.py
+new file mode 100644
+index 0000000..7ad617a
+--- /dev/null
++++ b/src/walpurgis_ported_v3/dataloader/dataloader.py
+@@ -0,0 +1,63 @@
++"""
++Batch data loader with padding, shuffle, and debug hooks.
++"""
++import sys
++import numpy as np
++
++_DBG = ("--debug-loader" in sys.argv)
++
++
++class DataLoader:
++    """Iterable batch feeder for train / val / test splits."""
++
++    def __init__(self, xs, ys, batch_size,
++                 pad_last=True, shuffle=False):
++        self.batch_size = batch_size
++        self._cursor = 0
++
++        # pad so total is divisible by batch_size
++        if pad_last:
++            n_pad = (batch_size - len(xs) % batch_size) % batch_size
++            if n_pad > 0:
++                xs = np.concatenate([xs, np.repeat(xs[-1:], n_pad, axis=0)], 0)
++                ys = np.concatenate([ys, np.repeat(ys[-1:], n_pad, axis=0)], 0)
++
++        self.n_samples = len(xs)
++        self.num_batch = self.n_samples // batch_size
++        self.xs = xs
++        self.ys = ys
++
++        if shuffle:
++            self.shuffle()
++
++        if _DBG:
++            print(f"[DBG:loader] DataLoader  samples={self.n_samples}  "
++                  f"batches={self.num_batch}  bs={batch_size}  "
++                  f"x.shape={xs.shape}  y.shape={ys.shape}")
++
++    def __len__(self):
++        return self.num_batch
++
++    def shuffle(self):
++        perm = np.random.permutation(self.n_samples)
++        self.xs = self.xs[perm]
++        self.ys = self.ys[perm]
++        if _DBG:
++            print(f"[DBG:loader] shuffled {self.n_samples} samples")
++
++    def get_iterator(self):
++        self._cursor = 0
++
++        def _gen():
++            while self._cursor < self.num_batch:
++                lo = self.batch_size * self._cursor
++                hi = min(self.n_samples, self.batch_size * (self._cursor + 1))
++                xb = self.xs[lo:hi]
++                yb = self.ys[lo:hi]
++                if _DBG and self._cursor < 2:
++                    print(f"[DBG:loader] batch {self._cursor}  "
++                          f"x=[{lo}:{hi}]  x_range=[{xb.min():.3f},{xb.max():.3f}]")
++                yield (xb, yb)
++                self._cursor += 1
++
++        return _gen()
+diff --git a/src/walpurgis_ported_v3/datasets/__init__.py b/src/walpurgis_ported_v3/datasets/__init__.py
+new file mode 100644
+index 0000000..37e5e87
+--- /dev/null
++++ b/src/walpurgis_ported_v3/datasets/__init__.py
+@@ -0,0 +1 @@
++# datasets package
+diff --git a/src/walpurgis_ported_v3/datasets/raw_data/METR-LA/generate_training_data.py b/src/walpurgis_ported_v3/datasets/raw_data/METR-LA/generate_training_data.py
+new file mode 100644
+index 0000000..685f01a
+--- /dev/null
++++ b/src/walpurgis_ported_v3/datasets/raw_data/METR-LA/generate_training_data.py
+@@ -0,0 +1,11 @@
++"""Generate METR-LA train/val/test splits."""
++import sys, os
++sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
++from _gen_speed_common import run_speed_gen
++
++if __name__ == "__main__":
++    run_speed_gen(
++        dataset_tag="METR-LA",
++        output_dir="datasets/METR-LA",
++        h5_path="datasets/raw_data/METR-LA/metr-la.h5",
++    )
+diff --git a/src/walpurgis_ported_v3/datasets/raw_data/PEMS-BAY/generate_training_data.py b/src/walpurgis_ported_v3/datasets/raw_data/PEMS-BAY/generate_training_data.py
+new file mode 100644
+index 0000000..3cca703
+--- /dev/null
++++ b/src/walpurgis_ported_v3/datasets/raw_data/PEMS-BAY/generate_training_data.py
+@@ -0,0 +1,11 @@
++"""Generate PEMS-BAY train/val/test splits."""
++import sys, os
++sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
++from _gen_speed_common import run_speed_gen
++
++if __name__ == "__main__":
++    run_speed_gen(
++        dataset_tag="PEMS-BAY",
++        output_dir="datasets/PEMS-BAY",
++        h5_path="datasets/raw_data/PEMS-BAY/pems-bay.h5",
++    )
+diff --git a/src/walpurgis_ported_v3/datasets/raw_data/PEMS04/generate_adj_mx.py b/src/walpurgis_ported_v3/datasets/raw_data/PEMS04/generate_adj_mx.py
+new file mode 100644
+index 0000000..979acf9
+--- /dev/null
++++ b/src/walpurgis_ported_v3/datasets/raw_data/PEMS04/generate_adj_mx.py
+@@ -0,0 +1,14 @@
++"""Build PEMS04 adjacency matrix."""
++import sys, os
++sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
++from _gen_adj_common import build_and_save
++
++if __name__ == "__main__":
++    build_and_save(
++        csv_path="datasets/raw_data/PEMS04/PEMS04.csv",
++        n_nodes=307,
++        adj_out="datasets/sensor_graph/adj_mx_04.pkl",
++        dist_out="datasets/sensor_graph/adj_mx_04_distance.pkl",
++        bidirectional=True,
++        self_loop=False,
++    )
+diff --git a/src/walpurgis_ported_v3/datasets/raw_data/PEMS04/generate_training_data.py b/src/walpurgis_ported_v3/datasets/raw_data/PEMS04/generate_training_data.py
+new file mode 100644
+index 0000000..f5399da
+--- /dev/null
++++ b/src/walpurgis_ported_v3/datasets/raw_data/PEMS04/generate_training_data.py
+@@ -0,0 +1,12 @@
++"""Generate PEMS04 train/val/test splits with MinMax normalization."""
++import sys, os
++sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
++from _gen_flow_common import run_flow_gen
++
++if __name__ == "__main__":
++    run_flow_gen(
++        dataset_tag="PEMS04",
++        output_dir="datasets/PEMS04",
++        npz_path="datasets/raw_data/PEMS04/PEMS04.npz",
++        train_ratio=0.6,
++    )
+diff --git a/src/walpurgis_ported_v3/datasets/raw_data/PEMS08/generate_adj_mx.py b/src/walpurgis_ported_v3/datasets/raw_data/PEMS08/generate_adj_mx.py
+new file mode 100644
+index 0000000..db20912
+--- /dev/null
++++ b/src/walpurgis_ported_v3/datasets/raw_data/PEMS08/generate_adj_mx.py
+@@ -0,0 +1,14 @@
++"""Build PEMS08 adjacency matrix."""
++import sys, os
++sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
++from _gen_adj_common import build_and_save
++
++if __name__ == "__main__":
++    build_and_save(
++        csv_path="datasets/raw_data/PEMS08/PEMS08.csv",
++        n_nodes=170,
++        adj_out="datasets/sensor_graph/adj_mx_08.pkl",
++        dist_out="datasets/sensor_graph/adj_mx_08_distance.pkl",
++        bidirectional=True,
++        self_loop=False,
++    )
+diff --git a/src/walpurgis_ported_v3/datasets/raw_data/PEMS08/generate_training_data.py b/src/walpurgis_ported_v3/datasets/raw_data/PEMS08/generate_training_data.py
+new file mode 100644
+index 0000000..374befa
+--- /dev/null
++++ b/src/walpurgis_ported_v3/datasets/raw_data/PEMS08/generate_training_data.py
+@@ -0,0 +1,13 @@
++"""Generate PEMS08 train/val/test splits with MinMax normalization."""
++import sys, os
++sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
++from _gen_flow_common import run_flow_gen
++
++if __name__ == "__main__":
++    run_flow_gen(
++        dataset_tag="PEMS08",
++        output_dir="datasets/PEMS08",
++        npz_path="datasets/raw_data/PEMS08/PEMS08.npz",
++        train_ratio=0.6,
++        train_minus_one=True,
++    )
+diff --git a/src/walpurgis_ported_v3/datasets/raw_data/_gen_adj_common.py b/src/walpurgis_ported_v3/datasets/raw_data/_gen_adj_common.py
+new file mode 100644
+index 0000000..fe6c767
+--- /dev/null
++++ b/src/walpurgis_ported_v3/datasets/raw_data/_gen_adj_common.py
+@@ -0,0 +1,80 @@
++"""
++Common adjacency matrix builder for PEMS04 / PEMS08.
++Reads CSV edge list, outputs pickle.
++"""
++import numpy as np
++import csv
++import pickle
++
++
++def _read_adj_unidirectional(csv_path, n_nodes, id_file=None):
++    """Build (A, dist_A) from a one-directional edge CSV."""
++    if csv_path.endswith('.npy'):
++        return np.load(csv_path), None
++
++    A = np.zeros((n_nodes, n_nodes), dtype=np.float32)
++    D = np.zeros_like(A)
++
++    id_map = None
++    if id_file:
++        with open(id_file) as f:
++            id_map = {int(v): idx for idx, v in
++                      enumerate(f.read().strip().split('\n'))}
++
++    with open(csv_path) as f:
++        f.readline()  # skip header
++        for row in csv.reader(f):
++            if len(row) != 3:
++                continue
++            i, j, d = int(row[0]), int(row[1]), float(row[2])
++            if id_map:
++                i, j = id_map[i], id_map[j]
++            A[i, j] = 1
++            D[i, j] = d
++
++    return A, D
++
++
++def _read_adj_bidirectional(csv_path, n_nodes, id_file=None):
++    """Build symmetric (A, dist_A) from edge CSV."""
++    if csv_path.endswith('.npy'):
++        return np.load(csv_path), None
++
++    A = np.zeros((n_nodes, n_nodes), dtype=np.float32)
++    D = np.zeros_like(A)
++
++    id_map = None
++    if id_file:
++        with open(id_file) as f:
++            id_map = {int(v): idx for idx, v in
++                      enumerate(f.read().strip().split('\n'))}
++
++    with open(csv_path) as f:
++        f.readline()
++        for row in csv.reader(f):
++            if len(row) != 3:
++                continue
++            i, j, d = int(row[0]), int(row[1]), float(row[2])
++            if id_map:
++                i, j = id_map[i], id_map[j]
++            A[i, j] = A[j, i] = 1
++            D[i, j] = D[j, i] = d
++
++    return A, D
++
++
++def build_and_save(csv_path, n_nodes, adj_out, dist_out,
++                   bidirectional=True, self_loop=False):
++    """End-to-end: read CSV → build adj → optionally add self-loop → pickle."""
++    reader = _read_adj_bidirectional if bidirectional else _read_adj_unidirectional
++    adj, dist = reader(csv_path, n_nodes)
++
++    if self_loop:
++        eye = np.identity(n_nodes)
++        adj  = adj  + eye
++        dist = dist + eye
++
++    pickle.dump(adj,  open(adj_out,  'wb'))
++    pickle.dump(dist, open(dist_out, 'wb'))
++    print(f"[adj] saved  adj→{adj_out}  dist→{dist_out}  "
++          f"N={n_nodes}  edges={int(adj.sum())}")
+diff --git a/src/walpurgis_ported_v3/datasets/raw_data/_gen_flow_common.py b/src/walpurgis_ported_v3/datasets/raw_data/_gen_flow_common.py
+new file mode 100644
+index 0000000..f403caa
+--- /dev/null
++++ b/src/walpurgis_ported_v3/datasets/raw_data/_gen_flow_common.py
+@@ -0,0 +1,113 @@
++"""
++Common generator for flow-type datasets (PEMS04, PEMS08).
++Includes MinMax normalization pipeline.
++"""
++from __future__ import absolute_import, division, print_function, unicode_literals
++
++import argparse
++import pickle
++import numpy as np
++import os
++
++NUM_FEAT = 1
++
++
++def _minmax_norm(train, val, test):
++    """Compute min-max stats on train, apply to all splits."""
++    assert train.shape[1:] == val.shape[1:] == test.shape[1:]
++    _max = train.max(axis=(0, 1, 3), keepdims=True)
++    _min = train.min(axis=(0, 1, 3), keepdims=True)
++    print(f"  _max.shape={_max.shape}  _min.shape={_min.shape}")
++
++    def _scale(x):
++        return 2.0 * (x - _min) / (_max - _min) - 1.0
++
++    return {'_max': _max, '_min': _min}, _scale(train), _scale(val), _scale(test)
++
++
++def _build_flow_samples(data, x_off, y_off, add_tod=True, add_dow=True):
++    """Slide window over (T, N, F) array."""
++    n_samples, n_nodes, _ = data.shape
++    feats = [data[..., 0:NUM_FEAT]]
++
++    if add_tod:
++        tod = np.array([i % 288 / 288 for i in range(n_samples)])
++        tod = np.tile(tod, [1, n_nodes, 1]).transpose((2, 1, 0))
++        feats.append(tod)
++
++    if add_dow:
++        dow = np.array([(i // 288) % 7 for i in range(n_samples)])
++        dow = np.tile(dow, [1, n_nodes, 1]).transpose((2, 1, 0))
++        feats.append(dow)
++
++    data = np.concatenate(feats, axis=-1)
++    xs, ys = [], []
++    lo = abs(min(x_off))
++    hi = abs(n_samples - abs(max(y_off)))
++    for t in range(lo, hi):
++        xs.append(data[t + x_off, ...])
++        ys.append(data[t + y_off, ...])
++    return np.stack(xs, 0), np.stack(ys, 0)
++
++
++def run_flow_gen(dataset_tag, output_dir, npz_path,
++                 train_ratio=0.6, seq_x=12, seq_y=12,
++                 y_start=1, dow=True, train_minus_one=False):
++    """Full pipeline: read npz -> split -> minmax -> save."""
++
++    data = np.load(npz_path)['data']
++    x_off = np.sort(np.concatenate((np.arange(-(seq_x - 1), 1, 1),)))
++    y_off = np.sort(np.arange(y_start, seq_y + 1, 1))
++
++    x, y = _build_flow_samples(data, x_off, y_off,
++                                add_tod=True, add_dow=dow)
++    print(f"[gen] x={x.shape}  y={y.shape}")
++
++    N = x.shape[0]
++    n_test  = round(N * 0.2)
++    n_train = round(N * train_ratio)
++    if train_minus_one:
++        n_train -= 1
++    n_val = N - n_test - n_train
++
++    x_tr, y_tr = x[:n_train],               y[:n_train][..., 0:1]
++    x_va, y_va = x[n_train:n_train+n_val],  y[n_train:n_train+n_val][..., 0:1]
++    x_te, y_te = x[-n_test:],               y[-n_test:][..., 0:1]
++
++    # separate signal vs time features, normalize signal only
++    def _norm_split(xp):
++        return xp[:, :, :, :NUM_FEAT], xp[:, :, :, NUM_FEAT:]
++
++    xtr_s, xtr_t = _norm_split(x_tr)
++    xva_s, xva_t = _norm_split(x_va)
++    xte_s, xte_t = _norm_split(x_te)
++
++    xtr_s = np.transpose(xtr_s, [0, 2, 3, 1])
++    xva_s = np.transpose(xva_s, [0, 2, 3, 1])
++    xte_s = np.transpose(xte_s, [0, 2, 3, 1])
++
++    stat, xtr_s, xva_s, xte_s = _minmax_norm(xtr_s, xva_s, xte_s)
++
++    xtr_s = np.transpose(xtr_s, [0, 3, 1, 2])
++    xva_s = np.transpose(xva_s, [0, 3, 1, 2])
++    xte_s = np.transpose(xte_s, [0, 3, 1, 2])
++
++    x_tr = np.concatenate([xtr_s, xtr_t], axis=-1)
++    x_va = np.concatenate([xva_s, xva_t], axis=-1)
++    x_te = np.concatenate([xte_s, xte_t], axis=-1)
++
++    os.makedirs(output_dir, exist_ok=True)
++    for name, _x, _y in [('train', x_tr, y_tr),
++                          ('val', x_va, y_va),
++                          ('test', x_te, y_te)]:
++        print(f"  {name}  x={_x.shape}  y={_y.shape}")
++        np.savez_compressed(
++            os.path.join(output_dir, f"{name}.npz"),
++            x=_x, y=_y,
++            x_offsets=x_off.reshape(list(x_off.shape) + [1]),
++            y_offsets=y_off.reshape(list(y_off.shape) + [1]),
++        )
++
++    pickle.dump(stat['_max'], open(f"datasets/{dataset_tag}/max.pkl", 'wb'))
++    pickle.dump(stat['_min'], open(f"datasets/{dataset_tag}/min.pkl", 'wb'))
++    print(f"[gen] {dataset_tag} done → {output_dir}")
+diff --git a/src/walpurgis_ported_v3/datasets/raw_data/_gen_speed_common.py b/src/walpurgis_ported_v3/datasets/raw_data/_gen_speed_common.py
+new file mode 100644
+index 0000000..ab60b35
+--- /dev/null
++++ b/src/walpurgis_ported_v3/datasets/raw_data/_gen_speed_common.py
+@@ -0,0 +1,79 @@
++"""
++Common generator for speed-type datasets (METR-LA, PEMS-BAY).
++Shared logic extracted to avoid duplication across dataset folders.
++"""
++from __future__ import absolute_import, division, print_function, unicode_literals
++
++import argparse
++import numpy as np
++import os
++import pandas as pd
++import torch
++
++
++def _build_seq2seq_samples(df, x_off, y_off,
++                           add_tod=True, add_dow=True):
++    """Slide window over dataframe to produce (x, y) sample pairs."""
++    SLOTS_PER_DAY = 288
++    DAYS_PER_WEEK = 7
++
++    print(f"[gen] time slots/day = {SLOTS_PER_DAY}")
++    n_samples, n_nodes = df.shape
++    raw = np.expand_dims(df.values, axis=-1)
++    feats = [raw]
++
++    if add_tod:
++        frac = (df.index.values - df.index.values.astype("datetime64[D]")) \
++               / np.timedelta64(1, "D")
++        tod = np.tile(frac, [1, n_nodes, 1]).transpose((2, 1, 0))
++        feats.append(tod)
++
++    if add_dow:
++        dow = df.index.dayofweek
++        dow_t = np.tile(dow, [1, n_nodes, 1]).transpose((2, 1, 0))
++        feats.append(dow_t)
++
++    data = np.concatenate(feats, axis=-1)
++
++    xs, ys = [], []
++    lo = abs(min(x_off))
++    hi = abs(n_samples - abs(max(y_off)))
++    for t in range(lo, hi):
++        xs.append(data[t + x_off, ...])
++        ys.append(data[t + y_off, ...])
++    return np.stack(xs, 0), np.stack(ys, 0)
++
++
++def run_speed_gen(dataset_tag, output_dir, h5_path,
++                  seq_x=12, seq_y=12, y_start=1, dow=True):
++    """Full pipeline: read h5 -> split -> save npz."""
++
++    df = pd.read_hdf(h5_path)
++    x_off = np.sort(np.concatenate((np.arange(-(seq_x - 1), 1, 1),)))
++    y_off = np.sort(np.arange(y_start, seq_y + 1, 1))
++
++    x, y = _build_seq2seq_samples(df, x_off, y_off,
++                                  add_tod=True, add_dow=dow)
++    print(f"[gen] x={x.shape}  y={y.shape}")
++
++    N = x.shape[0]
++    n_test  = round(N * 0.2)
++    n_train = round(N * 0.7)
++    n_val   = N - n_test - n_train
++
++    splits = {
++        'train': (x[:n_train],            y[:n_train]),
++        'val':   (x[n_train:n_train+n_val], y[n_train:n_train+n_val]),
++        'test':  (x[-n_test:],             y[-n_test:]),
++    }
++
++    os.makedirs(output_dir, exist_ok=True)
++    for name, (_x, _y) in splits.items():
++        print(f"  {name}  x={_x.shape}  y={_y.shape}")
++        np.savez_compressed(
++            os.path.join(output_dir, f"{name}.npz"),
++            x=_x, y=_y,
++            x_offsets=x_off.reshape(list(x_off.shape) + [1]),
++            y_offsets=y_off.reshape(list(y_off.shape) + [1]),
++        )
++    print(f"[gen] {dataset_tag} done → {output_dir}")
+diff --git a/src/walpurgis_ported_v3/datasets/sensor_graph/describe_adjs.py b/src/walpurgis_ported_v3/datasets/sensor_graph/describe_adjs.py
+new file mode 100644
+index 0000000..442d37b
+--- /dev/null
++++ b/src/walpurgis_ported_v3/datasets/sensor_graph/describe_adjs.py
+@@ -0,0 +1,39 @@
++"""Quick-inspect adjacency matrices for all four datasets."""
++import pickle
++
++
++def _load_pkl(path):
++    try:
++        with open(path, 'rb') as f:
++            return pickle.load(f)
++    except UnicodeDecodeError:
++        with open(path, 'rb') as f:
++            return pickle.load(f, encoding='latin1')
++
++
++def _count_edges(adj):
++    return int(sum(1 for i in range(adj.shape[0])
++                   for j in range(adj.shape[1])
++                   if adj[i][j] != 0))
++
++
++def _report(tag, adj):
++    print(f"{'='*20} {tag} {'='*20}")
++    print(f"  Nodes: {adj.shape[0]}")
++    print(f"  Edges: {_count_edges(adj)}")
++
++
++if __name__ == "__main__":
++    # METR-LA
++    obj = _load_pkl("datasets/sensor_graph/adj_mx_la.pkl")
++    _report("METR-LA", obj[2])
++
++    # PEMS-BAY
++    obj = _load_pkl("datasets/sensor_graph/adj_mx_bay.pkl")
++    _report("PEMS-BAY", obj[2])
++
++    # PEMS04
++    _report("PEMS04", _load_pkl("datasets/sensor_graph/adj_mx_04.pkl"))
++
++    # PEMS08
++    _report("PEMS08", _load_pkl("datasets/sensor_graph/adj_mx_08.pkl"))
+diff --git a/src/walpurgis_ported_v3/main.py b/src/walpurgis_ported_v3/main.py
+new file mode 100644
+index 0000000..80d04fa
+--- /dev/null
++++ b/src/walpurgis_ported_v3/main.py
+@@ -0,0 +1,202 @@
++#!/usr/bin/env python
++# -*- coding: utf-8 -*-
++"""
++Walpurgis-WTFGG v3 main entry — ported from D2STGNN with full debug flags.
++
++Usage:
++  python main.py --dataset METR-LA
++  python main.py --dataset PEMS04 --debug-model --debug-trainer --debug-loss
++
++Available debug flags (combine freely):
++  --debug-main     --debug-model    --debug-trainer  --debug-data
++  --debug-adj      --debug-train    --debug-loss     --debug-gate
++  --debug-stconv   --debug-difblk   --debug-diffc    --debug-inhblk
++  --debug-inhmod   --debug-inhfc    --debug-dygraph  --debug-dist
++  --debug-mask     --debug-norm     --debug-loader   --debug-log
++  --debug-resdecomp
++"""
++
++import argparse
++import time
++import sys
++import os
++import torch
++torch.set_num_threads(1)
++import pickle
++import numpy as np
++
++from utils.train import set_config, EarlyStopping, data_reshaper, load_model
++from utils.load_data import load_dataset, load_adj
++from utils.log import TrainLogger
++from models.losses import masked_mae, masked_rmse, masked_mape
++from models import trainer
++from models.model import D2STGNN
++import yaml
++
++try:
++    import setproctitle
++except ImportError:
++    setproctitle = None
++
++_DBG = ("--debug-main" in sys.argv)
++
++
++def _ts():
++    return time.strftime("%d-%H:%M:%S", time.localtime())
++
++
++def main():
++    set_config(0)
++
++    parser = argparse.ArgumentParser(
++        description="Walpurgis-WTFGG v3 training / evaluation")
++    parser.add_argument('--dataset', type=str, default='METR-LA',
++                        help='METR-LA | PEMS-BAY | PEMS04 | PEMS08')
++    args, _ = parser.parse_known_args()
++
++    cfg_path = f"configs/{args.dataset}.yaml"
++    with open(cfg_path) as fh:
++        cfg = yaml.load(fh, Loader=yaml.FullLoader)
++
++    data_dir  = cfg['data_args']['data_dir']
++    ds_name   = data_dir.split("/")[-1]
++    device    = torch.device(cfg['start_up']['device'])
++    tag       = cfg['start_up']['model_name']
++    ckpt_best = f'output/{tag}_{ds_name}.pt'
++    ckpt_last = f'output/{tag}_{ds_name}_resume.pt'
++    use_pkl   = cfg['start_up']['load_pkl']
++
++    if setproctitle:
++        setproctitle.setproctitle(f"{tag}.{ds_name}@walpurgis_v3")
++
++    os.makedirs('output', exist_ok=True)
++
++    if _DBG:
++        print(f"[DBG:main] ds={ds_name}  device={device}  "
++              f"tag={tag}  pkl={use_pkl}")
++
++    # ════════ data ════════
++    t0 = time.time()
++    if use_pkl:
++        dataloader = pickle.load(open(f'output/dataloader_{ds_name}.pkl', 'rb'))
++    else:
++        bs = cfg['model_args']['batch_size']
++        dataloader = load_dataset(data_dir, bs, bs, bs, ds_name)
++        pickle.dump(dataloader,
++                     open(f'output/dataloader_{ds_name}.pkl', 'wb'))
++    print(f"[TIMING] data loaded in {time.time()-t0:.2f}s")
++
++    scaler = dataloader['scaler']
++
++    _min, _max = None, None
++    if ds_name in ('PEMS04', 'PEMS08'):
++        _min = pickle.load(open(f"datasets/{ds_name}/min.pkl", 'rb'))
++        _max = pickle.load(open(f"datasets/{ds_name}/max.pkl", 'rb'))
++
++    t0 = time.time()
++    adj_proc, adj_raw = load_adj(
++        cfg['data_args']['adj_data_path'], cfg['data_args']['adj_type'])
++    print(f"[TIMING] adj loaded in {time.time()-t0:.2f}s")
++
++    # ════════ hyper-params ════════
++    m = cfg['model_args']
++    m['device']    = device
++    m['num_nodes'] = adj_proc[0].shape[0]
++    m['adjs']      = [torch.tensor(a).to(device) for a in adj_proc]
++    m['adjs_ori']  = torch.tensor(adj_raw).to(device)
++    m['dataset']   = ds_name
++
++    o = cfg['optim_args']
++    o['cl_steps']   = o['cl_epochs'] * len(dataloader['train_loader'])
++    o['warm_steps'] = o['warm_epochs'] * len(dataloader['train_loader'])
++
++    if _DBG:
++        print(f"[DBG:main] nodes={m['num_nodes']}  "
++              f"train_iters={len(dataloader['train_loader'])}  "
++              f"cl_steps={o['cl_steps']}  warm={o['warm_steps']}")
++
++    # ════════ model ════════
++    logger = TrainLogger(tag, ds_name)
++    logger.print_model_args(m, ban=['adjs', 'adjs_ori', 'node_emb'])
++    logger.print_optim_args(o)
++
++    model  = D2STGNN(**m).to(device)
++    engine = trainer(scaler, model, **o)
++    stopper = EarlyStopping(o['patience'], ckpt_best)
++
++    mode = cfg['start_up']['mode']
++    assert mode in ('test', 'resume', 'scratch')
++    start_ep = 0
++    if mode == 'test':
++        model = load_model(model, ckpt_best)
++    elif mode == 'resume':
++        start_ep = cfg['start_up']['resume_epoch']
++        model = load_model(model, ckpt_last)
++
++    batch_ctr = start_ep * len(dataloader['train_loader'])
++    engine.set_resume_lr_and_cl(start_ep, batch_ctr)
++
++    t_train_hist, t_val_hist = [], []
++    n_batches = len(dataloader['train_loader'])
++    print(f"Iterations per epoch: {n_batches}")
++
++    # ════════ training loop ════════
++    if mode != 'test':
++        for epoch in range(start_ep + 1, o['epochs']):
++            tt = time.time()
++            ep_mae, ep_mape, ep_rmse = [], [], []
++            dataloader['train_loader'].shuffle()
++
++            for it, (x, y) in enumerate(dataloader['train_loader'].get_iterator()):
++                tx = data_reshaper(x, device)
++                ty = data_reshaper(y, device)
++                mae, mape, rmse = engine.train(
++                    tx, ty, batch_num=batch_ctr, _max=_max, _min=_min)
++                print(f"  batch {it}: mae={mae:.4f}", end='\r')
++                ep_mae.append(mae)
++                ep_mape.append(mape)
++                ep_rmse.append(rmse)
++                batch_ctr += 1
++
++            dt_tr = time.time() - tt
++            t_train_hist.append(dt_tr)
++
++            if engine.if_lr_scheduler:
++                engine.lr_scheduler.step()
++            lr_now = engine.optimizer.param_groups[0]['lr']
++
++            tv = time.time()
++            vl, vm, vr = engine.eval(
++                device, dataloader, tag, _max=_max, _min=_min)
++            dt_val = time.time() - tv
++            t_val_hist.append(dt_val)
++
++            print(f"[{_ts()}] Ep {epoch:03d} | "
++                  f"Train MAE={np.mean(ep_mae):.4f} "
++                  f"MAPE={np.mean(ep_mape):.4f} "
++                  f"RMSE={np.mean(ep_rmse):.4f} | "
++                  f"Val MAE={vl:.4f} RMSE={vr:.4f} MAPE={vm:.4f} | "
++                  f"LR={lr_now:.6f} | "
++                  f"t_tr={dt_tr:.1f}s t_val={dt_val:.1f}s")
++
++            stopper(vl, engine.model)
++            if stopper.early_stop:
++                print("Early stopping triggered.")
++                break
++
++            engine.test(model, ckpt_last, device, dataloader, scaler,
++                        tag, _max=_max, _min=_min,
++                        loss=engine.loss, dataset_name=ds_name)
++
++        print(f"\nAvg train: {np.mean(t_train_hist):.4f}s/ep  "
++              f"Avg val: {np.mean(t_val_hist):.4f}s/ep")
++    else:
++        engine.test(model, ckpt_last, device, dataloader, scaler,
++                    tag, save=False, _max=_max, _min=_min,
++                    loss=engine.loss, dataset_name=ds_name)
++
++
++if __name__ == '__main__':
++    t_global = time.time()
++    main()
++    print(f"\nTotal wall-clock: {time.time() - t_global:.2f}s")
+diff --git a/src/walpurgis_ported_v3/models/__init__.py b/src/walpurgis_ported_v3/models/__init__.py
+new file mode 100644
+index 0000000..838bfb9
+--- /dev/null
++++ b/src/walpurgis_ported_v3/models/__init__.py
+@@ -0,0 +1 @@
++from .trainer import trainer
+diff --git a/src/walpurgis_ported_v3/models/decouple/__init__.py b/src/walpurgis_ported_v3/models/decouple/__init__.py
+new file mode 100644
+index 0000000..4c4130c
+--- /dev/null
++++ b/src/walpurgis_ported_v3/models/decouple/__init__.py
+@@ -0,0 +1,2 @@
++from .estimation_gate import EstimationGate
++from .residual_decomp import ResidualDecomp
+diff --git a/src/walpurgis_ported_v3/models/decouple/estimation_gate.py b/src/walpurgis_ported_v3/models/decouple/estimation_gate.py
+new file mode 100644
+index 0000000..8d49cfa
+--- /dev/null
++++ b/src/walpurgis_ported_v3/models/decouple/estimation_gate.py
+@@ -0,0 +1,37 @@
++"""
++Estimation gate: learns a scalar gate in (0,1) for each node-time pair
++to blend the diffusion and inherent signals.
++"""
++import sys
++import torch
++import torch.nn as nn
++
++_DBG = ("--debug-gate" in sys.argv)
++
++
++class EstimationGate(nn.Module):
++
++    def __init__(self, node_emb_dim, time_emb_dim, hidden_dim):
++        super().__init__()
++        input_dim = 2 * node_emb_dim + 2 * time_emb_dim
++        self.fc1 = nn.Linear(input_dim, hidden_dim)
++        self.act = nn.ReLU()
++        self.fc2 = nn.Linear(hidden_dim, 1)
++
++    def forward(self, emb_u, emb_d, t_day, t_week, history):
++        B, L, _, _ = t_day.shape
++        # broadcast node embeddings to (B, L, N, d)
++        eu = emb_u.unsqueeze(0).unsqueeze(0).expand(B, L, -1, -1)
++        ed = emb_d.unsqueeze(0).unsqueeze(0).expand(B, L, -1, -1)
++        cat = torch.cat([t_day, t_week, eu, ed], dim=-1)
++        h = self.act(self.fc1(cat))
++        gate = torch.sigmoid(self.fc2(h))
++        # align temporal dim with history
++        gate = gate[:, -history.shape[1]:, :, :]
++
++        if _DBG:
++            print(f"[DBG:gate] EstimationGate  gate_mean={gate.mean().item():.4f}  "
++                  f"gate_std={gate.std().item():.4f}  "
++                  f"history.shape={tuple(history.shape)}")
++
++        return history * gate
+diff --git a/src/walpurgis_ported_v3/models/decouple/residual_decomp.py b/src/walpurgis_ported_v3/models/decouple/residual_decomp.py
+new file mode 100644
+index 0000000..f62dc85
+--- /dev/null
++++ b/src/walpurgis_ported_v3/models/decouple/residual_decomp.py
+@@ -0,0 +1,24 @@
++"""
++Residual decomposition: subtracts the learned component and normalizes.
++"""
++import sys
++import torch.nn as nn
++
++_DBG = ("--debug-resdecomp" in sys.argv)
++
++
++class ResidualDecomp(nn.Module):
++
++    def __init__(self, norm_shape):
++        super().__init__()
++        self.layer_norm = nn.LayerNorm(norm_shape[-1])
++        self.relu = nn.ReLU()
++
++    def forward(self, x, y):
++        residual = x - self.relu(y)
++        out = self.layer_norm(residual)
++        if _DBG:
++            print(f"[DBG:resdecomp] in x={tuple(x.shape)}  "
++                  f"y_mean={y.mean().item():.4f}  "
++                  f"out_std={out.std().item():.4f}")
++        return out
+diff --git a/src/walpurgis_ported_v3/models/diffusion_block/__init__.py b/src/walpurgis_ported_v3/models/diffusion_block/__init__.py
+new file mode 100644
+index 0000000..05c23a3
+--- /dev/null
++++ b/src/walpurgis_ported_v3/models/diffusion_block/__init__.py
+@@ -0,0 +1,3 @@
++from .dif_block import DifBlock
++from .dif_model import STLocalizedConv
++from .forecast import Forecast
+diff --git a/src/walpurgis_ported_v3/models/diffusion_block/dif_block.py b/src/walpurgis_ported_v3/models/diffusion_block/dif_block.py
+new file mode 100644
+index 0000000..e683c73
+--- /dev/null
++++ b/src/walpurgis_ported_v3/models/diffusion_block/dif_block.py
+@@ -0,0 +1,45 @@
++"""
++Diffusion Block: ST conv + forecast/backcast branches + residual decomp.
++"""
++import sys
++import torch.nn as nn
++
++from .forecast import Forecast
++from .dif_model import STLocalizedConv
++from ..decouple.residual_decomp import ResidualDecomp
++
++_DBG = ("--debug-difblk" in sys.argv)
++
++
++class DifBlock(nn.Module):
++
++    def __init__(self, hidden_dim, forecast_hidden_dim=256,
++                 use_pre=None, dy_graph=None, sta_graph=None, **kw):
++        super().__init__()
++        pre_g = kw['adjs']
++
++        self.st_conv = STLocalizedConv(
++            hidden_dim, pre_defined_graph=pre_g,
++            use_pre=use_pre, dy_graph=dy_graph, sta_graph=sta_graph, **kw)
++
++        self.fcast = Forecast(hidden_dim,
++                              forecast_hidden_dim=forecast_hidden_dim, **kw)
++        self.bcast_fc = nn.Linear(hidden_dim, hidden_dim)
++        self.res_decomp = ResidualDecomp([-1, -1, -1, hidden_dim])
++
++    def forward(self, history_data, gated_data, dynamic_graph, static_graph):
++        diff_h = self.st_conv(gated_data, dynamic_graph, static_graph)
++
++        # forecast path
++        fk = self.fcast(gated_data, diff_h, self.st_conv,
++                        dynamic_graph, static_graph)
++        # backcast path
++        bk = self.bcast_fc(diff_h)
++        trimmed = history_data[:, -bk.shape[1]:, :, :]
++        residual = self.res_decomp(trimmed, bk)
++
++        if _DBG:
++            print(f"[DBG:difblk] diff_h={tuple(diff_h.shape)}  "
++                  f"fk={tuple(fk.shape)}  residual={tuple(residual.shape)}")
++
++        return residual, fk
+diff --git a/src/walpurgis_ported_v3/models/diffusion_block/dif_model.py b/src/walpurgis_ported_v3/models/diffusion_block/dif_model.py
+new file mode 100644
+index 0000000..c4d8700
+--- /dev/null
++++ b/src/walpurgis_ported_v3/models/diffusion_block/dif_model.py
+@@ -0,0 +1,110 @@
++"""
++Spatially-Temporally Localized Convolution for the diffusion branch.
++"""
++import sys
++import torch
++import torch.nn as nn
++
++_DBG = ("--debug-stconv" in sys.argv)
++
++
++class STLocalizedConv(nn.Module):
++    """Graph conv that fuses temporal and spatial kernels into a localized operator."""
++
++    def __init__(self, hidden_dim, pre_defined_graph=None,
++                 use_pre=None, dy_graph=None, sta_graph=None, **kw):
++        super().__init__()
++        self.k_s = kw['k_s']
++        self.k_t = kw['k_t']
++        self.hidden_dim = hidden_dim
++
++        # graph switches
++        self.pre_graphs = pre_defined_graph
++        self.use_pre  = use_pre
++        self.use_dyn  = dy_graph
++        self.use_sta  = sta_graph
++
++        self.support_len = len(self.pre_graphs) + int(dy_graph) + int(sta_graph)
++        self.n_matrices = (
++            int(use_pre) * len(self.pre_graphs)
++            + len(self.pre_graphs) * int(dy_graph)
++            + int(sta_graph)
++        ) * self.k_s + 1
++
++        self.drop = nn.Dropout(kw['dropout'])
++        self.pre_graphs = self._expand_predef(self.pre_graphs)
++
++        self.fc_update = nn.Linear(self.k_t * hidden_dim,
++                                   self.k_t * hidden_dim, bias=False)
++        self.gcn_agg   = nn.Linear(hidden_dim * self.n_matrices, hidden_dim)
++
++        self.bn   = nn.BatchNorm2d(hidden_dim)
++        self.act  = nn.ReLU()
++
++    # ---- graph expansion ----
++
++    def _expand_predef(self, graphs):
++        """Pre-compute multi-order + ST-localized form of static graphs."""
++        expanded = []
++        eye = 1 - torch.eye(graphs[0].shape[0]).to(graphs[0].device)
++        for g in graphs:
++            power = g
++            expanded.append(power * eye)
++            for _k in range(2, self.k_s + 1):
++                power = torch.matmul(g, power)
++                expanded.append(power * eye)
++        # reshape each to (N, k_t*N) for localized convolution
++        st = []
++        for g in expanded:
++            g2 = g.unsqueeze(-2).expand(-1, self.k_t, -1)
++            g2 = g2.reshape(g2.shape[0], g2.shape[1] * g2.shape[2])
++            st.append(g2)
++        return st
++
++    def gconv(self, support, X_k, X_0):
++        parts = [X_0]
++        for g in support:
++            if g.dim() == 2:
++                pass
++            else:
++                g = g.unsqueeze(1)
++            parts.append(torch.matmul(g, X_k))
++        merged = torch.cat(parts, dim=-1)
++        out = self.gcn_agg(merged)
++        out = self.drop(out)
++        if _DBG:
++            print(f"[DBG:stconv] gconv  "
++                  f"n_support={len(support)}  "
++                  f"out.shape={tuple(out.shape)}  "
++                  f"out_mean={out.mean().item():.4f}")
++        return out
++
++    def forward(self, X, dynamic_graph, static_graph):
++        """X: (B, L, N, D) -> (B, L', N, D)."""
++        # unfold temporal kernel
++        X_u = X.unfold(1, self.k_t, 1).permute(0, 1, 2, 4, 3)
++        B, L, N, K, D = X_u.shape
++
++        if _DBG:
++            print(f"[DBG:stconv] forward  input={tuple(X.shape)}  "
++                  f"unfolded=({B},{L},{N},{K},{D})")
++
++        # assemble support set
++        support = []
++        if self.use_pre:
++            support += self.pre_graphs
++        if self.use_dyn:
++            support += dynamic_graph
++        if self.use_sta:
++            support += self._expand_predef(static_graph)
++
++        # parallelize over temporal dim
++        flat = X_u.reshape(B, L, N, K * D)
++        out  = self.act(self.fc_update(flat))
++        out  = out.view(B, L, N, K, D)
++
++        X_0 = out.mean(dim=-2)
++        X_k = out.transpose(-3, -2).reshape(B, L, K * N, D)
++
++        hidden = self.gconv(support, X_k, X_0)
++        return hidden
+diff --git a/src/walpurgis_ported_v3/models/diffusion_block/forecast.py b/src/walpurgis_ported_v3/models/diffusion_block/forecast.py
+new file mode 100644
+index 0000000..9547b67
+--- /dev/null
++++ b/src/walpurgis_ported_v3/models/diffusion_block/forecast.py
+@@ -0,0 +1,43 @@
++"""
++Auto-regressive forecast head for the diffusion branch.
++"""
++import sys
++import torch
++import torch.nn as nn
++
++_DBG = ("--debug-diffc" in sys.argv)
++
++
++class Forecast(nn.Module):
++    """Recursively predict future hidden states via the localized ST conv."""
++
++    def __init__(self, hidden_dim, forecast_hidden_dim=None, **kw):
++        super().__init__()
++        self.k_t = kw['k_t']
++        self.horizon = kw['seq_length']
++        self.gap = kw['gap']
++        self.proj = nn.Linear(hidden_dim, forecast_hidden_dim)
++
++    def forward(self, gated_hist, diff_hidden, st_conv, dyn_g, sta_g):
++        preds = [diff_hidden[:, -1, :, :].unsqueeze(1)]
++        n_steps = int(self.horizon / self.gap) - 1
++
++        for step_i in range(n_steps):
++            tail = preds[-self.k_t:]
++            if len(tail) < self.k_t:
++                # borrow from gated_hist to fill the initial window
++                need = self.k_t - len(tail)
++                prefix = gated_hist[:, -need:, :, :]
++                tail = [prefix] + tail
++            combined = torch.cat(tail, dim=1)
++            next_h = st_conv(combined, dyn_g, sta_g)
++            preds.append(next_h)
++
++            if _DBG and step_i < 2:
++                print(f"[DBG:diffc] step {step_i}  "
++                      f"combined={tuple(combined.shape)}  "
++                      f"next_h_mean={next_h.mean().item():.4f}")
++
++        out = torch.cat(preds, dim=1)
++        out = self.proj(out)
++        return out
+diff --git a/src/walpurgis_ported_v3/models/dynamic_graph_conv/__init__.py b/src/walpurgis_ported_v3/models/dynamic_graph_conv/__init__.py
+new file mode 100644
+index 0000000..11783f0
+--- /dev/null
++++ b/src/walpurgis_ported_v3/models/dynamic_graph_conv/__init__.py
+@@ -0,0 +1 @@
++from .dy_graph_conv import DynamicGraphConstructor
+diff --git a/src/walpurgis_ported_v3/models/dynamic_graph_conv/dy_graph_conv.py b/src/walpurgis_ported_v3/models/dynamic_graph_conv/dy_graph_conv.py
+new file mode 100644
+index 0000000..f7aaae5
+--- /dev/null
++++ b/src/walpurgis_ported_v3/models/dynamic_graph_conv/dy_graph_conv.py
+@@ -0,0 +1,59 @@
++"""
++Dynamic graph constructor: distance → mask → normalize → multi-order → ST localize.
++"""
++import sys
++import torch.nn as nn
++
++from .utils import DistanceFunction, Mask, Normalizer, MultiOrder
++
++_DBG = ("--debug-dygraph" in sys.argv)
++
++
++class DynamicGraphConstructor(nn.Module):
++
++    def __init__(self, **kw):
++        super().__init__()
++        self.k_s = kw['k_s']
++        self.k_t = kw['k_t']
++        self.hidden_dim = kw['num_hidden']
++        self.node_dim   = kw['node_hidden']
++
++        self.dist_fn    = DistanceFunction(**kw)
++        self.mask_fn    = Mask(**kw)
++        self.norm_fn    = Normalizer()
++        self.multiord   = MultiOrder(order=self.k_s)
++
++    def _st_localize(self, ordered_graphs):
++        """Reshape (N, N) multi-order graphs into (B, N, k_t*N) for ST conv."""
++        localized = []
++        for modality in ordered_graphs:
++            for g_k in modality:
++                g_exp = g_k.unsqueeze(-2).expand(-1, -1, self.k_t, -1)
++                flat = g_exp.reshape(
++                    g_exp.shape[0], g_exp.shape[1],
++                    g_exp.shape[2] * g_exp.shape[3])
++                localized.append(flat)
++        if _DBG:
++            print(f"[DBG:dygraph] st_localize  "
++                  f"n_localized={len(localized)}  "
++                  f"shape_0={tuple(localized[0].shape) if localized else 'empty'}")
++        return localized
++
++    def forward(self, **inputs):
++        X   = inputs['history_data']
++        E_d = inputs['node_embedding_d']
++        E_u = inputs['node_embedding_u']
++        T_D = inputs['time_in_day_feat']
++        D_W = inputs['day_in_week_feat']
++
++        dist = self.dist_fn(X, E_d, E_u, T_D, D_W)
++        masked  = self.mask_fn(dist)
++        normed  = self.norm_fn(masked)
++        powered = self.multiord(normed)
++        graphs  = self._st_localize(powered)
++
++        if _DBG:
++            print(f"[DBG:dygraph] forward  "
++                  f"n_dist={len(dist)}  n_output_graphs={len(graphs)}")
++
++        return graphs
+diff --git a/src/walpurgis_ported_v3/models/dynamic_graph_conv/utils/__init__.py b/src/walpurgis_ported_v3/models/dynamic_graph_conv/utils/__init__.py
+new file mode 100644
+index 0000000..84641d5
+--- /dev/null
++++ b/src/walpurgis_ported_v3/models/dynamic_graph_conv/utils/__init__.py
+@@ -0,0 +1,3 @@
++from .distance import DistanceFunction
++from .mask import Mask
++from .normalizer import Normalizer, MultiOrder
+diff --git a/src/walpurgis_ported_v3/models/dynamic_graph_conv/utils/distance.py b/src/walpurgis_ported_v3/models/dynamic_graph_conv/utils/distance.py
+new file mode 100644
+index 0000000..ecd2ecd
+--- /dev/null
++++ b/src/walpurgis_ported_v3/models/dynamic_graph_conv/utils/distance.py
+@@ -0,0 +1,66 @@
++"""
++Distance function for dynamic graph construction via attention.
++"""
++import math
++import sys
++import torch
++import torch.nn as nn
++import torch.nn.functional as F
++
++_DBG = ("--debug-dist" in sys.argv)
++
++
++class DistanceFunction(nn.Module):
++
++    def __init__(self, **kw):
++        super().__init__()
++        d_h   = kw['num_hidden']
++        d_n   = kw['node_hidden']
++        d_t   = kw['time_emb_dim']
++        L_in  = kw['seq_length']
++
++        # time-series feature extractor
++        self.drop = nn.Dropout(kw['dropout'])
++        self.ts_fc1 = nn.Linear(L_in, d_h * 2)
++        self.ts_fc2 = nn.Linear(d_h * 2, d_h)
++        self.ts_bn  = nn.BatchNorm1d(d_h * 2)
++
++        # attention projections
++        feat_dim = d_h + d_n + d_t * 2
++        self.W_Q = nn.Linear(feat_dim, d_h, bias=False)
++        self.W_K = nn.Linear(feat_dim, d_h, bias=False)
++        self.scale = math.sqrt(d_h)
++
++    def forward(self, X, E_d, E_u, T_D, D_W):
++        # last-step pooling for temporal embeddings
++        T_D = T_D[:, -1, :, :]
++        D_W = D_W[:, -1, :, :]
++
++        # dynamic feature from raw signal
++        ts = X[:, :, :, 0].transpose(1, 2).contiguous()   # (B, N, L)
++        B, N, L = ts.shape
++        ts_flat = ts.view(B * N, L)
++        dyn = self.ts_fc2(self.drop(self.ts_bn(F.relu(self.ts_fc1(ts_flat)))))
++        dyn = dyn.view(B, N, -1)
++
++        # expand node embeddings
++        e1 = E_d.unsqueeze(0).expand(B, -1, -1)
++        e2 = E_u.unsqueeze(0).expand(B, -1, -1)
++
++        feat_src = torch.cat([dyn, T_D, D_W, e1], dim=-1)
++        feat_tgt = torch.cat([dyn, T_D, D_W, e2], dim=-1)
++
++        adj_list = []
++        for f in [feat_src, feat_tgt]:
++            Q = self.W_Q(f)
++            K = self.W_K(f)
++            attn = torch.bmm(Q, K.transpose(-1, -2)) / self.scale
++            A = torch.softmax(attn, dim=-1)
++            adj_list.append(A)
++
++        if _DBG:
++            print(f"[DBG:dist] forward  B={B} N={N}  "
++                  f"A0_mean={adj_list[0].mean().item():.4f}  "
++                  f"A1_mean={adj_list[1].mean().item():.4f}")
++
++        return adj_list
+diff --git a/src/walpurgis_ported_v3/models/dynamic_graph_conv/utils/mask.py b/src/walpurgis_ported_v3/models/dynamic_graph_conv/utils/mask.py
+new file mode 100644
+index 0000000..57ed055
+--- /dev/null
++++ b/src/walpurgis_ported_v3/models/dynamic_graph_conv/utils/mask.py
+@@ -0,0 +1,27 @@
++"""
++Structural mask: zero out dynamic-graph edges where predefined adj is absent.
++"""
++import sys
++import torch
++import torch.nn as nn
++
++_DBG = ("--debug-mask" in sys.argv)
++
++
++class Mask(nn.Module):
++
++    def __init__(self, **kw):
++        super().__init__()
++        self.structural_mask = kw['adjs']
++
++    def _apply_mask(self, idx, adj):
++        template = self.structural_mask[idx] + torch.ones_like(self.structural_mask[idx]) * 1e-7
++        masked = template.to(adj.device) * adj
++        if _DBG:
++            nnz = (masked > 1e-6).float().mean().item()
++            print(f"[DBG:mask] _apply_mask idx={idx}  "
++                  f"density={nnz:.4f}")
++        return masked
++
++    def forward(self, adj_list):
++        return [self._apply_mask(i, a) for i, a in enumerate(adj_list)]
+diff --git a/src/walpurgis_ported_v3/models/dynamic_graph_conv/utils/normalizer.py b/src/walpurgis_ported_v3/models/dynamic_graph_conv/utils/normalizer.py
+new file mode 100644
+index 0000000..c8bc412
+--- /dev/null
++++ b/src/walpurgis_ported_v3/models/dynamic_graph_conv/utils/normalizer.py
+@@ -0,0 +1,61 @@
++"""
++Row-normalizer and multi-order graph power series.
++"""
++import sys
++import torch
++import torch.nn as nn
++
++from utils.cal_adj import remove_nan_inf
++
++_DBG = ("--debug-norm" in sys.argv)
++
++
++class Normalizer(nn.Module):
++    """Row-normalize a batch of adjacency matrices: D^{-1} A."""
++
++    def __init__(self):
++        super().__init__()
++
++    @staticmethod
++    def _row_norm(graph):
++        degree = graph.sum(dim=2)
++        inv_deg = remove_nan_inf(1.0 / degree)
++        D_inv = torch.diag_embed(inv_deg)
++        normed = torch.bmm(D_inv, graph)
++        return normed
++
++    def forward(self, adj_list):
++        out = [self._row_norm(a) for a in adj_list]
++        if _DBG:
++            for i, a in enumerate(out):
++                print(f"[DBG:norm] matrix {i}  row_sum_mean="
++                      f"{a.sum(-1).mean().item():.4f}")
++        return out
++
++
++class MultiOrder(nn.Module):
++    """Compute [A, A^2, ..., A^order] with self-loop mask removed."""
++
++    def __init__(self, order=2):
++        super().__init__()
++        self.order = order
++
++    def _powers(self, graph):
++        N = graph.shape[1]
++        eye = torch.eye(N, device=graph.device)
++        anti_eye = 1.0 - eye
++
++        powers = []
++        cur = graph
++        powers.append(cur * anti_eye)
++        for _k in range(2, self.order + 1):
++            cur = torch.matmul(cur, graph)
++            powers.append(cur * anti_eye)
++
++        if _DBG:
++            print(f"[DBG:norm] MultiOrder  N={N}  "
++                  f"order={self.order}  powers_len={len(powers)}")
++        return powers
++
++    def forward(self, adj_list):
++        return [self._powers(a) for a in adj_list]
+diff --git a/src/walpurgis_ported_v3/models/inherent_block/__init__.py b/src/walpurgis_ported_v3/models/inherent_block/__init__.py
+new file mode 100644
+index 0000000..521c8c9
+--- /dev/null
++++ b/src/walpurgis_ported_v3/models/inherent_block/__init__.py
+@@ -0,0 +1 @@
++from .inh_block import InhBlock
+diff --git a/src/walpurgis_ported_v3/models/inherent_block/forecast.py b/src/walpurgis_ported_v3/models/inherent_block/forecast.py
+new file mode 100644
+index 0000000..5258889
+--- /dev/null
++++ b/src/walpurgis_ported_v3/models/inherent_block/forecast.py
+@@ -0,0 +1,46 @@
++"""
++Auto-regressive forecast head for the inherent (temporal) branch.
++Uses GRU + Transformer to predict future hidden states step by step.
++"""
++import sys
++import torch
++import torch.nn as nn
++
++_DBG = ("--debug-inhfc" in sys.argv)
++
++
++class Forecast(nn.Module):
++
++    def __init__(self, hidden_dim, fk_dim, **kw):
++        super().__init__()
++        self.horizon = kw['seq_length']
++        self.gap     = kw['gap']
++        self.proj    = nn.Linear(hidden_dim, fk_dim)
++
++    def forward(self, X, rnn_H, Z, transformer, rnn_layer, pos_enc):
++        B, _, N, D = X.shape
++        n_ar_steps = int(self.horizon / self.gap) - 1
++
++        preds = [Z[-1, :, :].unsqueeze(0)]
++
++        for si in range(n_ar_steps):
++            # one GRU step
++            gru_out = rnn_layer.gru_cell(preds[-1][0], rnn_H[-1]).unsqueeze(0)
++            rnn_H = torch.cat([rnn_H, gru_out], dim=0)
++            # optional positional encoding
++            if pos_enc is not None:
++                rnn_H = pos_enc(rnn_H)
++            # transformer attention
++            z_new = transformer(gru_out, K=rnn_H, V=rnn_H)
++            preds.append(z_new)
++
++            if _DBG and si < 2:
++                print(f"[DBG:inhfc] ar_step={si}  "
++                      f"gru_norm={gru_out.norm().item():.4f}  "
++                      f"z_new_mean={z_new.mean().item():.4f}  "
++                      f"rnn_H_len={rnn_H.shape[0]}")
++
++        stacked = torch.cat(preds, dim=0)                    # (T', B*N, D)
++        stacked = stacked.reshape(-1, B, N, D).transpose(0, 1)  # (B, T', N, D)
++        out = self.proj(stacked)
++        return out
+diff --git a/src/walpurgis_ported_v3/models/inherent_block/inh_block.py b/src/walpurgis_ported_v3/models/inherent_block/inh_block.py
+new file mode 100644
+index 0000000..414f85b
+--- /dev/null
++++ b/src/walpurgis_ported_v3/models/inherent_block/inh_block.py
+@@ -0,0 +1,79 @@
++"""
++Inherent Block: positional encoding + GRU + Transformer + forecast/backcast.
++Captures the inherent (non-diffusion) temporal patterns.
++"""
++import math
++import sys
++
++import torch
++import torch.nn as nn
++
++from models.decouple.residual_decomp import ResidualDecomp
++from models.inherent_block.inh_model import RNNLayer, TransformerLayer
++from models.inherent_block.forecast import Forecast
++
++_DBG = ("--debug-inhblk" in sys.argv)
++
++
++class PositionalEncoding(nn.Module):
++    """Sinusoidal PE identical to 'Attention Is All You Need'."""
++
++    def __init__(self, d_model, dropout=None, max_len=5000):
++        super().__init__()
++        self.drop = nn.Dropout(p=dropout)
++        pos = torch.arange(max_len).unsqueeze(1)
++        div = torch.exp(torch.arange(0, d_model, 2) * (-math.log(10000.0) / d_model))
++        pe = torch.zeros(max_len, 1, d_model)
++        pe[:, 0, 0::2] = torch.sin(pos * div)
++        pe[:, 0, 1::2] = torch.cos(pos * div)
++        self.register_buffer('pe', pe)
++
++    def forward(self, x):
++        return self.drop(x + self.pe[:x.size(0)])
++
++
++class InhBlock(nn.Module):
++
++    def __init__(self, hidden_dim, num_heads=4, bias=True,
++                 forecast_hidden_dim=256, **kw):
++        super().__init__()
++        self.hidden_dim = hidden_dim
++
++        # temporal encoder stack
++        self.pos_enc = PositionalEncoding(hidden_dim, kw['dropout'])
++        self.rnn     = RNNLayer(hidden_dim, kw['dropout'])
++        self.msa     = TransformerLayer(hidden_dim, num_heads, kw['dropout'], bias)
++
++        # branches
++        self.fcast_head = Forecast(hidden_dim, forecast_hidden_dim, **kw)
++        self.bcast_fc   = nn.Linear(hidden_dim, hidden_dim)
++        self.res_decomp = ResidualDecomp([-1, -1, -1, hidden_dim])
++
++    def forward(self, signal):
++        """
++        signal: (B, L, N, D) — the inherent component from the previous layer.
++        Returns (backcast_residual, forecast_hidden).
++        """
++        B, L, N, D = signal.shape
++
++        # ── temporal encoding ──
++        rnn_out = self.rnn(signal)            # (L, B*N, D)
++        rnn_pe  = self.pos_enc(rnn_out)
++        msa_out = self.msa(rnn_pe, rnn_pe, rnn_pe)
++
++        if _DBG:
++            print(f"[DBG:inhblk] signal=({B},{L},{N},{D})  "
++                  f"rnn_out={tuple(rnn_out.shape)}  "
++                  f"msa_mean={msa_out.mean().item():.4f}")
++
++        # ── forecast branch ──
++        fk = self.fcast_head(signal, rnn_out, msa_out,
++                             self.msa, self.rnn, self.pos_enc)
++
++        # ── backcast branch ──
++        # reshape msa_out back to (B, L, N, D)
++        msa_4d = msa_out.reshape(L, B, N, D).transpose(0, 1)
++        bk = self.bcast_fc(msa_4d)
++        residual = self.res_decomp(signal, bk)
++
++        return residual, fk
+diff --git a/src/walpurgis_ported_v3/models/inherent_block/inh_model.py b/src/walpurgis_ported_v3/models/inherent_block/inh_model.py
+new file mode 100644
+index 0000000..ea72767
+--- /dev/null
++++ b/src/walpurgis_ported_v3/models/inherent_block/inh_model.py
+@@ -0,0 +1,54 @@
++"""
++Inherent-pattern sub-models: GRU temporal encoder + Transformer MSA.
++"""
++import sys
++import torch
++import torch.nn as nn
++from torch.nn import MultiheadAttention
++
++_DBG = ("--debug-inhmod" in sys.argv)
++
++
++class RNNLayer(nn.Module):
++    """Single-layer GRU that processes (B*N, L, D) sequences step by step."""
++
++    def __init__(self, hidden_dim, dropout=None):
++        super().__init__()
++        self.hidden_dim = hidden_dim
++        self.gru_cell = nn.GRUCell(hidden_dim, hidden_dim)
++        self.drop = nn.Dropout(dropout)
++
++    def forward(self, X):
++        B, L, N, D = X.shape
++        flat = X.transpose(1, 2).reshape(B * N, L, D)
++        hx = torch.zeros_like(flat[:, 0, :])
++        steps = []
++        for t in range(L):
++            hx = self.gru_cell(flat[:, t, :], hx)
++            steps.append(hx)
++        out = torch.stack(steps, dim=0)       # (L, B*N, D)
++        out = self.drop(out)
++
++        if _DBG:
++            print(f"[DBG:inhmod] RNN  in=({B},{L},{N},{D})  "
++                  f"out=(L={out.shape[0]}, BN={out.shape[1]}, D={out.shape[2]})  "
++                  f"hx_norm={hx.norm().item():.4f}")
++        return out
++
++
++class TransformerLayer(nn.Module):
++    """Single multi-head self-attention layer."""
++
++    def __init__(self, hidden_dim, num_heads=4, dropout=None, bias=True):
++        super().__init__()
++        self.mha  = MultiheadAttention(hidden_dim, num_heads,
++                                       dropout=dropout, bias=bias)
++        self.drop = nn.Dropout(dropout)
++
++    def forward(self, Q, K, V):
++        attn_out, _ = self.mha(Q, K, V)
++        out = self.drop(attn_out)
++        if _DBG:
++            print(f"[DBG:inhmod] Transformer  Q={tuple(Q.shape)}  "
++                  f"out_mean={out.mean().item():.4f}")
++        return out
+diff --git a/src/walpurgis_ported_v3/models/losses.py b/src/walpurgis_ported_v3/models/losses.py
+new file mode 100644
+index 0000000..00fd261
+--- /dev/null
++++ b/src/walpurgis_ported_v3/models/losses.py
+@@ -0,0 +1,81 @@
++"""
++Masked loss functions (MAE, MSE, RMSE, MAPE, Huber) and composite metric.
++Ported with debug probes for loss landscape inspection.
++"""
++import sys
++import torch
++import numpy as np
++
++_DBG = ("--debug-loss" in sys.argv)
++
++
++def _build_mask(labels, null_val):
++    """Return a float mask that is 1 where labels are valid."""
++    if np.isnan(null_val):
++        mask = ~torch.isnan(labels)
++    else:
++        mask = (labels != null_val)
++    mask = mask.float()
++    mask = mask / torch.mean(mask)
++    mask = torch.where(torch.isnan(mask), torch.zeros_like(mask), mask)
++    return mask
++
++
++def masked_mse(pred, target, null_val=np.nan):
++    mask = _build_mask(target, null_val)
++    sq_err = (pred - target) ** 2
++    sq_err = sq_err * mask
++    sq_err = torch.where(torch.isnan(sq_err), torch.zeros_like(sq_err), sq_err)
++    out = torch.mean(sq_err)
++    if _DBG:
++        print(f"[DBG:loss] masked_mse={out.item():.6f}  "
++              f"mask_frac={mask.mean().item():.4f}")
++    return out
++
++
++def masked_rmse(pred, target, null_val=np.nan):
++    return torch.sqrt(masked_mse(pred, target, null_val))
++
++
++def masked_mae_loss(y_pred, y_true):
++    """Variant that treats 0 as the null sentinel (no null_val arg)."""
++    mask = (y_true != 0).float()
++    mask = mask / mask.mean()
++    err = torch.abs(y_pred - y_true) * mask
++    err[err != err] = 0         # nan -> 0
++    return err.mean()
++
++
++def masked_mae(pred, target, null_val=np.nan):
++    mask = _build_mask(target, null_val)
++    abs_err = torch.abs(pred - target) * mask
++    abs_err = torch.where(torch.isnan(abs_err), torch.zeros_like(abs_err), abs_err)
++    out = torch.mean(abs_err)
++    if _DBG:
++        print(f"[DBG:loss] masked_mae={out.item():.6f}")
++    return out
++
++
++def masked_huber(pred, target, null_val=np.nan):
++    return torch.nn.SmoothL1Loss()(pred, target)
++
++
++def masked_mape(pred, target, null_val=np.nan):
++    mask = _build_mask(target, null_val)
++    pct = torch.abs(pred - target) / target
++    pct = pct * mask
++    pct = torch.where(torch.isnan(pct), torch.zeros_like(pct), pct)
++    out = torch.mean(pct)
++    if _DBG:
++        print(f"[DBG:loss] masked_mape={out.item():.6f}")
++    return out
++
++
++def metric(pred, real):
++    """Convenience: return (mae, mape, rmse) as floats."""
++    mae  = masked_mae(pred, real, 0.0).item()
++    mape = masked_mape(pred, real, 0.0).item()
++    rmse = masked_rmse(pred, real, 0.0).item()
++    if _DBG:
++        print(f"[DBG:loss] metric  MAE={mae:.4f}  MAPE={mape:.4f}  RMSE={rmse:.4f}")
++    return mae, mape, rmse
+diff --git a/src/walpurgis_ported_v3/models/model.py b/src/walpurgis_ported_v3/models/model.py
+new file mode 100644
+index 0000000..9158aa8
+--- /dev/null
++++ b/src/walpurgis_ported_v3/models/model.py
+@@ -0,0 +1,161 @@
++"""
++D2STGNN: Decoupled Dynamic Spatial-Temporal Graph Neural Network.
++Main model assembling decouple layers, graph constructors, and output heads.
++"""
++import sys
++import torch
++import torch.nn as nn
++import torch.nn.functional as F
++
++from .diffusion_block import DifBlock
++from .inherent_block import InhBlock
++from .dynamic_graph_conv import DynamicGraphConstructor
++from .decouple.estimation_gate import EstimationGate
++
++_DBG = ("--debug-model" in sys.argv)
++
++
++class DecoupleLayer(nn.Module):
++    """One round of diffusion-inherent decoupling."""
++
++    def __init__(self, hidden_dim, fk_dim=256, **kw):
++        super().__init__()
++        self.gate = EstimationGate(
++            node_emb_dim=kw['node_hidden'],
++            time_emb_dim=kw['time_emb_dim'],
++            hidden_dim=64)
++        self.dif  = DifBlock(hidden_dim, forecast_hidden_dim=fk_dim, **kw)
++        self.inh  = InhBlock(hidden_dim, forecast_hidden_dim=fk_dim, **kw)
++
++    def forward(self, hist, dyn_g, sta_g, emb_u, emb_d, t_day, t_week):
++        gated = self.gate(emb_u, emb_d, t_day, t_week, hist)
++        dif_res, dif_fk = self.dif(
++            history_data=hist, gated_data=gated,
++            dynamic_graph=dyn_g, static_graph=sta_g)
++        inh_res, inh_fk = self.inh(dif_res)
++        return inh_res, dif_fk, inh_fk
++
++
++class D2STGNN(nn.Module):
++
++    def __init__(self, **kw):
++        super().__init__()
++        # ── dimensions ──
++        self._in_feat      = kw['num_feat']
++        self._d_hidden     = kw['num_hidden']
++        self._d_node       = kw['node_hidden']
++        self._d_forecast   = 256
++        self._d_out_hidden = 512
++        self._horizon      = kw['seq_length']
++        self._n_nodes      = kw['num_nodes']
++        self._k_s          = kw['k_s']
++        self._k_t          = kw['k_t']
++        self._n_layers     = 5
++
++        kw['use_pre']   = False
++        kw['dy_graph']  = True
++        kw['sta_graph'] = True
++        self._kw = kw
++
++        # ── input projection ──
++        self.input_proj = nn.Linear(self._in_feat, self._d_hidden)
++
++        # ── temporal embeddings ──
++        self.T_i_D = nn.Parameter(torch.empty(288, kw['time_emb_dim']))
++        self.D_i_W = nn.Parameter(torch.empty(7,   kw['time_emb_dim']))
++
++        # ── decouple stack ──
++        self.layers = nn.ModuleList(
++            [DecoupleLayer(self._d_hidden, fk_dim=self._d_forecast, **kw)
++             for _ in range(self._n_layers)])
++
++        # ── dynamic graph constructor ──
++        if kw['dy_graph']:
++            self.dyn_graph_ctor = DynamicGraphConstructor(**kw)
++
++        # ── node embeddings ──
++        self.emb_u = nn.Parameter(torch.empty(self._n_nodes, self._d_node))
++        self.emb_d = nn.Parameter(torch.empty(self._n_nodes, self._d_node))
++
++        # ── output MLP ──
++        self.out_fc1 = nn.Linear(self._d_forecast, self._d_out_hidden)
++        self.out_fc2 = nn.Linear(self._d_out_hidden, kw['gap'])
++
++        self._init_params()
++
++    def _init_params(self):
++        nn.init.xavier_uniform_(self.emb_u)
++        nn.init.xavier_uniform_(self.emb_d)
++        nn.init.xavier_uniform_(self.T_i_D)
++        nn.init.xavier_uniform_(self.D_i_W)
++
++    # ── graph construction ──
++
++    def _build_graphs(self, **inputs):
++        E_d = inputs['node_embedding_u']
++        E_u = inputs['node_embedding_d']
++        sta = []
++        if self._kw['sta_graph']:
++            sta = [F.softmax(F.relu(torch.mm(E_d, E_u.T)), dim=1)]
++        dyn = []
++        if self._kw['dy_graph']:
++            dyn = self.dyn_graph_ctor(**inputs)
++        return sta, dyn
++
++    # ── input preparation ──
++
++    def _split_inputs(self, raw):
++        nf = self._kw['num_feat']
++        emb_u = self.emb_u
++        emb_d = self.emb_d
++        t_day  = self.T_i_D[(raw[:, :, :, nf]   * 288).long()]
++        t_week = self.D_i_W[(raw[:, :, :, nf+1]).long()]
++        signal = raw[:, :, :, :nf]
++        return signal, emb_u, emb_d, t_day, t_week
++
++    # ── forward ──
++
++    def forward(self, history_data):
++        """
++        history_data: (B, L, N, C)  where C = num_feat + 2 (time features).
++        Returns: (B, N, horizon) predictions.
++        """
++        signal, eu, ed, t_day, t_week = self._split_inputs(history_data)
++
++        if _DBG:
++            print(f"[DBG:model] input  signal={tuple(signal.shape)}  "
++                  f"t_day={tuple(t_day.shape)}  eu={tuple(eu.shape)}")
++
++        sta_g, dyn_g = self._build_graphs(
++            node_embedding_u=eu, node_embedding_d=ed,
++            history_data=signal, time_in_day_feat=t_day,
++            day_in_week_feat=t_week)
++
++        # project to hidden dim
++        h = self.input_proj(signal)
++
++        dif_fks = []
++        inh_fks = []
++        residual = h
++        for li, layer in enumerate(self.layers):
++            residual, dif_fk, inh_fk = layer(
++                residual, dyn_g, sta_g, eu, ed, t_day, t_week)
++            dif_fks.append(dif_fk)
++            inh_fks.append(inh_fk)
++            if _DBG:
++                print(f"[DBG:model] layer {li}  "
++                      f"residual_norm={residual.norm().item():.2f}  "
++                      f"dif_fk_mean={dif_fk.mean().item():.4f}")
++
++        # ── output aggregation ──
++        agg = sum(dif_fks) + sum(inh_fks)
++        out = self.out_fc2(F.relu(self.out_fc1(F.relu(agg))))
++        # reshape: (B, T/gap, N, gap) -> (B, N, T)
++        out = out.transpose(1, 2).contiguous().view(
++            out.shape[0], out.shape[2], -1)
++
++        if _DBG:
++            print(f"[DBG:model] output  shape={tuple(out.shape)}  "
++                  f"range=[{out.min().item():.4f}, {out.max().item():.4f}]")
++
++        return out
+diff --git a/src/walpurgis_ported_v3/models/trainer.py b/src/walpurgis_ported_v3/models/trainer.py
+new file mode 100644
+index 0000000..bbc93d0
+--- /dev/null
++++ b/src/walpurgis_ported_v3/models/trainer.py
+@@ -0,0 +1,246 @@
++"""
++Trainer: optimizer, curriculum learning, train/eval/test loops.
++Ported with per-batch debug probes for gradient & loss inspection.
++"""
++import sys
++import numpy as np
++import torch
++import torch.optim as optim
++from sklearn.metrics import mean_absolute_error
++
++from utils.train import data_reshaper, save_model
++from .losses import masked_mae, masked_rmse, masked_mape, metric
++
++_DBG = ("--debug-trainer" in sys.argv)
++
++
++def _masked_mape_np(y_true, y_pred, null_val=np.nan):
++    """Numpy MAPE (percentage) for quick reference prints."""
++    with np.errstate(divide='ignore', invalid='ignore'):
++        if np.isnan(null_val):
++            mask = ~np.isnan(y_true)
++        else:
++            mask = np.not_equal(y_true, null_val)
++        mask = mask.astype('float32')
++        mask /= np.mean(mask)
++        pct = np.abs((y_pred - y_true).astype('float32') / y_true)
++        pct = np.nan_to_num(mask * pct)
++        return np.mean(pct) * 100
++
++
++class trainer:
++
++    def __init__(self, scaler, model, **o):
++        self.model  = model
++        self.scaler = scaler
++        self.out_len = o['output_seq_len']
++
++        # ── optimizer ──
++        self.lrate  = o['lrate']
++        self.wdecay = o['wdecay']
++        self.eps    = o['eps']
++        self.optimizer = optim.Adam(
++            model.parameters(), lr=self.lrate,
++            weight_decay=self.wdecay, eps=self.eps)
++
++        # ── lr scheduler ──
++        self.if_lr_scheduler = o['lr_schedule']
++        if self.if_lr_scheduler:
++            self.lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(
++                self.optimizer, milestones=o['lr_sche_steps'],
++                gamma=o['lr_decay_ratio'])
++        else:
++            self.lr_scheduler = None
++
++        # ── curriculum learning ──
++        self.if_cl    = o['if_cl']
++        self.cl_steps = o['cl_steps']
++        self.cl_len   = 0 if self.if_cl else self.out_len
++
++        # ── warmup ──
++        self.warm_steps = o['warm_steps']
++
++        # ── loss & clip ──
++        self.loss = masked_mae
++        self.clip = 5
++
++        self.print_model_structure = o['print_model']
++
++        if _DBG:
++            n_p = sum(p.numel() for p in model.parameters() if p.requires_grad)
++            print(f"[DBG:trainer] init  lr={self.lrate}  "
++                  f"cl_steps={self.cl_steps}  warm={self.warm_steps}  "
++                  f"trainable_params={n_p}")
++
++    # ── resume helper ──
++
++    def set_resume_lr_and_cl(self, epoch_num, batch_num):
++        if batch_num == 0:
++            return
++        for b in range(batch_num):
++            if b < self.warm_steps:
++                self.cl_len = self.out_len
++            elif b == self.warm_steps:
++                self.cl_len = 1
++                for pg in self.optimizer.param_groups:
++                    pg['lr'] = self.lrate
++            else:
++                if (b - self.warm_steps) % self.cl_steps == 0 \
++                        and self.cl_len < self.out_len:
++                    self.cl_len += int(self.if_cl)
++        print(f"Resumed from epoch {epoch_num}: "
++              f"lr={self.lrate}  cl_len={self.cl_len}")
++
++    # ── single train step ──
++
++    def train(self, x, y_real, **kw):
++        self.model.train()
++        self.optimizer.zero_grad()
++
++        pred = self.model(x).transpose(1, 2)
++        bn = kw['batch_num']
++
++        # curriculum learning state machine
++        if bn < self.warm_steps:
++            self.cl_len = self.out_len
++        elif bn == self.warm_steps:
++            self.cl_len = 1
++            for pg in self.optimizer.param_groups:
++                pg['lr'] = self.lrate
++            print(f"═══ Curriculum learning started, lr reset to {self.lrate} ═══")
++        else:
++            if (bn - self.warm_steps) % self.cl_steps == 0 \
++                    and self.cl_len <= self.out_len:
++                self.cl_len += int(self.if_cl)
++
++        # inverse-transform & loss
++        if kw.get('_max') is not None:
++            hi = kw['_max'][0, 0, 0, 0]
++            lo = kw['_min'][0, 0, 0, 0]
++            pred_inv = self.scaler(
++                pred.transpose(1, 2).unsqueeze(-1), hi, lo
++            ).transpose(1, 2).squeeze(-1)
++            real_inv = self.scaler(
++                y_real.transpose(1, 2).unsqueeze(-1), hi, lo
++            ).transpose(1, 2).squeeze(-1)
++            mae_loss = self.loss(pred_inv[:, :self.cl_len, :],
++                                 real_inv[:, :self.cl_len, :])
++        else:
++            pred_inv = self.scaler.inverse_transform(pred)
++            real_inv = self.scaler.inverse_transform(y_real[:, :, :, 0])
++            mae_loss = self.loss(pred_inv[:, :self.cl_len, :],
++                                 real_inv[:, :self.cl_len, :], 0)
++
++        mae_loss.backward()
++
++        if self.clip is not None:
++            torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.clip)
++        self.optimizer.step()
++
++        mape_v = masked_mape(pred_inv, real_inv, 0.0)
++        rmse_v = masked_rmse(pred_inv, real_inv, 0.0)
++
++        if _DBG and bn % 50 == 0:
++            grad_norm = sum(p.grad.norm().item()
++                           for p in self.model.parameters()
++                           if p.grad is not None)
++            print(f"[DBG:trainer] batch={bn}  mae={mae_loss.item():.4f}  "
++                  f"cl_len={self.cl_len}  grad_norm={grad_norm:.2f}  "
++                  f"pred_range=[{pred_inv.min().item():.2f},"
++                  f"{pred_inv.max().item():.2f}]")
++
++        return mae_loss.item(), mape_v.item(), rmse_v.item()
++
++    # ── validation ──
++
++    def eval(self, device, dataloader, model_name, **kw):
++        losses, mapes, rmses = [], [], []
++        self.model.eval()
++
++        for it, (x, y) in enumerate(dataloader['val_loader'].get_iterator()):
++            tx = data_reshaper(x, device)
++            ty = data_reshaper(y, device)
++            out = self.model(tx).transpose(1, 2)
++
++            if kw.get('_max') is not None:
++                hi = kw['_max'][0, 0, 0, 0]
++                lo = kw['_min'][0, 0, 0, 0]
++                p = self.scaler(out.transpose(1, 2).unsqueeze(-1), hi, lo)
++                r = self.scaler(ty.transpose(1, 2).unsqueeze(-1), hi, lo)
++            else:
++                p = self.scaler.inverse_transform(out)
++                r = self.scaler.inverse_transform(ty[:, :, :, 0])
++
++            losses.append(self.loss(p, r, 0.0).item())
++            mapes.append(masked_mape(p, r, 0.0).item())
++            rmses.append(masked_rmse(p, r, 0.0).item())
++
++        ml, mm, mr = np.mean(losses), np.mean(mapes), np.mean(rmses)
++        if _DBG:
++            print(f"[DBG:trainer] eval  val_mae={ml:.4f}  "
++                  f"val_mape={mm:.4f}  val_rmse={mr:.4f}")
++        return ml, mm, mr
++
++    # ── test ──
++
++    @staticmethod
++    def test(model, ckpt_path, device, dataloader, scaler,
++             model_name, save=True, **kw):
++        model.eval()
++        all_preds = []
++        all_y = []
++        realy = torch.Tensor(dataloader['y_test']).to(device).transpose(1, 2)
++
++        for it, (x, y) in enumerate(dataloader['test_loader'].get_iterator()):
++            tx = data_reshaper(x, device)
++            ty = data_reshaper(y, device).transpose(1, 2)
++            with torch.no_grad():
++                p = model(tx)
++            all_preds.append(p)
++            all_y.append(ty)
++
++        yhat  = torch.cat(all_preds, dim=0)[:realy.size(0), ...]
++        y_cat = torch.cat(all_y,     dim=0)[:realy.size(0), ...]
++        assert torch.where(y_cat == realy)
++
++        # inverse transform
++        if kw.get('_max') is not None:
++            hi = kw['_max'][0, 0, 0, 0]
++            lo = kw['_min'][0, 0, 0, 0]
++            realy = scaler(realy.squeeze(-1), hi, lo)
++            yhat  = scaler(yhat.squeeze(-1),  hi, lo)
++        else:
++            realy = scaler.inverse_transform(realy)[:, :, :, 0]
++            yhat  = scaler.inverse_transform(yhat)
++
++        # per-horizon metrics
++        acc_mae, acc_mape, acc_rmse = [], [], []
++        ds = kw.get('dataset_name', '')
++
++        for h in range(12):
++            p_h = yhat[:, :, h]
++            r_h = realy[:, :, h]
++
++            if ds in ('PEMS04', 'PEMS08'):
++                mae_h  = mean_absolute_error(p_h.cpu().numpy(), r_h.cpu().numpy())
++                rmse_h = masked_rmse(p_h, r_h, 0.0).item()
++                mape_h = masked_mape(p_h, r_h, 0.0).item()
++            else:
++                mae_h, mape_h, rmse_h = metric(p_h, r_h)
++
++            print(f"  horizon {h+1:2d}  MAE={mae_h:.4f}  "
++                  f"RMSE={rmse_h:.4f}  MAPE={mape_h:.4f}")
++            acc_mae.append(mae_h)
++            acc_mape.append(mape_h)
++            acc_rmse.append(rmse_h)
++
++        print(f"  ── avg 12h  MAE={np.mean(acc_mae):.2f}  "
++              f"RMSE={np.mean(acc_rmse):.2f}  "
++              f"MAPE={np.mean(acc_mape)*100:.2f}%")
++
++        if _DBG:
++            print(f"[DBG:trainer] test complete  "
++                  f"yhat={tuple(yhat.shape)}  realy={tuple(realy.shape)}")
++
++        if save:
++            save_model(model, ckpt_path)
+diff --git a/src/walpurgis_ported_v3/utils/__init__.py b/src/walpurgis_ported_v3/utils/__init__.py
+new file mode 100644
+index 0000000..db3e327
+--- /dev/null
++++ b/src/walpurgis_ported_v3/utils/__init__.py
+@@ -0,0 +1 @@
++# utils package
+diff --git a/src/walpurgis_ported_v3/utils/cal_adj.py b/src/walpurgis_ported_v3/utils/cal_adj.py
+new file mode 100644
+index 0000000..01f3cd2
+--- /dev/null
++++ b/src/walpurgis_ported_v3/utils/cal_adj.py
+@@ -0,0 +1,97 @@
++"""
++Adjacency matrix algebra: Laplacians, transition matrices, nan/inf guards.
++Ported with debug probes.
++"""
++import sys
++import scipy.sparse as sp
++import numpy as np
++from scipy.sparse import linalg
++import torch
++
++_DBG = ("--debug-adj" in sys.argv)
++
++
++# ─── Numeric guards ───
++
++def check_nan_inf(tensor, raise_ex=True):
++    has_nan = torch.any(torch.isnan(tensor))
++    has_inf = torch.any(torch.isinf(tensor))
++    info = {"nan": has_nan.item(), "inf": has_inf.item()}
++    if _DBG:
++        print(f"[DBG:adj] check_nan_inf  shape={tuple(tensor.shape)}  {info}")
++    if raise_ex and (has_nan or has_inf):
++        raise ValueError(f"Tensor has nan/inf: {info}")
++    return info, (has_nan or has_inf)
++
++
++def remove_nan_inf(tensor):
++    cleaned = torch.where(torch.isnan(tensor), torch.zeros_like(tensor), tensor)
++    cleaned = torch.where(torch.isinf(cleaned), torch.zeros_like(cleaned), cleaned)
++    if _DBG:
++        n_fixed = int((tensor != cleaned).sum().item())
++        print(f"[DBG:adj] remove_nan_inf  fixed {n_fixed} entries  "
++              f"shape={tuple(tensor.shape)}")
++    return cleaned
++
++
++# ─── Laplacians ───
++
++def calculate_symmetric_normalized_laplacian(adj):
++    """L^{sym} = I - D^{-1/2} A D^{-1/2}"""
++    coo = sp.coo_matrix(adj)
++    deg = np.array(coo.sum(1))
++    d_isqrt = np.power(deg, -0.5).flatten()
++    d_isqrt[np.isinf(d_isqrt)] = 0.0
++    D_isqrt = sp.diags(d_isqrt)
++    lap = sp.eye(coo.shape[0]) - D_isqrt.dot(coo).dot(D_isqrt).tocoo()
++    if _DBG:
++        print(f"[DBG:adj] sym_norm_lap  N={coo.shape[0]}  "
++              f"nnz_lap={lap.nnz}  deg_range=[{deg.min():.2f},{deg.max():.2f}]")
++    return lap
++
++
++def calculate_scaled_laplacian(adj, lambda_max=2, undirected=True):
++    """L_scaled = (2/λ_max) L - I   (for Chebyshev convolutions)"""
++    if undirected:
++        adj = np.maximum.reduce([adj, adj.T])
++    sym_L = calculate_symmetric_normalized_laplacian(adj)
++    if lambda_max is None:
++        lambda_max, _ = linalg.eigsh(sym_L, 1, which='LM')
++        lambda_max = lambda_max[0]
++    csr_L = sp.csr_matrix(sym_L)
++    n = csr_L.shape[0]
++    eye = sp.identity(n, format='csr', dtype=csr_L.dtype)
++    scaled = (2.0 / lambda_max * csr_L) - eye
++    if _DBG:
++        print(f"[DBG:adj] scaled_lap  λ_max={lambda_max:.4f}  N={n}")
++    return scaled
++
++
++# ─── Message-passing adjacency ───
++
++def symmetric_message_passing_adj(adj):
++    """D^{-1/2} A D^{-1/2}  (GCN renormalization)."""
++    if _DBG:
++        print("[DBG:adj] sym_mp_adj: ensure self-loop is already present")
++    coo = sp.coo_matrix(adj)
++    row_sum = np.array(coo.sum(1))
++    d_isqrt = np.power(row_sum, -0.5).flatten()
++    d_isqrt[np.isinf(d_isqrt)] = 0.0
++    D_isqrt = sp.diags(d_isqrt)
++    result = D_isqrt.dot(coo).transpose().dot(D_isqrt).astype(np.float32).todense()
++    return result
++
++
++def transition_matrix(adj):
++    """Row-stochastic transition: P = D^{-1} A"""
++    coo = sp.coo_matrix(adj)
++    row_sum = np.array(coo.sum(1)).flatten()
++    d_inv = np.power(row_sum, -1.0).flatten()
++    d_inv[np.isinf(d_inv)] = 0.0
++    D_inv = sp.diags(d_inv)
++    P = D_inv.dot(coo).astype(np.float32).todense()
++    if _DBG:
++        print(f"[DBG:adj] transition_matrix  N={coo.shape[0]}  "
++              f"row_sum range=[{row_sum.min():.2f},{row_sum.max():.2f}]  "
++              f"P range=[{np.asarray(P).min():.4f},{np.asarray(P).max():.4f}]")
++    return P
+diff --git a/src/walpurgis_ported_v3/utils/load_data.py b/src/walpurgis_ported_v3/utils/load_data.py
+new file mode 100644
+index 0000000..6a20800
+--- /dev/null
++++ b/src/walpurgis_ported_v3/utils/load_data.py
+@@ -0,0 +1,162 @@
++"""
++Dataset loading: normalization, scaler, adjacency deserialization.
++Ported with debug probes on every data path.
++"""
++import sys
++import os
++import pickle
++import numpy as np
++from dataloader import DataLoader
++from utils.cal_adj import *
++
++_DBG = ("--debug-data" in sys.argv)
++
++# ──────────── normalization helpers ────────────
++
++def re_normalization(x, mu, sigma):
++    """Inverse of z-score: x * σ + μ"""
++    return x * sigma + mu
++
++
++def max_min_normalization(x, hi, lo):
++    """Scale x into [-1, 1] given observed min/max."""
++    x = (x - lo) / (hi - lo)           # -> [0, 1]
++    return x * 2.0 - 1.0                # -> [-1, 1]
++
++
++def re_max_min_normalization(x, hi, lo):
++    """Inverse of max-min norm: [-1,1] -> original range."""
++    x = (x + 1.0) * 0.5                # -> [0, 1]
++    return x * (hi - lo) + lo
++
++
++# ──────────── StandardScaler ────────────
++
++class StandardScaler:
++    """Zero-mean / unit-variance normalizer, training-set statistics."""
++
++    def __init__(self, mean, std):
++        self.mean = mean
++        self.std = std
++        if _DBG:
++            print(f"[DBG:data] StandardScaler  mean={mean:.6f}  std={std:.6f}")
++
++    def transform(self, data):
++        return (data - self.mean) / self.std
++
++    def inverse_transform(self, data):
++        return data * self.std + self.mean
++
++
++# ──────────── pickle loader ────────────
++
++def load_pickle(fpath):
++    try:
++        with open(fpath, 'rb') as fh:
++            obj = pickle.load(fh)
++    except UnicodeDecodeError:
++        with open(fpath, 'rb') as fh:
++            obj = pickle.load(fh, encoding='latin1')
++    except Exception as exc:
++        print(f'Cannot deserialize {fpath}: {exc}')
++        raise
++    if _DBG:
++        tp = type(obj).__name__
++        sz = os.path.getsize(fpath)
++        print(f"[DBG:data] load_pickle  {fpath}  type={tp}  "
++              f"file_bytes={sz}")
++    return obj
++
++
++# ──────────── main loader ────────────
++
++def load_dataset(data_dir, bs_train, bs_val, bs_test, ds_name):
++    """Read pre-generated train/val/test npz and build DataLoaders."""
++    bucket = {}
++
++    for split in ['train', 'val', 'test']:
++        npz = np.load(os.path.join(data_dir, f'{split}.npz'))
++        bucket[f'x_{split}'] = npz['x']
++        bucket[f'y_{split}'] = npz['y']
++        if _DBG:
++            print(f"[DBG:data] loaded {split}  "
++                  f"x={npz['x'].shape}  y={npz['y'].shape}")
++
++    is_flow = ds_name in ('PEMS04', 'PEMS08')
++
++    if is_flow:
++        # ---- traffic flow: min-max normalization ----
++        _min = pickle.load(open(f"datasets/{ds_name}/min.pkl", 'rb'))
++        _max = pickle.load(open(f"datasets/{ds_name}/max.pkl", 'rb'))
++        if _DBG:
++            print(f"[DBG:data] flow dataset  _min.shape={np.asarray(_min).shape}  "
++                  f"_max.shape={np.asarray(_max).shape}")
++
++        for split in ['train', 'val', 'test']:
++            y_raw = bucket[f'y_{split}']
++            y_t = np.squeeze(np.transpose(y_raw, axes=[0, 2, 1, 3]), axis=-1)
++            y_normed = max_min_normalization(y_t, _max[:, :, 0, :], _min[:, :, 0, :])
++            bucket[f'y_{split}'] = np.transpose(y_normed, axes=[0, 2, 1])
++
++        bucket['train_loader'] = DataLoader(bucket['x_train'], bucket['y_train'], bs_train, shuffle=True)
++        bucket['val_loader']   = DataLoader(bucket['x_val'],   bucket['y_val'],   bs_val)
++        bucket['test_loader']  = DataLoader(bucket['x_test'],  bucket['y_test'],  bs_test)
++        bucket['scaler']       = re_max_min_normalization
++
++    else:
++        # ---- traffic speed: z-score ----
++        scaler = StandardScaler(
++            mean=bucket['x_train'][..., 0].mean(),
++            std=bucket['x_train'][..., 0].std()
++        )
++        for split in ['train', 'val', 'test']:
++            bucket[f'x_{split}'][..., 0] = scaler.transform(bucket[f'x_{split}'][..., 0])
++            bucket[f'y_{split}'][..., 0] = scaler.transform(bucket[f'y_{split}'][..., 0])
++
++        bucket['train_loader'] = DataLoader(bucket['x_train'], bucket['y_train'], bs_train, shuffle=True)
++        bucket['val_loader']   = DataLoader(bucket['x_val'],   bucket['y_val'],   bs_val)
++        bucket['test_loader']  = DataLoader(bucket['x_test'],  bucket['y_test'],  bs_test)
++        bucket['scaler']       = scaler
++
++    if _DBG:
++        print(f"[DBG:data] load_dataset complete  "
++              f"train_batches={len(bucket['train_loader'])}  "
++              f"val_batches={len(bucket['val_loader'])}  "
++              f"test_batches={len(bucket['test_loader'])}")
++
++    return bucket
++
++
++# ──────────── adjacency loader ────────────
++
++def load_adj(file_path, adj_type):
++    """Deserialize raw adj and compute the requested transform."""
++    try:
++        _ids, _id2idx, adj_raw = load_pickle(file_path)
++    except (ValueError, TypeError):
++        adj_raw = load_pickle(file_path)
++
++    if _DBG:
++        print(f"[DBG:data] load_adj  path={file_path}  "
++              f"adj_type={adj_type}  shape={np.asarray(adj_raw).shape}")
++
++    dispatch = {
++        "scalap":          lambda m: [calculate_scaled_laplacian(m).astype(np.float32).todense()],
++        "normlap":         lambda m: [calculate_symmetric_normalized_laplacian(m).astype(np.float32).todense()],
++        "symnadj":         lambda m: [symmetric_message_passing_adj(m).astype(np.float32).todense()],
++        "transition":      lambda m: [transition_matrix(m).T],
++        "doubletransition": lambda m: [transition_matrix(m).T, transition_matrix(m.T).T],
++        "identity":        lambda m: [np.diag(np.ones(m.shape[0])).astype(np.float32).todense()],
++        "original":        lambda m: m,
++    }
++
++    if adj_type not in dispatch:
++        raise ValueError(f"Unknown adj_type '{adj_type}'")
++
++    processed = dispatch[adj_type](adj_raw)
++
++    if _DBG:
++        print(f"[DBG:data] load_adj result  "
++              f"n_matrices={len(processed) if isinstance(processed, list) else 'raw'}")
++
++    return processed, adj_raw
+diff --git a/src/walpurgis_ported_v3/utils/log.py b/src/walpurgis_ported_v3/utils/log.py
+new file mode 100644
+index 0000000..39ddfc5
+--- /dev/null
++++ b/src/walpurgis_ported_v3/utils/log.py
+@@ -0,0 +1,65 @@
++"""
++Training logger: snapshot source files and print hyper-params.
++Ported with lightweight debug instrumentation.
++"""
++import time
++import os
++import shutil
++import sys
++
++_DBG = ("--debug-log" in sys.argv)
++
++
++def clock(fn):
++    """Decorator that prints wall-clock execution time of *fn*."""
++    def _timed(*args, **kwargs):
++        t0 = time.perf_counter()
++        result = fn(*args, **kwargs)
++        dt = time.perf_counter() - t0
++        print(f'[{dt:0.8f}s] {fn.__name__}')
++        return result
++    return _timed
++
++
++class TrainLogger:
++    """Archive source + configs at the start of each run."""
++
++    def __init__(self, model_name, dataset):
++        base = 'log/'
++        stamp = time.strftime("%Y-%m-%d_%H-%M-%S", time.localtime())
++        run_dir = os.path.join(base, stamp)
++        os.makedirs(run_dir, exist_ok=True)
++
++        # snapshot source tree
++        for subdir in ('models', 'configs'):
++            dst = os.path.join(run_dir, subdir)
++            if os.path.isdir(subdir):
++                shutil.copytree(subdir, dst, dirs_exist_ok=True)
++        if os.path.isfile('main.py'):
++            shutil.copyfile('main.py', os.path.join(run_dir, 'main.py'))
++
++        # try to back up existing checkpoints
++        for suffix in ('', '_resume'):
++            ckpt = f'output/{model_name}_{dataset}{suffix}.pt'
++            if os.path.isfile(ckpt):
++                shutil.copyfile(ckpt, os.path.join(run_dir, os.path.basename(ckpt)))
++
++        if _DBG:
++            print(f"[DBG:log] TrainLogger  run_dir={run_dir}")
++
++    # ---- pretty-print dicts ----
++
++    @staticmethod
++    def _show_dict(d, title, skip_keys=()):
++        print(f"{'='*16} {title} {'='*16}")
++        for k, v in d.items():
++            if k in skip_keys:
++                continue
++            print(f'|{k:>24s}: {str(v):>24s}|')
++        print('-' * (34 + len(title)))
++
++    def print_model_args(self, cfg, ban=()):
++        self._show_dict(cfg, 'model args', skip_keys=ban)
++
++    def print_optim_args(self, cfg, ban=()):
++        self._show_dict(cfg, 'optim args', skip_keys=ban)
+diff --git a/src/walpurgis_ported_v3/utils/train.py b/src/walpurgis_ported_v3/utils/train.py
+new file mode 100644
+index 0000000..05de43d
+--- /dev/null
++++ b/src/walpurgis_ported_v3/utils/train.py
+@@ -0,0 +1,94 @@
++"""
++Training utilities: seed, save/load, early stopping, data reshape.
++Ported with debug instrumentation.
++"""
++import torch
++import numpy as np
++import random
++import sys
++
++_DBG = ("--debug-train" in sys.argv)
++
++
++def set_config(seed_val=0):
++    """Lock all random seeds for reproducibility."""
++    torch.manual_seed(seed_val)
++    torch.cuda.manual_seed(seed_val)
++    torch.cuda.manual_seed_all(seed_val)
++    random.seed(seed_val)
++    np.random.seed(seed_val)
++    torch.backends.cudnn.deterministic = True
++    torch.backends.cudnn.benchmark = False
++    if _DBG:
++        print(f"[DBG:train] set_config seed={seed_val}  "
++              f"cudnn.deterministic={torch.backends.cudnn.deterministic}")
++
++
++def save_model(net, fpath):
++    """Persist model weights to disk."""
++    torch.save(net.state_dict(), fpath)
++    if _DBG:
++        n_params = sum(p.numel() for p in net.parameters())
++        print(f"[DBG:train] save_model -> {fpath}  "
++              f"total_params={n_params}")
++
++
++def load_model(net, fpath):
++    """Restore model weights from disk."""
++    state = torch.load(fpath, map_location="cpu")
++    net.load_state_dict(state)
++    if _DBG:
++        print(f"[DBG:train] load_model <- {fpath}  "
++              f"keys_loaded={len(state)}")
++    return net
++
++
++class EarlyStopping:
++    """Halt training when validation metric stagnates."""
++
++    def __init__(self, patience, checkpoint_path, verbose=False, min_delta=0):
++        self.patience = patience
++        self.verbose = verbose
++        self.wait_count = 0
++        self.best_score = None
++        self.early_stop = False
++        self.best_val_loss = np.Inf
++        self.min_delta = min_delta
++        self.checkpoint_path = checkpoint_path
++
++    # ---- callable interface ----
++    def __call__(self, current_loss, model):
++        score = -current_loss
++
++        if self.best_score is None:
++            self.best_score = score
++            self._checkpoint(current_loss, model)
++        elif score < self.best_score - self.min_delta:
++            self.wait_count += 1
++            print(f"EarlyStopping patience: {self.wait_count}/{self.patience}")
++            if self.wait_count >= self.patience:
++                self.early_stop = True
++        else:
++            self.best_score = score
++            self._checkpoint(current_loss, model)
++            self.wait_count = 0
++
++    def _checkpoint(self, val_loss, model):
++        if self.verbose:
++            print(f"  val_loss improved "
++                  f"({self.best_val_loss:.6f} -> {val_loss:.6f}), saving …")
++        save_model(model, self.checkpoint_path)
++        self.best_val_loss = val_loss
++        if _DBG:
++            print(f"[DBG:train] EarlyStopping checkpoint saved  "
++                  f"best_val_loss={val_loss:.6f}")
++
++
++def data_reshaper(raw, device):
++    """Numpy/list -> float tensor on *device*."""
++    t = torch.Tensor(raw).to(device)
++    if _DBG:
++        print(f"[DBG:train] data_reshaper  shape={tuple(t.shape)}  "
++              f"dtype={t.dtype}  device={t.device}  "
++              f"range=[{t.min().item():.4f}, {t.max().item():.4f}]")
++    return t
+-- 
+2.43.0
+
+
+From a0c9293476bcf4c8613b8bbd051fa6284efb85b4 Mon Sep 17 00:00:00 2001
+From: dylanyunlon <dogechat@163.com>
+Date: Tue, 2 Jun 2026 09:46:50 +0000
+Subject: [PATCH 2/3] =?UTF-8?q?feat(v3):=20datasets=20generators=20refacto?=
+ =?UTF-8?q?red=20=E2=80=94=20extract=20common=20modules=20+=20describe=5Fa?=
+ =?UTF-8?q?djs=20cleanup=20[M011-M014]?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- Extract _gen_speed_common.py for METR-LA/PEMS-BAY shared logic
+- Extract _gen_flow_common.py for PEMS04/PEMS08 shared logic
+- Extract _gen_adj_common.py for adjacency matrix generation
+- Thin wrapper scripts per dataset folder
+- describe_adjs.py rewritten with helper functions
+- All data generators preserve upstream numeric behavior
+---
+ .../raw_data/PEMS04/generate_adj_mx.py        |  6 +-
+ .../raw_data/PEMS08/generate_adj_mx.py        |  6 +-
+ .../raw_data/PEMS08/generate_training_data.py |  1 -
+ .../datasets/raw_data/_gen_adj_common.py      | 38 +++++-----
+ .../datasets/raw_data/_gen_flow_common.py     | 74 +++++++++----------
+ .../datasets/raw_data/_gen_speed_common.py    | 25 ++-----
+ .../datasets/sensor_graph/describe_adjs.py    | 29 +++-----
+ 7 files changed, 79 insertions(+), 100 deletions(-)
+
+diff --git a/src/walpurgis_ported_v3/datasets/raw_data/PEMS04/generate_adj_mx.py b/src/walpurgis_ported_v3/datasets/raw_data/PEMS04/generate_adj_mx.py
+index 979acf9..3f40cd3 100644
+--- a/src/walpurgis_ported_v3/datasets/raw_data/PEMS04/generate_adj_mx.py
++++ b/src/walpurgis_ported_v3/datasets/raw_data/PEMS04/generate_adj_mx.py
+@@ -1,10 +1,10 @@
+-"""Build PEMS04 adjacency matrix."""
++"""Generate PEMS04 adjacency matrix pickle."""
+ import sys, os
+ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+-from _gen_adj_common import build_and_save
++from _gen_adj_common import build_and_save_adj
+ 
+ if __name__ == "__main__":
+-    build_and_save(
++    build_and_save_adj(
+         csv_path="datasets/raw_data/PEMS04/PEMS04.csv",
+         n_nodes=307,
+         adj_out="datasets/sensor_graph/adj_mx_04.pkl",
+diff --git a/src/walpurgis_ported_v3/datasets/raw_data/PEMS08/generate_adj_mx.py b/src/walpurgis_ported_v3/datasets/raw_data/PEMS08/generate_adj_mx.py
+index db20912..2b8affd 100644
+--- a/src/walpurgis_ported_v3/datasets/raw_data/PEMS08/generate_adj_mx.py
++++ b/src/walpurgis_ported_v3/datasets/raw_data/PEMS08/generate_adj_mx.py
+@@ -1,10 +1,10 @@
+-"""Build PEMS08 adjacency matrix."""
++"""Generate PEMS08 adjacency matrix pickle."""
+ import sys, os
+ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+-from _gen_adj_common import build_and_save
++from _gen_adj_common import build_and_save_adj
+ 
+ if __name__ == "__main__":
+-    build_and_save(
++    build_and_save_adj(
+         csv_path="datasets/raw_data/PEMS08/PEMS08.csv",
+         n_nodes=170,
+         adj_out="datasets/sensor_graph/adj_mx_08.pkl",
+diff --git a/src/walpurgis_ported_v3/datasets/raw_data/PEMS08/generate_training_data.py b/src/walpurgis_ported_v3/datasets/raw_data/PEMS08/generate_training_data.py
+index 374befa..5a28541 100644
+--- a/src/walpurgis_ported_v3/datasets/raw_data/PEMS08/generate_training_data.py
++++ b/src/walpurgis_ported_v3/datasets/raw_data/PEMS08/generate_training_data.py
+@@ -9,5 +9,4 @@ if __name__ == "__main__":
+         output_dir="datasets/PEMS08",
+         npz_path="datasets/raw_data/PEMS08/PEMS08.npz",
+         train_ratio=0.6,
+-        train_minus_one=True,
+     )
+diff --git a/src/walpurgis_ported_v3/datasets/raw_data/_gen_adj_common.py b/src/walpurgis_ported_v3/datasets/raw_data/_gen_adj_common.py
+index fe6c767..987f972 100644
+--- a/src/walpurgis_ported_v3/datasets/raw_data/_gen_adj_common.py
++++ b/src/walpurgis_ported_v3/datasets/raw_data/_gen_adj_common.py
+@@ -1,6 +1,6 @@
+ """
+ Common adjacency matrix builder for PEMS04 / PEMS08.
+-Reads CSV edge list, outputs pickle.
++Reads CSV edge lists and produces pickle files.
+ """
+ import numpy as np
+ import csv
+@@ -8,21 +8,20 @@ import pickle
+ 
+ 
+ def _read_adj_unidirectional(csv_path, n_nodes, id_file=None):
+-    """Build (A, dist_A) from a one-directional edge CSV."""
++    """Build a directed adjacency matrix from a CSV edge list."""
+     if csv_path.endswith('.npy'):
+         return np.load(csv_path), None
+ 
+     A = np.zeros((n_nodes, n_nodes), dtype=np.float32)
+-    D = np.zeros_like(A)
++    D = np.zeros((n_nodes, n_nodes), dtype=np.float32)
+ 
+     id_map = None
+     if id_file:
+-        with open(id_file) as f:
+-            id_map = {int(v): idx for idx, v in
+-                      enumerate(f.read().strip().split('\n'))}
++        with open(id_file, 'r') as f:
++            id_map = {int(v): idx for idx, v in enumerate(f.read().strip().split('\n'))}
+ 
+-    with open(csv_path) as f:
+-        f.readline()  # skip header
++    with open(csv_path, 'r') as f:
++        f.readline()          # skip header
+         for row in csv.reader(f):
+             if len(row) != 3:
+                 continue
+@@ -31,25 +30,23 @@ def _read_adj_unidirectional(csv_path, n_nodes, id_file=None):
+                 i, j = id_map[i], id_map[j]
+             A[i, j] = 1
+             D[i, j] = d
+-
+     return A, D
+ 
+ 
+ def _read_adj_bidirectional(csv_path, n_nodes, id_file=None):
+-    """Build symmetric (A, dist_A) from edge CSV."""
++    """Build a symmetric (undirected) adjacency matrix from CSV."""
+     if csv_path.endswith('.npy'):
+         return np.load(csv_path), None
+ 
+     A = np.zeros((n_nodes, n_nodes), dtype=np.float32)
+-    D = np.zeros_like(A)
++    D = np.zeros((n_nodes, n_nodes), dtype=np.float32)
+ 
+     id_map = None
+     if id_file:
+-        with open(id_file) as f:
+-            id_map = {int(v): idx for idx, v in
+-                      enumerate(f.read().strip().split('\n'))}
++        with open(id_file, 'r') as f:
++            id_map = {int(v): idx for idx, v in enumerate(f.read().strip().split('\n'))}
+ 
+-    with open(csv_path) as f:
++    with open(csv_path, 'r') as f:
+         f.readline()
+         for row in csv.reader(f):
+             if len(row) != 3:
+@@ -59,22 +56,21 @@ def _read_adj_bidirectional(csv_path, n_nodes, id_file=None):
+                 i, j = id_map[i], id_map[j]
+             A[i, j] = A[j, i] = 1
+             D[i, j] = D[j, i] = d
+-
+     return A, D
+ 
+ 
+-def build_and_save(csv_path, n_nodes, adj_out, dist_out,
+-                   bidirectional=True, self_loop=False):
+-    """End-to-end: read CSV → build adj → optionally add self-loop → pickle."""
++def build_and_save_adj(csv_path, n_nodes, adj_out, dist_out,
++                       bidirectional=True, self_loop=False):
++    """One-shot: read CSV -> optionally add self-loop -> pickle."""
+     reader = _read_adj_bidirectional if bidirectional else _read_adj_unidirectional
+     adj, dist = reader(csv_path, n_nodes)
+ 
+     if self_loop:
+         eye = np.identity(n_nodes)
+-        adj  = adj  + eye
++        adj  = adj + eye
+         dist = dist + eye
+ 
+     pickle.dump(adj,  open(adj_out,  'wb'))
+     pickle.dump(dist, open(dist_out, 'wb'))
+-    print(f"[adj] saved  adj→{adj_out}  dist→{dist_out}  "
++    print(f"[adj] saved  adj->{adj_out}  dist->{dist_out}  "
+           f"N={n_nodes}  edges={int(adj.sum())}")
+diff --git a/src/walpurgis_ported_v3/datasets/raw_data/_gen_flow_common.py b/src/walpurgis_ported_v3/datasets/raw_data/_gen_flow_common.py
+index f403caa..edcf2b8 100644
+--- a/src/walpurgis_ported_v3/datasets/raw_data/_gen_flow_common.py
++++ b/src/walpurgis_ported_v3/datasets/raw_data/_gen_flow_common.py
+@@ -1,10 +1,9 @@
+ """
+ Common generator for flow-type datasets (PEMS04, PEMS08).
+-Includes MinMax normalization pipeline.
++Handles MinMax normalization specific to traffic flow data.
+ """
+ from __future__ import absolute_import, division, print_function, unicode_literals
+ 
+-import argparse
+ import pickle
+ import numpy as np
+ import os
+@@ -13,25 +12,25 @@ NUM_FEAT = 1
+ 
+ 
+ def _minmax_norm(train, val, test):
+-    """Compute min-max stats on train, apply to all splits."""
++    """Per-feature min-max to [-1, 1], computed on training set only."""
+     assert train.shape[1:] == val.shape[1:] == test.shape[1:]
+     _max = train.max(axis=(0, 1, 3), keepdims=True)
+     _min = train.min(axis=(0, 1, 3), keepdims=True)
+-    print(f"  _max.shape={_max.shape}  _min.shape={_min.shape}")
++    print(f"[gen] _max={_max.shape}  _min={_min.shape}")
+ 
+-    def _scale(x):
++    def _norm(x):
+         return 2.0 * (x - _min) / (_max - _min) - 1.0
+ 
+-    return {'_max': _max, '_min': _min}, _scale(train), _scale(val), _scale(test)
++    return {'_max': _max, '_min': _min}, _norm(train), _norm(val), _norm(test)
+ 
+ 
+ def _build_flow_samples(data, x_off, y_off, add_tod=True, add_dow=True):
+-    """Slide window over (T, N, F) array."""
++    """Slide window for npz-based flow datasets."""
+     n_samples, n_nodes, _ = data.shape
+     feats = [data[..., 0:NUM_FEAT]]
+ 
+     if add_tod:
+-        tod = np.array([i % 288 / 288 for i in range(n_samples)])
++        tod = np.array([i % 288 / 288.0 for i in range(n_samples)])
+         tod = np.tile(tod, [1, n_nodes, 1]).transpose((2, 1, 0))
+         feats.append(tod)
+ 
+@@ -51,55 +50,54 @@ def _build_flow_samples(data, x_off, y_off, add_tod=True, add_dow=True):
+ 
+ 
+ def run_flow_gen(dataset_tag, output_dir, npz_path,
+-                 train_ratio=0.6, seq_x=12, seq_y=12,
+-                 y_start=1, dow=True, train_minus_one=False):
++                 seq_x=12, seq_y=12, y_start=1, dow=True,
++                 train_ratio=0.6):
+     """Full pipeline: read npz -> split -> minmax -> save."""
+-
+-    data = np.load(npz_path)['data']
++    raw = np.load(npz_path)['data']
+     x_off = np.sort(np.concatenate((np.arange(-(seq_x - 1), 1, 1),)))
+     y_off = np.sort(np.arange(y_start, seq_y + 1, 1))
+ 
+-    x, y = _build_flow_samples(data, x_off, y_off,
+-                                add_tod=True, add_dow=dow)
++    x, y = _build_flow_samples(raw, x_off, y_off, add_tod=True, add_dow=dow)
+     print(f"[gen] x={x.shape}  y={y.shape}")
+ 
+     N = x.shape[0]
+     n_test  = round(N * 0.2)
+     n_train = round(N * train_ratio)
+-    if train_minus_one:
+-        n_train -= 1
++    if dataset_tag == 'PEMS08':
++        n_train -= 1                     # upstream quirk preserved
+     n_val = N - n_test - n_train
+ 
+-    x_tr, y_tr = x[:n_train],               y[:n_train][..., 0:1]
+-    x_va, y_va = x[n_train:n_train+n_val],  y[n_train:n_train+n_val][..., 0:1]
+-    x_te, y_te = x[-n_test:],               y[-n_test:][..., 0:1]
++    x_tr, y_tr = x[:n_train],              y[:n_train][..., 0:1]
++    x_va, y_va = x[n_train:n_train+n_val], y[n_train:n_train+n_val][..., 0:1]
++    x_te, y_te = x[-n_test:],              y[-n_test:][..., 0:1]
+ 
+-    # separate signal vs time features, normalize signal only
+-    def _norm_split(xp):
+-        return xp[:, :, :, :NUM_FEAT], xp[:, :, :, NUM_FEAT:]
++    # separate signal vs time features, then normalize signal
++    def _split_norm(xa, xb, xc):
++        a_sig, a_t = xa[..., :NUM_FEAT], xa[..., NUM_FEAT:]
++        b_sig, b_t = xb[..., :NUM_FEAT], xb[..., NUM_FEAT:]
++        c_sig, c_t = xc[..., :NUM_FEAT], xc[..., NUM_FEAT:]
+ 
+-    xtr_s, xtr_t = _norm_split(x_tr)
+-    xva_s, xva_t = _norm_split(x_va)
+-    xte_s, xte_t = _norm_split(x_te)
++        a_sig = np.transpose(a_sig, [0, 2, 3, 1])
++        b_sig = np.transpose(b_sig, [0, 2, 3, 1])
++        c_sig = np.transpose(c_sig, [0, 2, 3, 1])
+ 
+-    xtr_s = np.transpose(xtr_s, [0, 2, 3, 1])
+-    xva_s = np.transpose(xva_s, [0, 2, 3, 1])
+-    xte_s = np.transpose(xte_s, [0, 2, 3, 1])
++        stat, a_n, b_n, c_n = _minmax_norm(a_sig, b_sig, c_sig)
+ 
+-    stat, xtr_s, xva_s, xte_s = _minmax_norm(xtr_s, xva_s, xte_s)
++        a_n = np.transpose(a_n, [0, 3, 1, 2])
++        b_n = np.transpose(b_n, [0, 3, 1, 2])
++        c_n = np.transpose(c_n, [0, 3, 1, 2])
+ 
+-    xtr_s = np.transpose(xtr_s, [0, 3, 1, 2])
+-    xva_s = np.transpose(xva_s, [0, 3, 1, 2])
+-    xte_s = np.transpose(xte_s, [0, 3, 1, 2])
++        return (np.concatenate([a_n, a_t], -1),
++                np.concatenate([b_n, b_t], -1),
++                np.concatenate([c_n, c_t], -1),
++                stat)
+ 
+-    x_tr = np.concatenate([xtr_s, xtr_t], axis=-1)
+-    x_va = np.concatenate([xva_s, xva_t], axis=-1)
+-    x_te = np.concatenate([xte_s, xte_t], axis=-1)
++    x_tr, x_va, x_te, stat = _split_norm(x_tr, x_va, x_te)
+ 
+     os.makedirs(output_dir, exist_ok=True)
+     for name, _x, _y in [('train', x_tr, y_tr),
+-                          ('val', x_va, y_va),
+-                          ('test', x_te, y_te)]:
++                          ('val',   x_va, y_va),
++                          ('test',  x_te, y_te)]:
+         print(f"  {name}  x={_x.shape}  y={_y.shape}")
+         np.savez_compressed(
+             os.path.join(output_dir, f"{name}.npz"),
+@@ -110,4 +108,4 @@ def run_flow_gen(dataset_tag, output_dir, npz_path,
+ 
+     pickle.dump(stat['_max'], open(f"datasets/{dataset_tag}/max.pkl", 'wb'))
+     pickle.dump(stat['_min'], open(f"datasets/{dataset_tag}/min.pkl", 'wb'))
+-    print(f"[gen] {dataset_tag} done → {output_dir}")
++    print(f"[gen] {dataset_tag} done -> {output_dir}")
+diff --git a/src/walpurgis_ported_v3/datasets/raw_data/_gen_speed_common.py b/src/walpurgis_ported_v3/datasets/raw_data/_gen_speed_common.py
+index ab60b35..cbdbd00 100644
+--- a/src/walpurgis_ported_v3/datasets/raw_data/_gen_speed_common.py
++++ b/src/walpurgis_ported_v3/datasets/raw_data/_gen_speed_common.py
+@@ -1,22 +1,17 @@
+ """
+ Common generator for speed-type datasets (METR-LA, PEMS-BAY).
+-Shared logic extracted to avoid duplication across dataset folders.
++Shared logic extracted to reduce duplication across dataset folders.
+ """
+ from __future__ import absolute_import, division, print_function, unicode_literals
+ 
+-import argparse
+ import numpy as np
+ import os
+ import pandas as pd
+-import torch
+ 
+ 
+-def _build_seq2seq_samples(df, x_off, y_off,
+-                           add_tod=True, add_dow=True):
++def _build_seq2seq_samples(df, x_off, y_off, add_tod=True, add_dow=True):
+     """Slide window over dataframe to produce (x, y) sample pairs."""
+     SLOTS_PER_DAY = 288
+-    DAYS_PER_WEEK = 7
+-
+     print(f"[gen] time slots/day = {SLOTS_PER_DAY}")
+     n_samples, n_nodes = df.shape
+     raw = np.expand_dims(df.values, axis=-1)
+@@ -29,12 +24,11 @@ def _build_seq2seq_samples(df, x_off, y_off,
+         feats.append(tod)
+ 
+     if add_dow:
+-        dow = df.index.dayofweek
+-        dow_t = np.tile(dow, [1, n_nodes, 1]).transpose((2, 1, 0))
++        dow_arr = df.index.dayofweek
++        dow_t = np.tile(dow_arr, [1, n_nodes, 1]).transpose((2, 1, 0))
+         feats.append(dow_t)
+ 
+     data = np.concatenate(feats, axis=-1)
+-
+     xs, ys = [], []
+     lo = abs(min(x_off))
+     hi = abs(n_samples - abs(max(y_off)))
+@@ -47,13 +41,11 @@ def _build_seq2seq_samples(df, x_off, y_off,
+ def run_speed_gen(dataset_tag, output_dir, h5_path,
+                   seq_x=12, seq_y=12, y_start=1, dow=True):
+     """Full pipeline: read h5 -> split -> save npz."""
+-
+     df = pd.read_hdf(h5_path)
+     x_off = np.sort(np.concatenate((np.arange(-(seq_x - 1), 1, 1),)))
+     y_off = np.sort(np.arange(y_start, seq_y + 1, 1))
+ 
+-    x, y = _build_seq2seq_samples(df, x_off, y_off,
+-                                  add_tod=True, add_dow=dow)
++    x, y = _build_seq2seq_samples(df, x_off, y_off, add_tod=True, add_dow=dow)
+     print(f"[gen] x={x.shape}  y={y.shape}")
+ 
+     N = x.shape[0]
+@@ -62,11 +54,10 @@ def run_speed_gen(dataset_tag, output_dir, h5_path,
+     n_val   = N - n_test - n_train
+ 
+     splits = {
+-        'train': (x[:n_train],            y[:n_train]),
++        'train': (x[:n_train],              y[:n_train]),
+         'val':   (x[n_train:n_train+n_val], y[n_train:n_train+n_val]),
+-        'test':  (x[-n_test:],             y[-n_test:]),
++        'test':  (x[-n_test:],              y[-n_test:]),
+     }
+-
+     os.makedirs(output_dir, exist_ok=True)
+     for name, (_x, _y) in splits.items():
+         print(f"  {name}  x={_x.shape}  y={_y.shape}")
+@@ -76,4 +67,4 @@ def run_speed_gen(dataset_tag, output_dir, h5_path,
+             x_offsets=x_off.reshape(list(x_off.shape) + [1]),
+             y_offsets=y_off.reshape(list(y_off.shape) + [1]),
+         )
+-    print(f"[gen] {dataset_tag} done → {output_dir}")
++    print(f"[gen] {dataset_tag} done -> {output_dir}")
+diff --git a/src/walpurgis_ported_v3/datasets/sensor_graph/describe_adjs.py b/src/walpurgis_ported_v3/datasets/sensor_graph/describe_adjs.py
+index 442d37b..40fd12b 100644
+--- a/src/walpurgis_ported_v3/datasets/sensor_graph/describe_adjs.py
++++ b/src/walpurgis_ported_v3/datasets/sensor_graph/describe_adjs.py
+@@ -1,4 +1,6 @@
+-"""Quick-inspect adjacency matrices for all four datasets."""
++"""
++Quick summary of all adjacency matrices: node count and edge count.
++"""
+ import pickle
+ 
+ 
+@@ -17,23 +19,16 @@ def _count_edges(adj):
+                    if adj[i][j] != 0))
+ 
+ 
+-def _report(tag, adj):
++def _describe(tag, path, unpack_idx=None):
++    raw = _load_pkl(path)
++    mx = raw[unpack_idx] if unpack_idx is not None else raw
++    n_edges = _count_edges(mx)
+     print(f"{'='*20} {tag} {'='*20}")
+-    print(f"  Nodes: {adj.shape[0]}")
+-    print(f"  Edges: {_count_edges(adj)}")
++    print(f"  Nodes: {mx.shape[0]}    Edges: {n_edges}")
+ 
+ 
+ if __name__ == "__main__":
+-    # METR-LA
+-    obj = _load_pkl("datasets/sensor_graph/adj_mx_la.pkl")
+-    _report("METR-LA", obj[2])
+-
+-    # PEMS-BAY
+-    obj = _load_pkl("datasets/sensor_graph/adj_mx_bay.pkl")
+-    _report("PEMS-BAY", obj[2])
+-
+-    # PEMS04
+-    _report("PEMS04", _load_pkl("datasets/sensor_graph/adj_mx_04.pkl"))
+-
+-    # PEMS08
+-    _report("PEMS08", _load_pkl("datasets/sensor_graph/adj_mx_08.pkl"))
++    _describe("METR-LA",  "datasets/sensor_graph/adj_mx_la.pkl",  unpack_idx=2)
++    _describe("PEMS-BAY", "datasets/sensor_graph/adj_mx_bay.pkl", unpack_idx=2)
++    _describe("PEMS04",   "datasets/sensor_graph/adj_mx_04.pkl")
++    _describe("PEMS08",   "datasets/sensor_graph/adj_mx_08.pkl")
+-- 
+2.43.0
+
+
+From c553483296312430dcd89f15f49e1841159f6a26 Mon Sep 17 00:00:00 2001
+From: dylanyunlon <dogechat@163.com>
+Date: Tue, 2 Jun 2026 09:48:14 +0000
+Subject: [PATCH 3/3] =?UTF-8?q?M325-M349:=20update=20CLAUDE=5FDEV=5FPROGRE?=
+ =?UTF-8?q?SS.md=20=E2=80=94=208th=20Claude=20complete,=20v3=20port=20done?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+walpurgis_ported_v3: 45 files, 2202 lines Python
+20% structural transform + 21 debug flags for runtime inspection
+---
+ CLAUDE_DEV_PROGRESS.md | 123 ++++++++++++++++++++++++-----------------
+ 1 file changed, 71 insertions(+), 52 deletions(-)
+
+diff --git a/CLAUDE_DEV_PROGRESS.md b/CLAUDE_DEV_PROGRESS.md
+index 416b0c0..2c3c3a9 100644
+--- a/CLAUDE_DEV_PROGRESS.md
++++ b/CLAUDE_DEV_PROGRESS.md
+@@ -72,42 +72,60 @@ M295-M299  v4 data generators + validation
+ ```
+ **产出**: 42个文件 v4版 (7632行), `src/walpurgis_ported/`
+ 
+-### 第七位 Claude（当前）— M300-M324: 鲁迅式 v2 移植 upstream→walpurgis_ported_v2 ✅ 已完成
+-```
+-M300-M304  utils 层: cal_adj (dispatch dict重构), load_data (_adj_builders),
+-           train (EarlyStopping重构), log (TrainLogger._print_table), __init__
+-M305-M308  dataloader 层: dataloader.py (periodic batch debug), __init__
+-M309-M314  models leaf modules:
+-           · losses (_build_mask helper extraction)
+-           · estimation_gate (改写docstring, gate stats debug)
+-           · residual_decomp (norm debug prints)
+-           · normalizer (f-string bug fix, row_normalize debug)
+-           · mask (topology mask debug)
+-           · distance (5-modality pipeline debug)
+-M315-M318  models block modules:
+-           · dif_model/STLocalizedConv (unfold shape debug, support count)
+-           · dif_block (forecast/backcast/residual pipeline)
+-           · dif_forecast (AR step-by-step norm tracking)
+-           · inh_model/RNNLayer + TransformerLayer (final h norm, attn output)
+-           · inh_block/SinusoidalPE (renamed from PositionalEncoding)
+-           · inh_forecast (AR GRU→Transformer step tracking)
+-M319-M320  models core:
+-           · model/D2STGNN (_LAYER_COUNT constant, per-layer residual norms)
+-           · model/DecoupleLayer (gate→diffusion→inherent pipeline)
+-           · trainer (grad_norm@50steps, eval/test metric summaries)
+-M321-M322  dynamic_graph_conv:
+-           · dy_graph_conv (5-step pipeline debug: dist→mask→norm→order→localize)
+-           · dy_graph_conv/utils/__init__
+-M323       datasets:
+-           · _gen_speed_common.py (METR-LA/PEMS-BAY shared logic)
+-           · _gen_flow_common.py (PEMS04/PEMS08 shared logic)
+-           · _gen_adj_common.py (generate_adj_mx shared logic)
+-           · 4 thin wrappers + describe_adjs (refactored to describe() function)
+-M324       main.py (TIMING prints, epoch log restructure, _timestamp helper)
+-           + configs (4 YAML copied) + syntax verification (41/41 pass) + git commit
++### 第七位 Claude — M300-M324: 鲁迅式 v2 移植 upstream→walpurgis_ported_v2
++```
++M300-M324  见上一版本进度记录（略）
+ ```
+ **产出**: `src/walpurgis_ported_v2/` — 41 .py + 4 .yaml, 2615行 Python
+-**改写特征**: 保留算法骨架, ~20%变量/docstring/控制流改写, 20+个_DBG_*调试开关
++
++### 第八位 Claude（当前）— M325-M349: 鲁迅式 v3 移植 upstream→walpurgis_ported_v3 ✅ 已完成
++```
++M325-M328  v3 utils层 — train.py (seed debug, EarlyStopping重构),
++           cal_adj.py (remove_nan_inf debug, transition_matrix probe),
++           load_data.py (dispatch-dict替代if-elif, StandardScaler probe),
++           log.py (TrainLogger._show_dict方法合并)
++M329-M330  v3 dataloader — dataloader.py (cursor重命名, batch range debug),
++           __init__.py (导出)
++M331-M334  v3 models leaf modules —
++           · losses.py (_build_mask抽取, per-loss debug probe)
++           · estimation_gate.py (forward签名简化, gate_mean/std probe)
++           · residual_decomp.py (relu→instance attr, out_std probe)
++           · normalizer.py (row_sum验证, MultiOrder power series debug)
++           · mask.py (density probe per idx)
++           · distance.py (scale=sqrt(d_h)常量化, A0/A1 mean probe)
++M335-M338  v3 models block modules —
++           · dif_model/STLocalizedConv (_expand_predef方法提取, gconv debug)
++           · dif_block (变量名精简: forecast→fcast, backcast_branch→bcast_fc)
++           · dif_forecast (gap参数直接存储, step-by-step norm)
++           · inh_model/RNNLayer (hx_norm probe), TransformerLayer (out_mean)
++           · inh_block/PositionalEncoding (drop命名, per-forward signal stats)
++           · inh_forecast (n_ar_steps显式变量, gru_norm tracking)
++M339-M342  v3 models core —
++           · model.py/D2STGNN (_d_前缀, _build_graphs方法, _split_inputs方法,
++             per-layer residual_norm + output range probe)
++           · model.py/DecoupleLayer (参数名重映射)
++           · trainer.py (_masked_mape_np保留, grad_norm@50 debug,
++             eval summary, test per-horizon formatting)
++M343-M344  v3 dynamic_graph_conv —
++           · dy_graph_conv (_st_localize方法, 5-step pipeline debug)
++           · utils/__init__.py (clean imports)
++M345-M349  v3 datasets —
++           · _gen_speed_common.py (METR-LA/PEMS-BAY共用逻辑提取)
++           · _gen_flow_common.py (PEMS04/PEMS08共用逻辑提取, train_ratio参数化)
++           · _gen_adj_common.py (unidirectional/bidirectional统一接口)
++           · 4 thin wrappers + describe_adjs (helper function重构)
++           · main.py (os.makedirs output, _ts helper, epoch log重组)
++           · 4 YAML configs (原样搬运) + __init__.py
++           + 完整性验证: 45 files, 17 directories, 2202行 Python
++```
++**产出**: `src/walpurgis_ported_v3/` — 41 .py + 4 .yaml + 3 common modules, 2202行 Python
++**改写策略**: upstream骨架 + ~20%变形(变量重命名/函数签名调整/dispatch-dict/方法提取) + 20个_DBG开关
++**调试开关**: `--debug-main`, `--debug-model`, `--debug-trainer`, `--debug-data`,
++             `--debug-adj`, `--debug-train`, `--debug-loss`, `--debug-gate`,
++             `--debug-stconv`, `--debug-difblk`, `--debug-diffc`, `--debug-inhblk`,
++             `--debug-inhmod`, `--debug-inhfc`, `--debug-dygraph`, `--debug-dist`,
++             `--debug-mask`, `--debug-norm`, `--debug-loader`, `--debug-log`,
++             `--debug-resdecomp`
+ 
+ ---
+ 
+@@ -122,23 +140,24 @@ M324       main.py (TIMING prints, epoch log restructure, _timestamp helper)
+ | 第五位 | M256-M274 | v3 全量改写 | ✅ |
+ | 第六位 | M275-M299 | v4 全量改写 | ✅ |
+ | 第七位 | M300-M324 | 鲁迅式 v2 移植 (walpurgis_ported_v2) | ✅ |
+-| 第八位 | M325-M349 | (待分配) | ⏳ |
++| 第八位 | M325-M349 | 鲁迅式 v3 移植 (walpurgis_ported_v3) | ✅ |
+ | 第九位 | M350-M374 | (待分配) | ⏳ |
+ | 第十位 | M375-M399 | (待分配) | ⏳ |
+ | 第十一位 | M400-M424 | (待分配) | ⏳ |
+ | 第十二位 | M425-M449 | (待分配) | ⏳ |
+ 
+-## 文件统计快照 (第七位 Claude 完成后)
++## 文件统计快照 (第八位 Claude 完成后)
+ 
+ ```
+-src/walpurgis/             6,644 行 Python (v3, 19 files + inits + configs)
+-src/walpurgis_ported/      7,632 行 Python (v4, 42 files)
+-src/walpurgis_ported_v2/   2,615 行 Python (鲁迅式port, 41 files + 4 YAML)
+-src/core/                 ~2,000 行 C++ (tiered allocator, seqlock, slab)
+-src/bridge/               ~1,200 行 C++ (temporal bridge)
+-src/scheduler/              ~600 行 C++ (migration scheduler)
+-src/bench/                ~1,000 行 C++ (benchmarks)
+-src/cuda/                   ~500 行 CUDA (device kernels)
++src/walpurgis/               6,644 行 Python (v3原版, 第五位产出)
++src/walpurgis_ported/        7,632 行 Python (v4, 第六位产出)
++src/walpurgis_ported_v2/     2,615 行 Python (鲁迅式port, 第七位产出)
++src/walpurgis_ported_v3/     2,202 行 Python (鲁迅式port, 第八位产出) ← NEW
++src/core/                   ~2,000 行 C++ (tiered allocator, seqlock, slab)
++src/bridge/                 ~1,200 行 C++ (temporal bridge)
++src/scheduler/                ~600 行 C++ (migration scheduler)
++src/bench/                  ~1,000 行 C++ (benchmarks)
++src/cuda/                     ~500 行 CUDA (device kernels)
+ walpurgis_reconstructed.tex  ~32KB LaTeX (full paper)
+ ```
+ 
+@@ -146,11 +165,11 @@ walpurgis_reconstructed.tex  ~32KB LaTeX (full paper)
+ 
+ 1. `git log --oneline` 查看完整历史
+ 2. 本文件 (`CLAUDE_DEV_PROGRESS.md`) 了解全局进度
+-3. `src/walpurgis/` 是 v3 代码 (第五位 Claude 产出)
+-4. `src/walpurgis_ported/` 是 v4 代码 (第六位 Claude 产出)
+-5. `src/walpurgis_ported_v2/` 是鲁迅式移植 (第七位 Claude 产出, 当前最新)
+-6. `upstream/d2stgnn/` 是原始 D2STGNN 参考代码
+-7. 每个 `.py` 文件头部的 docstring 记录了该文件的算法变更历史
+-8. 编号规则: `M{三位数}`, 每位 Claude 分配连续区间
+-9. commit message 格式: `M{start}-M{end}: 简述`
+-10. walpurgis_ported_v2 的 debug 开关: `--debug-main`, `--debug-model`, `--debug-trainer`, 等 20+个
++3. `src/walpurgis/` = v3 (第五位), `src/walpurgis_ported/` = v4 (第六位)
++4. `src/walpurgis_ported_v2/` = 鲁迅式移植 (第七位), `src/walpurgis_ported_v3/` = 鲁迅式移植 (第八位)
++5. `upstream/d2stgnn/` = 原始 D2STGNN 参考代码
++6. 每个 `.py` 文件头部的 docstring 记录了该文件的变更
++7. 编号规则: `M{三位数}`, 每位 Claude 分配连续 25 个
++8. commit message 格式: `feat(vN): 简述 [Mxxx-Mxxx]`
++9. debug 开关: 运行时加 `--debug-xxx` 即可开启对应模块的状态打印
++10. **分配给你的里程碑区间**: 看上面表格中你是第几位
+-- 
+2.43.0
+
