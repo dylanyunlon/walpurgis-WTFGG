@@ -1,0 +1,57 @@
+---
+start_up:
+  mode: scratch
+  resume_epoch: 0
+  model_name: D2STGNN
+  device: cuda:0
+  load_pkl: False
+
+data_args:
+  data_dir: datasets/METR-LA
+  adj_data_path: datasets/sensor_graph/adj_mx_la.pkl
+  adj_type: doubletransition
+
+model_args:
+  batch_size: 32
+  num_feat: 1
+  num_hidden: 32
+  node_hidden: 10
+  time_emb_dim: 10
+  # 改动3: dropout 0.1 → 0.08, 配合v10的额外正则(GN/IN/attn_drop等)
+  dropout: 0.08
+  seq_length: 12
+  k_t: 3
+  k_s: 2
+  gap: 3
+  num_modalities: 2
+
+optim_args:
+  lrate: 0.002
+  print_model: False
+  wdecay: 1.0e-5
+  eps: 1.0e-8
+  lr_schedule: True
+  lr_sche_steps: [1, 30, 38, 46, 54, 62, 70, 80]
+  lr_decay_ratio: 0.5
+  if_cl: True
+  cl_epochs: 6
+  output_seq_len: 12
+  # 改动1: warm_epochs 0 → 5, 配合 warmup-cosine 调度器
+  warm_epochs: 5
+  epochs: 80
+  patience: 100
+  seq_length: 12
+
+# 改动2: v10 特有的邻接矩阵预处理参数
+v10_adj_preprocess:
+  rbf_kernel: True
+  rbf_sigma: auto          # auto = 中位数自适应
+  knn_k: 15
+  symmetric_closure: True
+
+# 改动4: v10 特有训练选项
+v10_training:
+  amp_enabled: True         # 混合精度
+  ensemble_test: True       # test时ensemble best+resume
+  adaptive_clip_percentile: 90
+  cl_ramp_mode: sigmoid     # 非线性CL ramp

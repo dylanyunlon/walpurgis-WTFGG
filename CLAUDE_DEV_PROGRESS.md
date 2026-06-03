@@ -225,21 +225,84 @@ M473-M474  v9 main (configurable seed via CLI --seed, _seed_everything 3-way syn
 
 ---
 
+
+### 第一位 Claude (新编号, v10移植) — M001-M025: walpurgis_ported_v10 鲁迅式移植
+```
+M001-M003  v10 顶层 — __init__.py (全局_dbg调试系统, WALPURGIS_V10_DEBUG环境变量)
+           losses.py (masked_mae→Huber+log-cosh 70/30混合δ=5, MAPE floor 5e-6, 新增quantile_loss)
+           model.py (Mish输出激活, softmax层权重+温度聚合, static_graph温度τ_s, highway gate, kaiming init)
+M004-M006  v10 trainer (自适应p90梯度裁剪, warmup-cosine调度, sigmoid CL ramp, 梯度snapshot) +
+           decouple (estimation_gate: SiLU+双头投影+GroupNorm4组+可学习温度τ,
+           residual_decomp: Mish+可学习α sigmoid+Dropout0.05+LN)
+M007-M010  v10 diffusion_block — dif_model (InstanceNorm2d, GELU, gconv残差skip, 两层FC+GELU,
+           fill_diagonal_), forecast (cosine退火dropout, 线性插值padding, FC前LayerNorm),
+           dif_block (3层MLP backcast, sigmoid门控, 0.1*history skip)
+M011-M014  v10 dynamic_graph_conv — dy_graph_conv (可学习时间权重softmax, cosine-similarity辅助,
+           梯度范数监控), distance (3-head多头QK, InstanceNorm1d, 残差shortcut, attn dropout0.1),
+           mask (softplus+温度soft threshold, 对角线清零, sigmoid soft),
+           normalizer (对称D^{-1/2}AD^{-1/2}, 指数衰减λ^k(0.8), 可学习eps)
+M015-M018  v10 inherent_block — inh_model (RMSNorm步间, gradient checkpoint, pre-norm transformer,
+           注意力熵诊断), forecast (可学习步长衰减exp(-γ·step), 简化RoPE, GELU+Dropout),
+           inh_block (RoPE替代sincos PE, 2层MLP+Mish backcast, sigmoid门控, gradient checkpoint)
+M019-M021  v10 utils — cal_adj (RBF kernel σ=中位数, k-NN(15)稀疏化, 双向对称闭包, epsilon-smooth transition),
+           load_data (Tukey fences 1.5×IQR异常剔除, sin/cos周期编码, StandardScaler eps防零std,
+           adj预处理链RBF→kNN→对称), train (确定性CUBLAS, 相对δ_rel(0.1%) EarlyStopping,
+           pin_memory+non_blocking, SHA256校验), log (JSONL格式, per-epoch CSV, git-hash目录, 结构化table)
+M022-M023  v10 dataloader (环形wrap padding, Fisher-Yates原地shuffle, 3-tuple yield含sample_weight,
+           prefetch buffer) + main.py (DataParallel多GPU, AMP GradScaler, epoch CSV+JSONL dump,
+           test时ensemble best+resume) + 4×YAML (warm_epochs调整, dropout 0.1→0.08, v10_adj_preprocess段,
+           v10_training段含amp/ensemble/adaptive_clip/sigmoid_cl)
+M024-M025  v10 datasets — METR-LA/PEMS-BAY generate_training_data (stride跳步, cyclic sin/cos,
+           按周对齐划分, stats JSON), PEMS04/PEMS08 generate_training_data (MinMax eps防零除,
+           stride, 按周对齐, stats JSON, NaN审计), PEMS04/PEMS08 generate_adj_mx (距离→RBF连续权重,
+           k-NN稀疏化, 自适应阈值剪枝, 度分布审计, 加权自环), describe_adjs (密度计算, 权重分布统计,
+           BFS连通分量分析, 度5数概要, 非对称性检测)
+```
+**产出**: `src/walpurgis_ported_v10/` — 38 files (38 .py + 4 .yaml), 3808行 Python
+**改写策略**: upstream骨架 + ≥20%实质算法改动(非字符串/注释替换) + 全局_dbg()断点系统
+**核心算法改动清单**:
+  - 损失函数: Huber(δ=5)+log-cosh混合70/30, MAPE floor 5e-6, quantile_loss
+  - 估计门: SiLU激活, 双头投影, GroupNorm(4组), 可学习温度τ
+  - 残差分解: Mish激活, 可学习α(sigmoid缩放), Dropout(0.05)+LayerNorm
+  - 时空卷积: InstanceNorm2d, GELU, gconv残差skip, 两层FC, fill_diagonal_
+  - 扩散预测: cosine退火dropout, 线性插值padding, FC前LayerNorm
+  - 扩散块: 3层MLP backcast, sigmoid门控, 0.1×history shortcut
+  - 距离函数: 3-head多头QK注意力, InstanceNorm1d, 残差shortcut, attn dropout
+  - 图掩码: softplus+温度soft threshold, 对角线清零, sigmoid连续化
+  - 归一化: 对称D^{-1/2}AD^{-1/2}, 指数衰减λ^k(λ=0.8), 可学习eps
+  - 动态图: 可学习时间权重(softmax), cosine-similarity辅助分支, 梯度范数监控
+  - 固有模型: RMSNorm步间, gradient checkpoint, pre-norm transformer, 注意力熵诊断
+  - 固有预测: 可学习步长衰减exp(-γ·step), 简化RoPE, GELU+Dropout
+  - 固有块: RoPE旋转位置编码, 2层MLP+Mish backcast, sigmoid门控
+  - 主模型: Mish输出, softmax层权重+温度聚合, highway gate, kaiming init
+  - 训练器: 自适应p90梯度裁剪, warmup-cosine调度, sigmoid CL ramp, 梯度snapshot
+  - 邻接矩阵: RBF kernel(σ自适应中位数), k-NN(15)稀疏化, 对称闭包, epsilon-smooth
+  - 数据加载: Tukey fences异常剔除, sin/cos周期编码, eps防零std, adj预处理链
+  - 训练工具: 确定性CUBLAS, 相对δ_rel EarlyStopping, pin_memory/non_blocking, SHA256
+  - 日志: JSONL+CSV dual dump, git-hash目录, 结构化table输出
+  - DataLoader: 环形wrap, Fisher-Yates, 3-tuple(含权重), prefetch buffer
+  - 入口: DataParallel多GPU, AMP GradScaler, ensemble test(best+resume平均)
+  - adj生成: 距离→RBF连续权重, kNN稀疏化, 自适应阈值剪枝, 度分布审计, 加权自环
+  - 图诊断: 密度计算, 权重分布统计, BFS连通分量, 度5数概要, 非对称性检测
+
+---
+
 ## Claude 接力全局统计
 
-> **新编号体系** (从本次 session 起生效):
-> 之前的所有历史 session 合并为"前序开发阶段"(legacy)，不再逐个编号。
-> 从本 session 起重新从 **第一位 Claude** 开始计数，每位分配 25 个里程碑。
+> **编号体系**:
+> 之前的所有历史 session 合并为"前序开发阶段"(legacy)。
+> 从 v10 起重新从 **第一位 Claude** 开始计数，每位分配 25 个里程碑。
+> 每位 Claude 完成一个鲁迅式移植版本(vN)，38py+4yaml，≥20%实质算法改动。
 
 | Claude # | 里程碑 | 内容 | 状态 |
 |----------|--------|------|------|
-| 前序开发 | (legacy) | C++/CUDA基础设施 + LaTeX论文 + D2STGNN移植 + v1-v8改写 + 鲁迅式v2-v6移植 | ✅ 已完成 |
-| **第一位** | **M001-M025** | **v9 鲁迅式移植 (walpurgis_ported_v9) — 38py+4yaml, 2787行** | **✅ 已完成** |
-| 第二位 | M026-M050 | (待分配 — 下一个 v10 鲁迅式移植) | ⏳ |
-| 第三位 | M051-M075 | (待分配) | ⏳ |
-| 第四位 | M076-M100 | (待分配) | ⏳ |
-| 第五位 | M101-M125 | (待分配) | ⏳ |
-| 第六位 | M126-M150 | (待分配) | ⏳ |
+| 前序开发 | (legacy) | C++/CUDA基础设施 + LaTeX论文 + D2STGNN移植 + v1-v9改写 | ✅ 已完成 |
+| **第一位** | **M001-M025** | **v10 鲁迅式移植 (walpurgis_ported_v10) — 38py+4yaml, 3808行** | **✅ 已完成** |
+| 第二位 | M026-M050 | v11 鲁迅式移植 (walpurgis_ported_v11) | ⏳ 待开发 |
+| 第三位 | M051-M075 | v12 鲁迅式移植 (walpurgis_ported_v12) | ⏳ 待开发 |
+| 第四位 | M076-M100 | v13 鲁迅式移植 (walpurgis_ported_v13) | ⏳ 待开发 |
+| 第五位 | M101-M125 | v14 鲁迅式移植 (walpurgis_ported_v14) | ⏳ 待开发 |
+| 第六位 | M126-M150 | v15 鲁迅式移植 (walpurgis_ported_v15) | ⏳ 待开发 |
 
 ## 文件统计快照 (第十三位 Claude 完成后)
 
@@ -251,7 +314,8 @@ src/walpurgis_ported_v3/     2,202 行 Python (鲁迅式port, 第八位产出)
 src/walpurgis_ported_v4/     ???? 行 Python (鲁迅式port, 第十位产出)
 src/walpurgis_ported_v5/     ???? 行 Python (鲁迅式port, 第十一位产出)
 src/walpurgis_ported_v6/     3,276 行 Python (鲁迅式port, 第十二位产出)
-src/walpurgis_ported_v9/     2,787 行 Python (鲁迅式port, 第十三位产出) ← NEW
+src/walpurgis_ported_v9/     2,787 行 Python (鲁迅式port, 前序开发最后一位产出)
+src/walpurgis_ported_v10/    3,808 行 Python (鲁迅式port, 第一位产出) ← NEW
 src/core/                   ~2,000 行 C++ (tiered allocator, seqlock, slab)
 src/bridge/                 ~1,200 行 C++ (temporal bridge)
 src/scheduler/                ~600 行 C++ (migration scheduler)
@@ -265,12 +329,13 @@ walpurgis_reconstructed.tex  ~32KB LaTeX (full paper)
 1. `git log --oneline` 查看完整历史
 2. 本文件 (`CLAUDE_DEV_PROGRESS.md`) 了解全局进度
 3. `upstream/d2stgnn/` = 原始 D2STGNN 参考代码
-4. `src/walpurgis_ported_v9/` = 第一位 Claude 产出 (最新的鲁迅式移植)
+4. `src/walpurgis_ported_v10/` = 第一位 Claude 产出 (新编号起点, 最新的鲁迅式移植)
+   `src/walpurgis_ported_v9/` = 前序开发阶段最后一位 Claude 产出
 5. 每个 `.py` 文件头部的 docstring 记录了该文件的算法变更
 6. 编号规则: `M{三位数}`, 每位 Claude 分配连续 25 个 (第一位 M001-M025, 第二位 M026-M050, ...)
 7. commit 作者: `dylanyunlon <dogechat@163.com>`
 8. commit message 格式: `feat(vN): 简述 [Mxxx-Mxxx]`
-9. debug: 设置环境变量 `WALPURGIS_V9_DEBUG=1` 开启全局 _dbg() 打印
+9. debug: 设置环境变量 `WALPURGIS_V10_DEBUG=1` (v10) 或 `WALPURGIS_V9_DEBUG=1` (v9) 开启全局 _dbg() 打印
 10. **你是第几位**: 看上面表格，找到你对应的 ⏳ 行，那就是你的里程碑区间
 11. **要求**: 算法级改动(≥20%), 不是改字符串/注释/docstring
 12. **git am**: 完成后用 `git format-patch` 导出, sed 改作者为 `dylanyunlon <dogechat@163.com>`, reset 后 `git am` 重新应用
