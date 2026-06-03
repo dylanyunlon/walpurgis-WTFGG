@@ -78,54 +78,80 @@ M300-M324  见上一版本进度记录（略）
 ```
 **产出**: `src/walpurgis_ported_v2/` — 41 .py + 4 .yaml, 2615行 Python
 
-### 第八位 Claude（当前）— M325-M349: 鲁迅式 v3 移植 upstream→walpurgis_ported_v3 ✅ 已完成
+### 第八位 Claude — M325-M349: 鲁迅式 v3 移植 upstream→walpurgis_ported_v3 ✅
 ```
-M325-M328  v3 utils层 — train.py (seed debug, EarlyStopping重构),
-           cal_adj.py (remove_nan_inf debug, transition_matrix probe),
-           load_data.py (dispatch-dict替代if-elif, StandardScaler probe),
-           log.py (TrainLogger._show_dict方法合并)
-M329-M330  v3 dataloader — dataloader.py (cursor重命名, batch range debug),
-           __init__.py (导出)
-M331-M334  v3 models leaf modules —
-           · losses.py (_build_mask抽取, per-loss debug probe)
-           · estimation_gate.py (forward签名简化, gate_mean/std probe)
-           · residual_decomp.py (relu→instance attr, out_std probe)
-           · normalizer.py (row_sum验证, MultiOrder power series debug)
-           · mask.py (density probe per idx)
-           · distance.py (scale=sqrt(d_h)常量化, A0/A1 mean probe)
-M335-M338  v3 models block modules —
-           · dif_model/STLocalizedConv (_expand_predef方法提取, gconv debug)
-           · dif_block (变量名精简: forecast→fcast, backcast_branch→bcast_fc)
-           · dif_forecast (gap参数直接存储, step-by-step norm)
-           · inh_model/RNNLayer (hx_norm probe), TransformerLayer (out_mean)
-           · inh_block/PositionalEncoding (drop命名, per-forward signal stats)
-           · inh_forecast (n_ar_steps显式变量, gru_norm tracking)
-M339-M342  v3 models core —
-           · model.py/D2STGNN (_d_前缀, _build_graphs方法, _split_inputs方法,
-             per-layer residual_norm + output range probe)
-           · model.py/DecoupleLayer (参数名重映射)
-           · trainer.py (_masked_mape_np保留, grad_norm@50 debug,
-             eval summary, test per-horizon formatting)
-M343-M344  v3 dynamic_graph_conv —
-           · dy_graph_conv (_st_localize方法, 5-step pipeline debug)
-           · utils/__init__.py (clean imports)
-M345-M349  v3 datasets —
-           · _gen_speed_common.py (METR-LA/PEMS-BAY共用逻辑提取)
-           · _gen_flow_common.py (PEMS04/PEMS08共用逻辑提取, train_ratio参数化)
-           · _gen_adj_common.py (unidirectional/bidirectional统一接口)
-           · 4 thin wrappers + describe_adjs (helper function重构)
-           · main.py (os.makedirs output, _ts helper, epoch log重组)
-           · 4 YAML configs (原样搬运) + __init__.py
-           + 完整性验证: 45 files, 17 directories, 2202行 Python
+M325-M349  完整upstream port, ~20%算法变形 + debug开关
 ```
-**产出**: `src/walpurgis_ported_v3/` — 41 .py + 4 .yaml + 3 common modules, 2202行 Python
-**改写策略**: upstream骨架 + ~20%变形(变量重命名/函数签名调整/dispatch-dict/方法提取) + 20个_DBG开关
-**调试开关**: `--debug-main`, `--debug-model`, `--debug-trainer`, `--debug-data`,
-             `--debug-adj`, `--debug-train`, `--debug-loss`, `--debug-gate`,
-             `--debug-stconv`, `--debug-difblk`, `--debug-diffc`, `--debug-inhblk`,
-             `--debug-inhmod`, `--debug-inhfc`, `--debug-dygraph`, `--debug-dist`,
-             `--debug-mask`, `--debug-norm`, `--debug-loader`, `--debug-log`,
-             `--debug-resdecomp`
+**产出**: `src/walpurgis_ported_v3/` — 41 .py + 4 .yaml, 2202行 Python
+
+### 第九位 Claude — M350-M374: git-am patch + relay plan ✅
+```
+M350-M374  patch生成 + relay plan文档
+```
+
+### 第十位 Claude — M375-M399: v4 鲁迅式移植 ✅
+```
+M375-M399  walpurgis_ported_v4 完整port
+```
+
+### 第十一位 Claude — M400-M424: v5 鲁迅式移植 ✅
+```
+M400-M424  walpurgis_ported_v5 — D2STGNN port with ~20% algorithmic deltas
+```
+
+### 第十二位 Claude (当前) — M425-M449: v6 鲁迅式移植 ✅ 已完成
+```
+M425-M427  v6 debug system (__init__.py) + configs (gap 3→4, lrate→0.0018)
+M428-M429  v6 dataloader (ring buffer, 3-tuple yield) + datasets (CSR sparse analysis)
+M430-M433  v6 utils — cal_adj (eps-clamp, shift-invert ARPACK, isolated-node guard),
+           load_data (Welford scaler, integrity checkpoint),
+           log (JSON Lines, gradient norm hooks),
+           train (EMA early stopping, shape assertion)
+M434-M436  v6 losses (Huber-like soft-clip MAE, MAPE floor clamp),
+           estimation_gate (GELU + learnable temperature τ),
+           residual_decomp (learnable scale, pre-LN option)
+M437-M439  v6 diffusion block — dif_model (gconv residual skip, GroupNorm),
+           forecast (adaptive gap stride),
+           dif_block (feature-attention gate on backcast)
+M440-M442  v6 dynamic graph — distance (dual-head attention, TS residual, LN),
+           mask (soft-threshold sigmoid, learnable α),
+           normalizer (symmetric D^-1/2 A D^-1/2, matrix_power)
+M443-M445  v6 inherent block — inh_model (GRU inter-step LN, pre-norm Transformer,
+           attention entropy diagnostic),
+           forecast (learnable step-decay γ^step),
+           inh_block (RoPE replaces additive sinusoidal PE)
+M446-M447  v6 core — model (highway embedding gate, output residual shortcut),
+           trainer (adaptive p95 grad clip, cosine CL warmup, per-horizon weighted metrics)
+M448-M449  v6 main (configurable seed, model hash, output health check) +
+           data generators (cyclic sin/cos encoding, variance-aware split,
+           Gaussian kernel adj, k-NN sparsification, robust percentile MinMax)
+```
+**产出**: `src/walpurgis_ported_v6/` — 42 files (38 .py + 4 .yaml), 3276行 Python
+**改写策略**: upstream骨架 + ≥20%实质算法改动(非字符串/注释替换) + 全局_dbg()断点系统
+**核心算法改动清单**:
+  - 损失函数: Huber-like软截断(delta=10), MAPE floor clamp(1e-4)
+  - 估计门: ReLU→GELU, 可学习温度τ控制sigmoid锐度
+  - 残差分解: 可学习scale因子, pre-LN/post-LN可选
+  - 时空卷积: gconv加残差skip, BatchNorm→GroupNorm(4), fill_diagonal_
+  - 扩散预测: 自适应gap步长(non-divisible seq_len)
+  - 扩散块: backcast后加feature-attention gate
+  - 距离函数: 双头(2-head)注意力, TS特征残差shortcut, BN→LN
+  - 图掩码: 硬二值→可学习α的soft-threshold sigmoid
+  - 归一化: 对称模式(D^-1/2 A D^-1/2), matrix_power替代循环matmul
+  - GRU: 步间LayerNorm防隐状态漂移
+  - Transformer: pre-norm架构, 注意力熵诊断
+  - 固有预测: 可学习步衰减γ^step
+  - 位置编码: RoPE旋转位置编码替代加性正弦PE
+  - 主模型: highway embedding gate, 输出残差shortcut
+  - 训练器: 自适应梯度裁剪(p95滚动窗口), 余弦CL warmup
+  - 数据生成: cyclic sin/cos时间编码, 方差感知分层split
+  - 邻接矩阵: 高斯核加权, k-NN稀疏化+对称闭合
+  - 归一化: 鲁棒百分位MinMax(PEMS04/08)
+  - 标准化器: Welford在线算法
+  - Laplacian: shift-invert ARPACK, 孤立节点self-loop注入
+  - 日志: JSON Lines, 逐层梯度范数追踪hook
+  - 早停: EMA平滑(α=0.3)判停
+  - DataLoader: 3-tuple yield(x, y, meta)
 
 ---
 
@@ -141,18 +167,25 @@ M345-M349  v3 datasets —
 | 第六位 | M275-M299 | v4 全量改写 | ✅ |
 | 第七位 | M300-M324 | 鲁迅式 v2 移植 (walpurgis_ported_v2) | ✅ |
 | 第八位 | M325-M349 | 鲁迅式 v3 移植 (walpurgis_ported_v3) | ✅ |
-| 第九位 | M350-M374 | (待分配) | ⏳ |
-| 第十位 | M375-M399 | (待分配) | ⏳ |
-| 第十一位 | M400-M424 | (待分配) | ⏳ |
-| 第十二位 | M425-M449 | (待分配) | ⏳ |
+| 第九位 | M350-M374 | git-am patch + relay plan | ✅ |
+| 第十位 | M375-M399 | v4 鲁迅式移植 (walpurgis_ported_v4) | ✅ |
+| 第十一位 | M400-M424 | v5 鲁迅式移植 (walpurgis_ported_v5) | ✅ |
+| 第十二位 | M425-M449 | v6 鲁迅式移植 (walpurgis_ported_v6) | ✅ |
+| 第十三位 | M450-M474 | (待分配) | ⏳ |
+| 第十四位 | M475-M499 | (待分配) | ⏳ |
+| 第十五位 | M500-M524 | (待分配) | ⏳ |
+| 第十六位 | M525-M549 | (待分配) | ⏳ |
 
-## 文件统计快照 (第八位 Claude 完成后)
+## 文件统计快照 (第十二位 Claude 完成后)
 
 ```
 src/walpurgis/               6,644 行 Python (v3原版, 第五位产出)
 src/walpurgis_ported/        7,632 行 Python (v4, 第六位产出)
 src/walpurgis_ported_v2/     2,615 行 Python (鲁迅式port, 第七位产出)
-src/walpurgis_ported_v3/     2,202 行 Python (鲁迅式port, 第八位产出) ← NEW
+src/walpurgis_ported_v3/     2,202 行 Python (鲁迅式port, 第八位产出)
+src/walpurgis_ported_v4/     ???? 行 Python (鲁迅式port, 第十位产出)
+src/walpurgis_ported_v5/     ???? 行 Python (鲁迅式port, 第十一位产出)
+src/walpurgis_ported_v6/     3,276 行 Python (鲁迅式port, 第十二位产出) ← NEW
 src/core/                   ~2,000 行 C++ (tiered allocator, seqlock, slab)
 src/bridge/                 ~1,200 行 C++ (temporal bridge)
 src/scheduler/                ~600 行 C++ (migration scheduler)
@@ -165,11 +198,11 @@ walpurgis_reconstructed.tex  ~32KB LaTeX (full paper)
 
 1. `git log --oneline` 查看完整历史
 2. 本文件 (`CLAUDE_DEV_PROGRESS.md`) 了解全局进度
-3. `src/walpurgis/` = v3 (第五位), `src/walpurgis_ported/` = v4 (第六位)
-4. `src/walpurgis_ported_v2/` = 鲁迅式移植 (第七位), `src/walpurgis_ported_v3/` = 鲁迅式移植 (第八位)
-5. `upstream/d2stgnn/` = 原始 D2STGNN 参考代码
-6. 每个 `.py` 文件头部的 docstring 记录了该文件的变更
-7. 编号规则: `M{三位数}`, 每位 Claude 分配连续 25 个
-8. commit message 格式: `feat(vN): 简述 [Mxxx-Mxxx]`
-9. debug 开关: 运行时加 `--debug-xxx` 即可开启对应模块的状态打印
-10. **分配给你的里程碑区间**: 看上面表格中你是第几位
+3. `upstream/d2stgnn/` = 原始 D2STGNN 参考代码
+4. `src/walpurgis_ported_v6/` = 最新的鲁迅式移植 (第十二位产出)
+5. 每个 `.py` 文件头部的 docstring 记录了该文件的算法变更
+6. 编号规则: `M{三位数}`, 每位 Claude 分配连续 25 个
+7. commit message 格式: `feat(vN): 简述 [Mxxx-Mxxx]`
+8. debug: 设置环境变量 `WALPURGIS_DEBUG=1` 开启全局 _dbg() 打印
+9. **分配给你的里程碑区间**: 看上面表格中你是第几位
+10. **要求**: 算法级改动(≥20%), 不是改字符串/注释/docstring
