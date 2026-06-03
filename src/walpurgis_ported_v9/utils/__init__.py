@@ -1,1 +1,0 @@
-from utils.load_data import load_adj

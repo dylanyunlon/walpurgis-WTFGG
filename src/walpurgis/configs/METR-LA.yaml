@@ -1,22 +1,4 @@
 ---
-# ═══════════════════════════════════════════════════════════════
-# Walpurgis v3 Configuration — METR-LA (traffic speed, 207 sensors)
-#
-# v3 deltas:
-#   - Tikhonov ε for degree-matrix regularisation (cal_adj)
-#   - Blocked shuffle factor for DataLoader temporal coherence
-#   - JSD drift threshold replaces KL
-#   - EMA α for TrainLogger epoch smoothing
-#   - Welford scaler with output sentinel bounds
-#
-# Tier placement notes:
-#   - batch_size 64 × 207 nodes × 32 hidden = ~1.6 MB per batch
-#   - Dynamic graph: O(207^2) = ~170 KB per adjacency snapshot
-#   - Uses StandardScaler normalization (speed data, not flow)
-#   - 80 epochs default — faster convergence than PEMS datasets
-#   - doubletransition adj: 2 matrices → tier migration cost × 2
-# ═══════════════════════════════════════════════════════════════
-
 start_up:
   mode: scratch
   resume_epoch: 0
@@ -24,35 +6,19 @@ start_up:
   device: cuda:0
   load_pkl: False
 
-walpurgis:
-  debug_interval: 100
-  profile: False
-  tier_sim: False
-  nan_guard: True
-  log_grad_norms: True
-  tier_placement_log: True
-  checkpoint_struct_dump: True
-  # v3 additions
-  tikhonov_eps: 1.0e-6
-  block_shuffle_factor: 4
-  jsd_alert_threshold: 0.1
-  ema_alpha: 0.1
-  integrity_scan: True
-  scaler_bound_sigma: 8
-  spectral_snapshot_k: 6
-
 data_args:
   data_dir: datasets/METR-LA
-  adj_data_path: datasets/sensor_graph/adj_mx.pkl
+  adj_data_path: datasets/sensor_graph/adj_mx_la.pkl
   adj_type: doubletransition
 
 model_args:
-  batch_size: 64
-  num_feat: 2
+  batch_size: 32
+  num_feat: 1
   num_hidden: 32
   node_hidden: 10
   time_emb_dim: 10
-  dropout: 0.1
+  # 改动3: dropout 0.1 → 0.08, 配合v10的额外正则(GN/IN/attn_drop等)
+  dropout: 0.08
   seq_length: 12
   k_t: 3
   k_s: 2
@@ -65,12 +31,27 @@ optim_args:
   wdecay: 1.0e-5
   eps: 1.0e-8
   lr_schedule: True
-  lr_sche_steps: [1, 50]
+  lr_sche_steps: [1, 30, 38, 46, 54, 62, 70, 80]
   lr_decay_ratio: 0.5
   if_cl: True
-  cl_epochs: 3
+  cl_epochs: 6
   output_seq_len: 12
-  warm_epochs: 0
+  # 改动1: warm_epochs 0 → 5, 配合 warmup-cosine 调度器
+  warm_epochs: 5
   epochs: 80
-  patience: 20
+  patience: 100
   seq_length: 12
+
+# 改动2: v10 特有的邻接矩阵预处理参数
+v10_adj_preprocess:
+  rbf_kernel: True
+  rbf_sigma: auto          # auto = 中位数自适应
+  knn_k: 15
+  symmetric_closure: True
+
+# 改动4: v10 特有训练选项
+v10_training:
+  amp_enabled: True         # 混合精度
+  ensemble_test: True       # test时ensemble best+resume
+  adaptive_clip_percentile: 90
+  cl_ramp_mode: sigmoid     # 非线性CL ramp

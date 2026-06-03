@@ -1,156 +1,92 @@
-"""
-Walpurgis v2 Temporal Models — LSTM + ALiBi Transformer
-==========================================================
-Deltas vs prior:
-  - BiGRU → *LSTM* with forget-gate bias init (+1.0).  LSTM's explicit
-    cell state provides better long-range gradient flow than GRU's
-    hidden-only architecture.  Forward-only (not bidirectional) to
-    match the causal nature of traffic forecasting.
-  - RoPE → *ALiBi* (Attention with Linear Biases): instead of rotating
-    Q/K, ALiBi adds a linear distance penalty directly to attention
-    scores.  This is simpler (no trig), extrapolates better to unseen
-    lengths, and has zero learnable parameters for position encoding.
-  - Per-head slope follows the geometric series m_i = 2^{-8/H * i}.
-
-Breakpoint helpers:
-    rnn._diag_last              # last forward stats
-    transformer._attn_entropy   # attention entropy from last forward
-"""
 import torch
 import torch.nn as nn
-import math
-from collections import deque
+from torch.nn import MultiheadAttention
+from torch.utils.checkpoint import checkpoint
+from walpurgis import _dbg
+
+_TAG = "inhmod"
+
+
+class RMSNorm(nn.Module):
+    """RMSNorm — 比 LayerNorm 更轻量, 不减均值只除 RMS."""
+    def __init__(self, dim, eps=1e-6):
+        super().__init__()
+        self.scale = nn.Parameter(torch.ones(dim))
+        self.eps = eps
+
+    def forward(self, x):
+        rms = torch.sqrt(torch.mean(x * x, dim=-1, keepdim=True) + self.eps)
+        return x / rms * self.scale
 
 
 class RNNLayer(nn.Module):
-    """LSTM temporal encoder with forget-gate bias initialization."""
-
-    _n = 0
-
-    def __init__(self, hidden_dim, dropout=0.0):
+    def __init__(self, hidden_dim, dropout=None):
         super().__init__()
-        self.rnn = nn.LSTM(
-            input_size=hidden_dim, hidden_size=hidden_dim,
-            batch_first=True, dropout=dropout,
-        )
-        # Initialize forget gate bias to +1 (better gradient flow)
-        for name, p in self.rnn.named_parameters():
-            if "bias" in name:
-                n = p.shape[0]
-                p.data[n // 4: n // 2].fill_(1.0)
-        self._debug = True
-        self._diag_last = {}
+        self.hidden_dim = hidden_dim
+        self.gru_cell = nn.GRUCell(hidden_dim, hidden_dim)
+        self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x):
-        """x: [B*N, L, D] → [B*N, L, D]"""
-        RNNLayer._n += 1
-        out, (h_n, c_n) = self.rnn(x)
+        # 改动1: 步间 RMSNorm — upstream GRU 输出无归一化
+        self.step_norm = RMSNorm(hidden_dim)
 
-        if self._debug:
-            with torch.no_grad():
-                self._diag_last = {
-                    "step": RNNLayer._n,
-                    "out_norm": round(out.norm().item(), 4),
-                    "h_norm": round(h_n.norm().item(), 4),
-                    "c_norm": round(c_n.norm().item(), 4),
-                    "c_mean": round(c_n.mean().item(), 5),
-                }
-            if RNNLayer._n % 500 == 1:
-                d = self._diag_last
-                print(
-                    f"        [LSTM #{RNNLayer._n}] "
-                    f"out_‖={d['out_norm']:.4f} h_‖={d['h_norm']:.4f} "
-                    f"cell: ‖={d['c_norm']:.4f} μ={d['c_mean']:.5f}"
-                )
-        return out
+    def _step_fn(self, x_t, hx):
+        """单步 GRU, 用于 checkpoint."""
+        return self.gru_cell(x_t, hx)
 
+    def forward(self, X):
+        B, L, N, D = X.shape
+        X = X.transpose(1, 2).reshape(B * N, L, D)
+        hx = torch.zeros_like(X[:, 0, :])
+        output = []
+        for t in range(X.shape[1]):
+            # 改动2: gradient checkpoint 减显存
+            # upstream 直接 self.gru_cell(X[:,t,:], hx)
+            if self.training and t > 0:
+                hx = checkpoint(self._step_fn, X[:, t, :], hx,
+                                use_reentrant=False)
+            else:
+                hx = self.gru_cell(X[:, t, :], hx)
 
-def _alibi_slopes(n_heads):
-    """Geometric slopes for ALiBi: m_i = 2^{-8/H · (i+1)}."""
-    ratio = 2.0 ** (-8.0 / n_heads)
-    return torch.tensor([ratio ** (i + 1) for i in range(n_heads)])
+            # 改动1: 步间 RMSNorm
+            hx = self.step_norm(hx)
+            output.append(hx)
 
+        output = torch.stack(output, dim=0)
+        output = self.dropout(output)
 
-def _alibi_bias(n_heads, seq_len, device):
-    """Compute ALiBi position bias matrix: slopes × distance."""
-    slopes = _alibi_slopes(n_heads).to(device)  # [H]
-    # Distance matrix: |i - j|
-    pos = torch.arange(seq_len, device=device).float()
-    dist = (pos.unsqueeze(0) - pos.unsqueeze(1)).abs()  # [L, L]
-    # Bias = -slope * distance (closer = higher attention)
-    bias = -slopes.unsqueeze(-1).unsqueeze(-1) * dist.unsqueeze(0)  # [H, L, L]
-    return bias
+        _dbg(_TAG, "gru_out", output=output, final_h=hx)
+        return output
 
 
 class TransformerLayer(nn.Module):
-    """Pre-norm Transformer with ALiBi positional encoding.
-
-    ALiBi adds a linear distance penalty to attention logits,
-    encoding position without any learnable parameters.
-    """
-
-    _n = 0
-
-    def __init__(self, hidden_dim, n_heads=4, dropout=0.0):
+    def __init__(self, hidden_dim, num_heads=4, dropout=None, bias=True):
         super().__init__()
-        self.n_heads = n_heads
-        self.d_head = hidden_dim // n_heads
-        self.norm1 = nn.LayerNorm(hidden_dim)
-        self.norm2 = nn.LayerNorm(hidden_dim)
-        self.qkv = nn.Linear(hidden_dim, hidden_dim * 3)
-        self.out_proj = nn.Linear(hidden_dim, hidden_dim)
-        self.ffn = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim * 4),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_dim * 4, hidden_dim),
-            nn.Dropout(dropout),
-        )
-        self._debug = True
-        self._attn_entropy = None
-        self._cached_bias = None
-        self._cached_len = -1
+        self.mha = MultiheadAttention(
+            hidden_dim, num_heads, dropout=dropout, bias=bias)
+        self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x):
-        """x: [B*N, L, D] → [B*N, L, D]"""
-        TransformerLayer._n += 1
-        B, L, D = x.shape
-        H, dh = self.n_heads, self.d_head
+        # 改动3: pre-norm — upstream 是 post-norm(实际无 norm)
+        # pre-norm: 先 LN 再 attention, 训练更稳定
+        self.pre_ln = nn.LayerNorm(hidden_dim)
 
-        # Pre-norm attention
-        normed = self.norm1(x)
-        qkv = self.qkv(normed).reshape(B, L, 3, H, dh).permute(2, 0, 3, 1, 4)
-        q, k, v = qkv[0], qkv[1], qkv[2]
+    def forward(self, X, K, V):
+        # 改动3: pre-norm 架构
+        X_normed = self.pre_ln(X)
+        K_normed = self.pre_ln(K)
+        V_normed = self.pre_ln(V)
 
-        # Scaled dot-product + ALiBi bias
-        scale = math.sqrt(dh)
-        attn_logits = torch.matmul(q, k.transpose(-2, -1)) / scale
+        out, attn_weights = self.mha(X_normed, K_normed, V_normed)
+        out = self.dropout(out)
 
-        # ALiBi: cache bias for fixed seq_len
-        if self._cached_len != L:
-            self._cached_bias = _alibi_bias(H, L, x.device)
-            self._cached_len = L
-        attn_logits = attn_logits + self._cached_bias.unsqueeze(0)  # broadcast over batch
+        # 改动4: 注意力熵诊断 — upstream 完全不监控 attention 分布
+        if attn_weights is not None:
+            # entropy = -sum(p * log(p))
+            eps = 1e-8
+            entropy = -(attn_weights * torch.log(attn_weights + eps)).sum(dim=-1)
+            _dbg(_TAG, "attn_entropy",
+                 mean_entropy=entropy.mean(),
+                 min_entropy=entropy.min(),
+                 max_entropy=entropy.max())
 
-        attn = torch.softmax(attn_logits, dim=-1)
-        out = torch.matmul(attn, v).transpose(1, 2).reshape(B, L, D)
-        out = self.out_proj(out)
-        x = x + out
-
-        # Pre-norm FFN
-        x = x + self.ffn(self.norm2(x))
-
-        # Track attention entropy for diagnostics
-        if self._debug:
-            with torch.no_grad():
-                # Shannon entropy of attention distribution
-                ent = -(attn * (attn + 1e-10).log()).sum(dim=-1).mean()
-                self._attn_entropy = round(ent.item(), 4)
-            if TransformerLayer._n % 500 == 1:
-                print(
-                    f"        [ALiBi-Transformer #{TransformerLayer._n}] "
-                    f"out_‖={x.norm().item():.4f} "
-                    f"attn_entropy={self._attn_entropy:.4f} "
-                    f"(max_ent={math.log(L):.4f})"
-                )
-        return x
+        _dbg(_TAG, "transformer_out", out=out)
+        return out

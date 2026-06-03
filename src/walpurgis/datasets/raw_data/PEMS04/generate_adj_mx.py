@@ -1,218 +1,238 @@
-"""Generate adjacency matrix from sensor distance CSV for PEMS04.
-
-Walpurgis adaptations vs upstream:
-- Graph topology diagnostics (density, symmetry, connected components estimate)
-- Distance statistics reporting (mean, std, histogram bins)
-- Self-loop and isolated node detection
-- Timing for I/O operations
-- Outputs a full diagnostic report suitable for debugging data pipeline issues
-
-Usage:
-    python generate_adj_mx.py
-    
-Debug: set WALPURGIS_VERBOSE=1 for per-edge logging (caution: very verbose)
-"""
-import time
-import os
 import numpy as np
 import csv
 import pickle
+import json
+import os
 
 
-def _graph_diagnostics(adj, distance, name="adj"):
-    """Print comprehensive graph diagnostics.
-    
-    Call this after building any adjacency matrix to understand its structure.
-    Useful for catching data bugs (e.g., disconnected sensors, zero-distance edges).
-    """
+def get_adjacency_matrix(distance_df_filename, num_of_vertices,
+                         id_filename=None):
+    if 'npy' in distance_df_filename:
+        adj_mx = np.load(distance_df_filename)
+        return adj_mx, None
+    else:
+        A = np.zeros((int(num_of_vertices), int(num_of_vertices)),
+                     dtype=np.float32)
+        distaneA = np.zeros((int(num_of_vertices), int(num_of_vertices)),
+                            dtype=np.float32)
+        if id_filename:
+            with open(id_filename, 'r') as f:
+                id_dict = {int(i): idx
+                           for idx, i in enumerate(
+                               f.read().strip().split('\n'))}
+            with open(distance_df_filename, 'r') as f:
+                f.readline()
+                reader = csv.reader(f)
+                for row in reader:
+                    if len(row) != 3:
+                        continue
+                    i, j, distance = int(row[0]), int(row[1]), float(row[2])
+                    A[id_dict[i], id_dict[j]] = 1
+                    distaneA[id_dict[i], id_dict[j]] = distance
+            return A, distaneA
+        else:
+            with open(distance_df_filename, 'r') as f:
+                f.readline()
+                reader = csv.reader(f)
+                for row in reader:
+                    if len(row) != 3:
+                        continue
+                    i, j, distance = int(row[0]), int(row[1]), float(row[2])
+                    A[i, j] = 1
+                    distaneA[i, j] = distance
+            return A, distaneA
+
+
+def get_adjacency_matrix_2direction(distance_df_filename, num_of_vertices,
+                                    id_filename=None):
+    if 'npy' in distance_df_filename:
+        adj_mx = np.load(distance_df_filename)
+        return adj_mx, None
+    else:
+        A = np.zeros((int(num_of_vertices), int(num_of_vertices)),
+                     dtype=np.float32)
+        distaneA = np.zeros((int(num_of_vertices), int(num_of_vertices)),
+                            dtype=np.float32)
+        if id_filename:
+            with open(id_filename, 'r') as f:
+                id_dict = {int(i): idx
+                           for idx, i in enumerate(
+                               f.read().strip().split('\n'))}
+            with open(distance_df_filename, 'r') as f:
+                f.readline()
+                reader = csv.reader(f)
+                for row in reader:
+                    if len(row) != 3:
+                        continue
+                    i, j, distance = int(row[0]), int(row[1]), float(row[2])
+                    A[id_dict[i], id_dict[j]] = 1
+                    A[id_dict[j], id_dict[i]] = 1
+                    distaneA[id_dict[i], id_dict[j]] = distance
+                    distaneA[id_dict[j], id_dict[i]] = distance
+            return A, distaneA
+        else:
+            with open(distance_df_filename, 'r') as f:
+                f.readline()
+                reader = csv.reader(f)
+                for row in reader:
+                    if len(row) != 3:
+                        continue
+                    i, j, distance = int(row[0]), int(row[1]), float(row[2])
+                    A[i, j] = 1
+                    A[j, i] = 1
+                    distaneA[i, j] = distance
+                    distaneA[j, i] = distance
+            return A, distaneA
+
+
+# ========== 改动1: 距离矩阵 → RBF连续权重 ==========
+# upstream: A是0/1二值, distanceA单独存但不参与后续GNN计算
+# v10: 将距离转成连续权重 exp(-d²/2σ²), σ=非零距离中位数
+def _distance_to_rbf_weights(A, distaneA):
+    nz_dists = distaneA[distaneA > 0].flatten()
+    if len(nz_dists) == 0:
+        return A, distaneA
+
+    sigma = float(np.median(nz_dists))
+    if sigma < 1e-10:
+        sigma = 1.0
+
+    # 在有边的位置, 用 RBF 替代二值1
+    rbf_A = np.zeros_like(A)
+    mask = distaneA > 0
+    rbf_A[mask] = np.exp(-distaneA[mask] ** 2 / (2.0 * sigma ** 2))
+
+    print(f"[v10 adj] RBF: σ={sigma:.2f}, "
+          f"weight range [{rbf_A[mask].min():.4f}, {rbf_A[mask].max():.4f}]")
+    return rbf_A, distaneA
+
+
+# ========== 改动2: k-NN 稀疏化 ==========
+# upstream: 保留CSV中所有边, 完全取决于原始数据密度
+# v10: 每节点只保留权重最大的k个邻居
+_KNN_K = 15
+
+
+def _knn_sparsify(adj, k=_KNN_K):
     n = adj.shape[0]
-    nnz = np.count_nonzero(adj)
-    density = nnz / (n * n) if n > 0 else 0
-    is_symmetric = np.allclose(adj, adj.T)
-    has_self_loops = np.any(np.diag(adj) != 0)
-    degrees = adj.sum(axis=1)
-    isolated = np.sum(degrees == 0)
-    
-    print(f"\n  [{name}] Graph Diagnostics:")
-    print(f"    nodes={n}, edges={nnz}, density={density:.4f}")
-    print(f"    symmetric={is_symmetric}, self_loops={has_self_loops}")
-    print(f"    degree: min={degrees.min():.0f}, max={degrees.max():.0f}, "
-          f"mean={degrees.mean():.1f}, std={degrees.std():.1f}")
-    if isolated > 0:
-        isolated_ids = np.where(degrees == 0)[0]
-        print(f"    ⚠ {isolated} isolated nodes: {isolated_ids[:10]}{'...' if isolated > 10 else ''}")
-    
-    if distance is not None:
-        nonzero_dist = distance[distance > 0]
-        if len(nonzero_dist) > 0:
-            print(f"    distance: min={nonzero_dist.min():.2f}, max={nonzero_dist.max():.2f}, "
-                  f"mean={nonzero_dist.mean():.2f}, std={nonzero_dist.std():.2f}")
-            # Quick histogram
-            bins = np.percentile(nonzero_dist, [25, 50, 75])
-            print(f"    distance quartiles: Q1={bins[0]:.2f}, Q2={bins[1]:.2f}, Q3={bins[2]:.2f}")
+    sparse = np.zeros_like(adj)
+    for i in range(n):
+        row = adj[i]
+        nz = np.count_nonzero(row)
+        if nz <= k:
+            sparse[i] = row
+        else:
+            topk_idx = np.argpartition(row, -k)[-k:]
+            sparse[i, topk_idx] = row[topk_idx]
+
+    before = np.count_nonzero(adj)
+    after = np.count_nonzero(sparse)
+    print(f"[v10 adj] kNN(k={k}): edges {before} → {after} "
+          f"({100*after/max(before,1):.1f}%)")
+    return sparse
 
 
-def get_adjacency_matrix(distance_df_filename, num_of_vertices, id_filename=None):
-    """Build directed adjacency and distance matrices from CSV edge list.
-    
-    Each row in CSV: (from_node, to_node, distance).
-    Returns binary adjacency A and weighted distance matrix.
-    
-    Debug: prints edge count progress every 1000 edges.
-    """
-    t0 = time.perf_counter()
-    print(f"[Walpurgis::get_adj] file={distance_df_filename} N={num_of_vertices} "
-          f"id_file={id_filename}")
-    
-    if 'npy' in distance_df_filename:
-        adj_mx = np.load(distance_df_filename)
-        print(f"  loaded .npy directly: shape={adj_mx.shape}")
-        return adj_mx, None
-    
-    A = np.zeros((int(num_of_vertices), int(num_of_vertices)), dtype=np.float32)
-    distanceA = np.zeros((int(num_of_vertices), int(num_of_vertices)), dtype=np.float32)
-    edge_count = 0
-    skipped = 0
+# ========== 改动3: 自适应阈值剪枝 ==========
+# upstream: 无阈值, 保留所有非零边
+# v10: 权重 < (mean - 2*std) 的弱边删掉, 减少噪声连接
+def _adaptive_threshold_prune(adj):
+    nz_vals = adj[adj > 0]
+    if len(nz_vals) < 10:
+        return adj  # 太少不做
+    mu = nz_vals.mean()
+    sigma = nz_vals.std()
+    threshold = max(mu - 2.0 * sigma, 1e-6)
 
-    if id_filename:
-        with open(id_filename, 'r') as f:
-            id_dict = {int(i): idx for idx, i in enumerate(f.read().strip().split('\n'))}
-        print(f"  id mapping: {len(id_dict)} sensor IDs loaded")
-        
-        with open(distance_df_filename, 'r') as f:
-            f.readline()  # skip header
-            reader = csv.reader(f)
-            for row in reader:
-                if len(row) != 3:
-                    skipped += 1
-                    continue
-                i, j, distance = int(row[0]), int(row[1]), float(row[2])
-                A[id_dict[i], id_dict[j]] = 1
-                distanceA[id_dict[i], id_dict[j]] = distance
-                edge_count += 1
-    else:
-        with open(distance_df_filename, 'r') as f:
-            f.readline()
-            reader = csv.reader(f)
-            for row in reader:
-                if len(row) != 3:
-                    skipped += 1
-                    continue
-                i, j, distance = int(row[0]), int(row[1]), float(row[2])
-                A[i, j] = 1
-                distanceA[i, j] = distance
-                edge_count += 1
+    pruned = adj.copy()
+    weak_mask = (pruned > 0) & (pruned < threshold)
+    n_pruned = weak_mask.sum()
+    pruned[weak_mask] = 0.0
 
-    elapsed = time.perf_counter() - t0
-    print(f"  edges={edge_count}, skipped={skipped}, time={elapsed:.3f}s")
-    _graph_diagnostics(A, distanceA, "directed")
-    return A, distanceA
+    print(f"[v10 adj] Adaptive prune: threshold={threshold:.4f} "
+          f"(μ={mu:.4f}, σ={sigma:.4f}), pruned {n_pruned} weak edges")
+    return pruned
 
 
-def get_adjacency_matrix_2direction(distance_df_filename, num_of_vertices, id_filename=None):
-    """Build undirected (bidirectional) adjacency and distance matrices.
-    
-    For each edge (i,j), also adds (j,i). This is the standard choice
-    for traffic networks where flow is bidirectional.
-    """
-    t0 = time.perf_counter()
-    print(f"[Walpurgis::get_adj_2dir] file={distance_df_filename} N={num_of_vertices}")
-    
-    if 'npy' in distance_df_filename:
-        adj_mx = np.load(distance_df_filename)
-        print(f"  loaded .npy directly: shape={adj_mx.shape}")
-        return adj_mx, None
-    
-    A = np.zeros((int(num_of_vertices), int(num_of_vertices)), dtype=np.float32)
-    distanceA = np.zeros((int(num_of_vertices), int(num_of_vertices)), dtype=np.float32)
-    edge_count = 0
-    skipped = 0
+# ========== 改动4: 度分布审计 ==========
+# upstream: 只输出总 edge 数
+# v10: 输出 degree 直方图、孤立节点数、最大度、平均度
+def _degree_audit(adj, name=""):
+    degrees = np.count_nonzero(adj, axis=1)
+    isolated = int(np.sum(degrees == 0))
+    avg_deg = float(degrees.mean())
+    max_deg = int(degrees.max())
+    min_deg = int(degrees.min())
 
-    if id_filename:
-        with open(id_filename, 'r') as f:
-            id_dict = {int(i): idx for idx, i in enumerate(f.read().strip().split('\n'))}
-        print(f"  id mapping: {len(id_dict)} sensor IDs loaded")
-        
-        with open(distance_df_filename, 'r') as f:
-            f.readline()
-            reader = csv.reader(f)
-            for row in reader:
-                if len(row) != 3:
-                    skipped += 1
-                    continue
-                i, j, distance = int(row[0]), int(row[1]), float(row[2])
-                A[id_dict[i], id_dict[j]] = 1
-                A[id_dict[j], id_dict[i]] = 1
-                distanceA[id_dict[i], id_dict[j]] = distance
-                distanceA[id_dict[j], id_dict[i]] = distance
-                edge_count += 1
-    else:
-        with open(distance_df_filename, 'r') as f:
-            f.readline()
-            reader = csv.reader(f)
-            for row in reader:
-                if len(row) != 3:
-                    skipped += 1
-                    continue
-                i, j, distance = int(row[0]), int(row[1]), float(row[2])
-                A[i, j] = 1
-                A[j, i] = 1
-                distanceA[i, j] = distance
-                distanceA[j, i] = distance
-                edge_count += 1
+    # 直方图 bin
+    hist_bins = [0, 1, 5, 10, 20, 50, 100, 500]
+    hist_counts = []
+    for lo, hi in zip(hist_bins[:-1], hist_bins[1:]):
+        cnt = int(np.sum((degrees >= lo) & (degrees < hi)))
+        hist_counts.append(f"[{lo},{hi}):{cnt}")
 
-    elapsed = time.perf_counter() - t0
-    print(f"  raw edges={edge_count} (×2 bidirectional), skipped={skipped}, time={elapsed:.3f}s")
-    _graph_diagnostics(A, distanceA, "undirected")
-    return A, distanceA
+    overflow = int(np.sum(degrees >= hist_bins[-1]))
+    hist_counts.append(f"[{hist_bins[-1]},∞):{overflow}")
+
+    print(f"[v10 adj] {name} Degree audit: "
+          f"nodes={adj.shape[0]}, edges={np.count_nonzero(adj)}, "
+          f"isolated={isolated}, deg_range=[{min_deg},{max_deg}], "
+          f"avg={avg_deg:.1f}")
+    print(f"  Histogram: {', '.join(hist_counts)}")
+
+    return {
+        'nodes': int(adj.shape[0]),
+        'edges': int(np.count_nonzero(adj)),
+        'isolated': isolated,
+        'min_degree': min_deg,
+        'max_degree': max_deg,
+        'avg_degree': round(avg_deg, 2),
+    }
 
 
-# ── Main: generate and save adjacency for PEMS04 ──────────────────────
-if __name__ == '__main__':
-    print("=" * 60)
-    print("[Walpurgis] Generating PEMS04 adjacency matrix")
-    print("=" * 60)
-    
-    t_start = time.perf_counter()
-    
-    direction = True
-    distance_df_filename = "datasets/raw_data/PEMS04/PEMS04.csv"
-    num_of_vertices = 307
-    id_filename = None
-    
-    print(f"  direction={'bidirectional' if direction else 'directed'}")
-    print(f"  source: {distance_df_filename}")
-    print(f"  vertices: {num_of_vertices}")
-    
-    if direction:
-        adj_mx, distance_mx = get_adjacency_matrix_2direction(
-            distance_df_filename, num_of_vertices, id_filename=None)
-    else:
-        adj_mx, distance_mx = get_adjacency_matrix(
-            distance_df_filename, num_of_vertices, id_filename=None)
+# ========== 改动5: 自环权重 = 行最大值 ==========
+# upstream: 自环加 identity (权重=1), 不考虑边权尺度
+# v10: 自环权重设为该行的最大权重, 让自连接不被邻居淹没
+def _add_weighted_self_loop(adj):
+    row_max = adj.max(axis=1)
+    # 没有邻居的节点自环设1
+    row_max[row_max == 0] = 1.0
+    np.fill_diagonal(adj, row_max)
+    print(f"[v10 adj] Self-loop: weight=row_max, "
+          f"range [{row_max.min():.4f}, {row_max.max():.4f}]")
+    return adj
 
-    add_self_loop = False
-    if add_self_loop:
-        adj_mx = adj_mx + np.identity(adj_mx.shape[0])
-        distance_mx = distance_mx + np.identity(distance_mx.shape[0])
-        print("  self-loops added")
 
-    # Save
-    adj_path = "datasets/sensor_graph/adj_mx_04.pkl"
-    dist_path = "datasets/sensor_graph/adj_mx_04_distance.pkl"
-    pickle.dump(adj_mx, open(adj_path, 'wb'))
-    pickle.dump(distance_mx, open(dist_path, 'wb'))
-    
-    # Verify saved files
-    adj_size = os.path.getsize(adj_path) / 1024
-    dist_size = os.path.getsize(dist_path) / 1024
-    
-    total_time = time.perf_counter() - t_start
-    print(f"\n  saved: {adj_path} ({adj_size:.1f} KB)")
-    print(f"  saved: {dist_path} ({dist_size:.1f} KB)")
-    print(f"  total time: {total_time:.3f}s")
-    print(f"\n  ── Verification ──")
-    print(f"  adj shape={adj_mx.shape} dtype={adj_mx.dtype}")
-    print(f"  adj nonzero={np.count_nonzero(adj_mx)} "
-          f"density={np.count_nonzero(adj_mx)/(307*307):.4f}")
-    print(f"  distance nonzero={np.count_nonzero(distance_mx)}")
+# ================= main =================
+direction = True
+distance_df_filename = "datasets/raw_data/PEMS04/PEMS04.csv"
+num_of_vertices = 307
+id_filename = None
+
+if direction:
+    adj_mx, distance_mx = get_adjacency_matrix_2direction(
+        distance_df_filename, num_of_vertices, id_filename=None)
+else:
+    adj_mx, distance_mx = get_adjacency_matrix(
+        distance_df_filename, num_of_vertices, id_filename=None)
+
+# v10 pipeline: RBF → kNN → threshold → self-loop → audit
+adj_mx, distance_mx = _distance_to_rbf_weights(adj_mx, distance_mx)
+adj_mx = _knn_sparsify(adj_mx)
+adj_mx = _adaptive_threshold_prune(adj_mx)
+
+add_self_loop = True  # upstream default False; v10 default True
+if add_self_loop:
+    adj_mx = _add_weighted_self_loop(adj_mx)
+
+stats = _degree_audit(adj_mx, name="PEMS04")
+
+os.makedirs("datasets/sensor_graph", exist_ok=True)
+pickle.dump(adj_mx,
+            open("datasets/sensor_graph/adj_mx_04.pkl", 'wb'))
+pickle.dump(distance_mx,
+            open("datasets/sensor_graph/adj_mx_04_distance.pkl", 'wb'))
+
+# 保存审计JSON
+with open("datasets/sensor_graph/adj_mx_04_audit.json", 'w') as f:
+    json.dump(stats, f, indent=2)
+print("[v10] PEMS04 adj saved with audit.")

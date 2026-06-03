@@ -1,1 +1,3 @@
-from .model import D2STGNN, TensorProbe
+from .trainer import trainer
+
+__all__ = ["trainer"]

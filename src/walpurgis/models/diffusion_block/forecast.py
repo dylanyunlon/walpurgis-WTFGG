@@ -1,73 +1,76 @@
-"""
-Walpurgis v2 Diffusion Forecast Head — Squeeze-Excite Regularization
-========================================================================
-Delta vs prior:
-  - Channel-shuffle dropout → *squeeze-and-excite* (SE) attention before
-    dropout.  SE produces a per-channel importance weight via global
-    average pool → FC → sigmoid, which acts as learned feature selection
-    complementary to dropout's random selection.
-  - SE ratio is r=4 (reduces channels by 4x in the bottleneck).
-  - Tracks output norm ratio for gradient flow diagnostics.
-
-Breakpoint helpers:
-    self._diag_last    # dict with last forward stats
-"""
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from walpurgis import _dbg
+
+_TAG = "diffc"
 
 
 class Forecast(nn.Module):
-    _n = 0
-
-    def __init__(self, hidden_dim, forecast_dim, output_seq_len=12, gap=1):
+    def __init__(self, hidden_dim, forecast_hidden_dim=None, **model_args):
         super().__init__()
-        self.fc_in = nn.Linear(hidden_dim, forecast_dim)
-        self.fc_out = nn.Linear(forecast_dim, output_seq_len // gap)
-        self.drop_rate = 0.1
-        # Squeeze-and-Excite channel attention
-        se_mid = max(forecast_dim // 4, 8)
-        self._se_fc1 = nn.Linear(forecast_dim, se_mid)
-        self._se_fc2 = nn.Linear(se_mid, forecast_dim)
-        self._debug = True
-        self._diag_last = {}
+        self.k_t = model_args['k_t']
+        self.output_seq_len = model_args['seq_length']
+        self.gap = model_args['gap']
 
-    def _squeeze_excite(self, h):
-        """Channel attention via SE block."""
-        # Global average pool across spatial dim
-        squeezed = h.mean(dim=1, keepdim=True) if h.dim() == 3 else h.unsqueeze(1)
-        squeezed = squeezed.squeeze(1)  # [B, C]
-        gate = torch.sigmoid(self._se_fc2(F.relu(self._se_fc1(squeezed))))
-        # Expand and apply
-        if h.dim() == 3:
-            gate = gate.unsqueeze(1)
-        return h * gate
+        # 改动3: FC 前加 LayerNorm — upstream 直接 Linear
+        self.pre_ln = nn.LayerNorm(hidden_dim)
+        self.forecast_fc = nn.Linear(hidden_dim, forecast_hidden_dim)
 
-    def forward(self, hidden):
-        Forecast._n += 1
-        h = hidden.mean(dim=1)
-        in_norm = h.norm().item() if self._debug else 0
+        # 改动1: cosine 退火 dropout 参数
+        self._drop_max = 0.15
+        self._drop_min = 0.02
 
-        h = F.relu(self.fc_in(h))
+    def _cosine_drop_rate(self, step, total_steps):
+        """从 drop_max 余弦退火到 drop_min."""
+        if total_steps <= 1:
+            return self._drop_min
+        ratio = step / (total_steps - 1)
+        return self._drop_min + 0.5 * (self._drop_max - self._drop_min) * (1 + torch.cos(torch.tensor(ratio * 3.14159)))
 
-        if self.training:
-            h = self._squeeze_excite(h)
-            h = F.dropout(h, p=self.drop_rate)
+    def forward(self, gated_history_data, hidden_states_dif,
+                localized_st_conv, dynamic_graph, static_graph):
+        predict = []
+        history = gated_history_data
+        predict.append(hidden_states_dif[:, -1, :, :].unsqueeze(1))
 
-        if self._debug:
-            with torch.no_grad():
-                out_norm = h.norm().item()
-                self._diag_last = {
-                    "step": Forecast._n,
-                    "in_norm": round(in_norm, 4),
-                    "out_norm": round(out_norm, 4),
-                    "ratio": round(out_norm / (in_norm + 1e-8), 4),
-                }
-            if Forecast._n % 1000 == 1:
-                d = self._diag_last
-                print(
-                    f"        [DifForecast #{Forecast._n}] "
-                    f"in_‖={d['in_norm']:.4f} out_‖={d['out_norm']:.4f} "
-                    f"ratio={d['ratio']:.4f} | SE active"
-                )
-        return h
+        n_ar_steps = int(self.output_seq_len / self.gap) - 1
+
+        _dbg(_TAG, "ar_start", n_steps=n_ar_steps, kt=self.k_t,
+             history_len=history.shape[1])
+
+        for step_i in range(n_ar_steps):
+            recent = predict[-self.k_t:]
+            if len(recent) < self.k_t:
+                deficit = self.k_t - len(recent)
+                # 改动2: 线性插值 padding — upstream 直接拼 history 尾部
+                # 这里对最早的预测帧做 lerp 与 history 尾部混合
+                tail = history[:, -deficit:, :, :]
+                first_pred = recent[0]
+                interp_parts = []
+                for j in range(deficit):
+                    w = (j + 1) / (deficit + 1)  # 0→1 线性权重
+                    blended = torch.lerp(tail[:, j:j+1, :, :], first_pred, w)
+                    interp_parts.append(blended)
+                inp = torch.cat(interp_parts + recent, dim=1)
+            else:
+                inp = torch.cat(recent, dim=1)
+
+            # 改动1: cosine 退火 dropout
+            p_drop = self._cosine_drop_rate(step_i, n_ar_steps)
+            if self.training and p_drop > 0:
+                inp = F.dropout(inp, p=float(p_drop), training=True)
+
+            next_h = localized_st_conv(inp, dynamic_graph, static_graph)
+            predict.append(next_h)
+
+            _dbg(_TAG, f"ar_step_{step_i}", drop_rate=p_drop, inp=inp, out=next_h)
+
+        predict = torch.cat(predict, dim=1)
+
+        # 改动3: LayerNorm before FC
+        predict = self.pre_ln(predict)
+        predict = self.forecast_fc(predict)
+
+        _dbg(_TAG, "ar_done", predict=predict)
+        return predict

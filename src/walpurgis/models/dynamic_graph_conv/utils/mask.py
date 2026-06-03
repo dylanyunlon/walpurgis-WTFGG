@@ -1,83 +1,46 @@
-"""
-Walpurgis v2 Mask — Percentile-Based Adaptive Sparse Gating
-===============================================================
-Delta vs prior:
-  - Per-row mean threshold → *percentile-based* threshold:
-      thresh_row = quantile(row, p)  where p = sigmoid(α)
-    Using a quantile makes the threshold robust to skewed similarity
-    distributions (common in traffic graphs with hub nodes).
-  - Sharpness uses LeakyHardtanh instead of sigmoid for the mask
-    transition — sharper cutoff, but with gradient everywhere.
-  - Tracks per-forward sparsity in a ring buffer for trend analysis.
-
-Breakpoint helpers:
-    self.sparsity_trend(20)    # print last 20 density readings
-    self._diag_last            # dict with last forward diagnostics
-"""
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from collections import deque
+from walpurgis import _dbg
+
+_TAG = "mask"
 
 
 class Mask(nn.Module):
-    """Percentile-based adaptive sparse gating."""
-
-    _n = 0
-
-    def __init__(self, **kw):
+    def __init__(self, **model_args):
         super().__init__()
-        self._alpha = nn.Parameter(torch.tensor(0.0))  # sigmoid → quantile level
-        self._slope = nn.Parameter(torch.tensor(10.0))  # leaky transition steepness
-        self._debug = True
-        self._density_log = deque(maxlen=500)
-        self._diag_last = {}
+        self.base_mask = model_args['adjs']
+        # 改动1: 可学习温度参数 τ, 控制 soft threshold 锐度
+        # 初始 τ=1.0 (log_tau=0), 训练中自适应
+        self.log_tau = nn.Parameter(torch.zeros(1))
+        # 可学习阈值偏置
+        self.threshold_bias = nn.Parameter(torch.tensor(-2.0))
 
-    def sparsity_trend(self, n=20):
-        """Print recent density readings — call from pdb."""
-        entries = list(self._density_log)[-n:]
-        if not entries:
-            print("  [Mask] no density data yet")
-            return
-        print(f"  [Mask] last {len(entries)} density readings:")
-        for step, dens, pctl in entries:
-            bar_len = int(dens * 50)
-            bar = "▓" * bar_len + "░" * (50 - bar_len)
-            print(f"    #{step}: {bar} {dens:.4f} (p={pctl:.2f})")
+    def _soft_mask(self, index, adj):
+        base = self.base_mask[index].to(adj.device)
 
-    def forward(self, dist_mx):
-        Mask._n += 1
-        quantile_level = torch.sigmoid(self._alpha)  # ∈ (0, 1)
-        steepness = F.softplus(self._slope) + 1.0
+        # 改动1: softplus 阈值 — upstream 用硬乘法 mask * adj
+        # 这里让 mask 值通过 softplus 生成 soft weight
+        tau = torch.exp(self.log_tau).clamp(min=0.05, max=5.0)
+        # soft threshold: sigmoid((base - bias) / tau)
+        soft_w = torch.sigmoid((F.softplus(base) + self.threshold_bias) / tau)
+        result = soft_w * adj
 
-        # Per-row percentile threshold
-        # Use quantile along last dim for each row
-        B = dist_mx.shape[0]
-        q_level = quantile_level.item()
-        thresh = torch.quantile(dist_mx.float(), q_level, dim=-1, keepdim=True)
+        # 改动2: 对角线清零 — upstream 未做此操作
+        # 自环可能引入信息泄露, 显式去除
+        n = result.shape[-1]
+        if result.dim() == 2:
+            result = result - torch.diag(torch.diag(result))
+        elif result.dim() == 3:
+            eye = torch.eye(n, device=result.device).unsqueeze(0)
+            result = result * (1.0 - eye)
 
-        # Leaky hard-tanh mask: smooth transition with guaranteed gradient
-        diff = steepness * (dist_mx - thresh)
-        soft_mask = 0.5 * (1.0 + torch.tanh(diff))  # ∈ (0, 1), smooth
-        masked = dist_mx * soft_mask
+        _dbg(_TAG, f"soft_mask_{index}", tau=tau,
+             soft_w_mean=soft_w.mean(), result_nnz=(result.abs() > 1e-6).sum())
+        return result
 
-        # Diagnostics
-        if self._debug:
-            with torch.no_grad():
-                dens = (masked.abs() > 1e-6).float().mean().item()
-                self._density_log.append((Mask._n, dens, q_level))
-                self._diag_last = {
-                    "step": Mask._n,
-                    "quantile_level": round(q_level, 4),
-                    "steepness": round(steepness.item(), 2),
-                    "density": round(dens, 4),
-                    "thresh_mean": round(thresh.mean().item(), 5),
-                }
-            if Mask._n % 200 == 1:
-                d = self._diag_last
-                print(
-                    f"        [Mask #{Mask._n}] p={d['quantile_level']:.4f} "
-                    f"steep={d['steepness']:.2f} density={d['density']:.4f} "
-                    f"thresh_μ={d['thresh_mean']:.5f}"
-                )
-        return masked
+    def forward(self, adj):
+        result = []
+        for index, a in enumerate(adj):
+            result.append(self._soft_mask(index, a))
+        return result

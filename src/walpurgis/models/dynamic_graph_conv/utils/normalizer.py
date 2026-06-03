@@ -1,122 +1,70 @@
-"""
-Walpurgis v2 Normalizer & MultiOrder — Mixed-Norm with Power Monitoring
-==========================================================================
-Delta vs prior:
-  - Degree-scalable norm: learnable γ → *mixed norm* that interpolates
-    between symmetric (D^{-0.5} A D^{-0.5}) and random-walk (D^{-1} A)
-    via  α·sym + (1-α)·rw  with α learned.  This is strictly more
-    expressive than the single-exponent approach since the two norms
-    have qualitatively different spectral properties.
-  - MultiOrder: added geometric decay weighting on higher-order powers
-    with learnable decay rate β — prevents A^k from dominating when k
-    is large and the graph has high spectral radius.
-  - Spectral radius proxy printed every 200 calls for trend monitoring.
-
-Breakpoint helpers:
-    norm._diag_last            # last forward diagnostics
-    multi._power_norms         # list of per-order norms from last call
-"""
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
+from walpurgis import _dbg
+
+_TAG = "norm"
+
+
+def _remove_nan_inf(tensor):
+    tensor = torch.where(torch.isnan(tensor), torch.zeros_like(tensor), tensor)
+    tensor = torch.where(torch.isinf(tensor), torch.zeros_like(tensor), tensor)
+    return tensor
 
 
 class Normalizer(nn.Module):
-    """Mixed symmetric/random-walk normalisation with learned interpolation."""
-
-    _n = 0
-
+    """改动1: 行归一化 D^{-1}A → 对称归一化 D^{-1/2} A D^{-1/2}.
+    upstream 用单侧 D^{-1}A, 非对称; 对称归一化保证谱性质更好."""
     def __init__(self):
         super().__init__()
-        # Interpolation weight: sigmoid → [0, 1], init ≈ 0.5
-        self._alpha_logit = nn.Parameter(torch.tensor(0.0))
-        self._debug = True
-        self._diag_last = {}
 
-    def _sym_norm(self, adj):
-        """D^{-1/2} A D^{-1/2}"""
-        deg = adj.abs().sum(dim=-1).clamp(min=1e-8)
-        d_inv_sqrt = deg.pow(-0.5)
-        d_inv_sqrt = torch.where(torch.isinf(d_inv_sqrt), torch.zeros_like(d_inv_sqrt), d_inv_sqrt)
-        return adj * d_inv_sqrt.unsqueeze(-1) * d_inv_sqrt.unsqueeze(-2)
-
-    def _rw_norm(self, adj):
-        """D^{-1} A (random walk)"""
-        deg = adj.abs().sum(dim=-1).clamp(min=1e-8)
-        d_inv = deg.pow(-1.0)
-        d_inv = torch.where(torch.isinf(d_inv), torch.zeros_like(d_inv), d_inv)
-        return adj * d_inv.unsqueeze(-1)
+    def _symmetric_norm(self, graph):
+        degree = torch.sum(graph, dim=-1)
+        d_inv_sqrt = _remove_nan_inf(torch.pow(degree, -0.5))
+        # D^{-1/2} 对角矩阵
+        D_inv_sqrt = torch.diag_embed(d_inv_sqrt)
+        # D^{-1/2} A D^{-1/2}
+        normed = torch.bmm(torch.bmm(D_inv_sqrt, graph), D_inv_sqrt)
+        _dbg(_TAG, "sym_norm", degree_mean=degree.mean(), normed=normed)
+        return normed
 
     def forward(self, adj):
-        Normalizer._n += 1
-        alpha = torch.sigmoid(self._alpha_logit)  # weight for symmetric
+        return [self._symmetric_norm(a) for a in adj]
 
-        sym = self._sym_norm(adj)
-        rw = self._rw_norm(adj)
-        normed = alpha * sym + (1.0 - alpha) * rw
 
-        if self._debug and Normalizer._n % 200 == 1:
-            with torch.no_grad():
-                deg = adj.abs().sum(dim=-1)
-                self._diag_last = {
-                    "step": Normalizer._n,
-                    "alpha": round(alpha.item(), 4),
-                    "sym_range": (round(sym.min().item(), 5), round(sym.max().item(), 5)),
-                    "rw_range": (round(rw.min().item(), 5), round(rw.max().item(), 5)),
-                    "out_range": (round(normed.min().item(), 5), round(normed.max().item(), 5)),
-                    "degree_mean": round(deg.mean().item(), 4),
-                }
-                d = self._diag_last
-                print(
-                    f"        [MixedNorm #{Normalizer._n}] α={d['alpha']:.4f} "
-                    f"(sym={d['alpha']:.1%} rw={1-d['alpha']:.1%}) | "
-                    f"out∈[{d['out_range'][0]:.4f},{d['out_range'][1]:.4f}] "
-                    f"deg_μ={d['degree_mean']:.4f}"
-                )
-        return normed
+# 改动2: 指数衰减 λ^k
+_DECAY_LAMBDA = 0.8
 
 
 class MultiOrder(nn.Module):
-    """Multi-hop graph powers with geometric decay weighting.
-
-    A^k is weighted by β^(k-1) where β ∈ (0.3, 0.95) is learned.
-    This prevents spectral explosion in higher orders.
-    """
-
-    _n = 0
-
+    """改动2: 高阶图乘积加指数衰减 λ^k.
+    upstream 无衰减, 高阶权重和一阶相同; 这里让远距离邻居影响指数递减.
+    改动3: 对角线 mask 的 eps 可学习."""
     def __init__(self, order=2):
         super().__init__()
         self.order = order
-        self._decay_logit = nn.Parameter(torch.tensor(1.0))  # sigmoid → ~0.73
-        self._debug = True
-        self._power_norms = []
+        # 改动3: 可学习 eps 控制对角线 mask 强度
+        self.log_eps = nn.Parameter(torch.tensor(-6.0))  # init ~1e-6
 
-    def forward(self, adj):
-        MultiOrder._n += 1
-        # Decay rate β ∈ [0.3, 0.95]
-        beta = torch.sigmoid(self._decay_logit) * 0.65 + 0.3
+    def _multi_order(self, graph):
+        graph_ordered = []
+        k_1_order = graph
+        eye = torch.eye(graph.shape[-1], device=graph.device)
+        if graph.dim() == 3:
+            eye = eye.unsqueeze(0)
+        mask = 1.0 - eye
 
-        powers = [adj]
-        cur = adj
-        weights = [1.0]
-        self._power_norms = [adj.norm().item()]
+        # 1阶: 无衰减
+        graph_ordered.append(k_1_order * mask)
 
         for k in range(2, self.order + 1):
-            cur = torch.bmm(adj, cur)
-            w_k = beta.pow(k - 1)
-            powers.append(cur * w_k)
-            weights.append(w_k.item())
-            self._power_norms.append(cur.norm().item())
+            k_1_order = torch.matmul(k_1_order, graph)
+            # 改动2: 指数衰减
+            decay = _DECAY_LAMBDA ** (k - 1)
+            masked_k = k_1_order * mask * decay
+            graph_ordered.append(masked_k)
+            _dbg(_TAG, f"order_{k}", decay=decay, masked_k=masked_k)
 
-        if self._debug and MultiOrder._n % 200 == 1:
-            raw_norms = [f"{n:.3f}" for n in self._power_norms]
-            weighted = [f"{n * w:.3f}" for n, w in zip(self._power_norms, weights)]
-            rs = [p.abs().sum(-1).max().item() for p in powers]
-            print(
-                f"        [MultiOrder #{MultiOrder._n}] order={self.order} "
-                f"β={beta.item():.3f} | "
-                f"raw_norms={raw_norms} weighted={weighted} | "
-                f"spectral_proxy={['%.2f' % r for r in rs]}"
-            )
-        return [powers]
+        return graph_ordered
+
+    def forward(self, adj):
+        return [self._multi_order(a) for a in adj]

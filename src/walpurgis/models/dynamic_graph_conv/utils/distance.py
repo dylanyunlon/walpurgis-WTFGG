@@ -1,118 +1,99 @@
-"""
-Walpurgis v2 Distance Function — Bilinear Similarity with Gated Fusion
-==========================================================================
-Delta vs prior:
-  - Scaled dot-product → *bilinear* similarity with per-modality
-    learnable weight matrix W:  sim(a,b) = a^T W b / τ.
-    Bilinear allows asymmetric similarity (node A similar to B doesn't
-    imply B similar to A), which better models directed traffic flow.
-  - Modality fusion: softmax logits → *sigmoid gate* per modality,
-    allowing partial suppression rather than forced competition.
-  - Temperature uses a per-modality learnable τ instead of shared.
-
-Breakpoint helpers:
-    self._diag_last                    # last forward diagnostics
-    self.modality_balance_report()     # print fusion weight history
-"""
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import math
-import time
-from collections import deque
+from walpurgis import _dbg
+
+_TAG = "dist"
+
+# 改动1: 多头注意力 head 数
+_NUM_HEADS = 3
 
 
 class DistanceFunction(nn.Module):
-    """Bilinear pairwise similarity with gated modality fusion."""
-
-    _n = 0
-
-    def __init__(self, **kw):
+    def __init__(self, **model_args):
         super().__init__()
-        H = kw["num_hidden"]
-        ND = kw["node_hidden"]
-        TD = kw["time_emb_dim"]
-        self.k_t = kw["k_t"]
+        self.hidden_dim = model_args['num_hidden']
+        self.node_dim = model_args['node_hidden']
+        self.input_seq_len = model_args['seq_length']
 
-        self.node_proj_l = nn.Linear(ND, H)
-        self.node_proj_r = nn.Linear(ND, H)  # separate for asymmetry
-        self.time_proj = nn.Linear(TD * 2, H)
-        self.data_proj = nn.Linear(H, H)
+        # 时序特征提取
+        self.dropout = nn.Dropout(model_args['dropout'])
+        self.fc_ts_emb1 = nn.Linear(self.input_seq_len, self.hidden_dim * 2)
+        self.fc_ts_emb2 = nn.Linear(self.hidden_dim * 2, self.hidden_dim)
 
-        # Per-modality sigmoid gates
-        self._mod_gates = nn.Parameter(torch.zeros(3))
-        # Per-modality temperatures
-        self._taus = nn.Parameter(torch.full((3,), math.sqrt(float(H))))
+        # 改动2: BN → InstanceNorm1d
+        # InstanceNorm 对每个 sample 独立, 不依赖 batch 统计量
+        self.norm = nn.InstanceNorm1d(self.hidden_dim * 2, affine=True)
 
-        self._debug = True
-        self._diag_last = {}
-        self._balance_log = deque(maxlen=300)
+        # 改动3: 残差 shortcut 投影 — upstream 无此路径
+        self.ts_shortcut = nn.Linear(self.input_seq_len, self.hidden_dim)
 
-    def modality_balance_report(self, n=15):
-        """Print recent modality gate activations — call from pdb."""
-        entries = list(self._balance_log)[-n:]
-        if not entries:
-            print("  [Distance] no balance data yet")
-            return
-        print(f"  [Distance] modality gates (last {len(entries)}):")
-        for step, gn, gt, gd in entries:
-            bars = [int(g * 20) for g in [gn, gt, gd]]
-            print(
-                f"    #{step}: node={'█'*bars[0]+'░'*(20-bars[0])} {gn:.3f} | "
-                f"time={'█'*bars[1]+'░'*(20-bars[1])} {gt:.3f} | "
-                f"data={'█'*bars[2]+'░'*(20-bars[2])} {gd:.3f}"
-            )
+        self.time_slot_embedding = nn.Linear(
+            model_args['time_emb_dim'], self.hidden_dim)
+
+        self.all_feat_dim = (self.hidden_dim + self.node_dim
+                             + model_args['time_emb_dim'] * 2)
+
+        # 改动1: 3-head 独立 Q/K 投影
+        # upstream 只有 1 组 WQ, WK
+        self.WQ_heads = nn.ModuleList([
+            nn.Linear(self.all_feat_dim, self.hidden_dim, bias=False)
+            for _ in range(_NUM_HEADS)])
+        self.WK_heads = nn.ModuleList([
+            nn.Linear(self.all_feat_dim, self.hidden_dim, bias=False)
+            for _ in range(_NUM_HEADS)])
+
+        # 改动4: 注意力 dropout
+        self.attn_drop = nn.Dropout(0.1)
 
     def forward(self, X, E_d, E_u, T_D, D_W):
-        DistanceFunction._n += 1
-        t0 = time.perf_counter()
-        B, L, N, _ = X.shape
-        taus = self._taus.clamp(min=1.0)
+        T_D = T_D[:, -1, :, :]
+        D_W = D_W[:, -1, :, :]
 
-        # Node modality — bilinear (asymmetric)
-        nl = self.node_proj_l(E_d)  # [N, H]
-        nr = self.node_proj_r(E_d)  # [N, H]
-        node_sim = torch.mm(nl, nr.T) / taus[0]
-        node_sim = torch.softmax(node_sim, dim=-1)
-        node_sim = node_sim.unsqueeze(0).expand(B, -1, -1)
+        X_in = X[:, :, :, 0].transpose(1, 2).contiguous()
+        B, N, S = X_in.shape
+        X_flat = X_in.view(B * N, S)
 
-        # Time modality
-        tc = torch.cat([T_D, D_W], dim=-1)
-        tf = self.time_proj(tc).mean(dim=1)
-        time_sim = torch.bmm(tf, tf.transpose(1, 2)) / taus[1]
-        time_sim = torch.softmax(time_sim, dim=-1)
+        # 时序嵌入 + InstanceNorm
+        h1 = F.gelu(self.fc_ts_emb1(X_flat))
+        # 改动2: InstanceNorm1d expects (N, C)
+        h1 = self.norm(h1)
+        h1 = self.dropout(h1)
+        dy_feat = self.fc_ts_emb2(h1).view(B, N, -1)
 
-        # Data modality
-        df = self.data_proj(X[:, -self.k_t:].mean(dim=1))
-        data_sim = torch.bmm(df, df.transpose(1, 2)) / taus[2]
-        data_sim = torch.softmax(data_sim, dim=-1)
+        # 改动3: 残差 shortcut
+        shortcut = self.ts_shortcut(X_flat).view(B, N, -1)
+        dy_feat = dy_feat + shortcut
 
-        # Sigmoid gated fusion (not softmax competition)
-        gates = torch.sigmoid(self._mod_gates)  # [3], each ∈ (0, 1)
-        dist = gates[0] * node_sim + gates[1] * time_sim + gates[2] * data_sim
-        # Renormalize to keep distribution sum ≈ 1 per row
-        dist = dist / (gates.sum() + 1e-8)
+        _dbg(_TAG, "ts_feat", dy_feat=dy_feat, shortcut_norm=shortcut.norm())
 
-        if self._debug:
-            with torch.no_grad():
-                gvals = [gates[i].item() for i in range(3)]
-                self._balance_log.append((DistanceFunction._n, *gvals))
-                self._diag_last = {
-                    "step": DistanceFunction._n,
-                    "gates": [round(g, 4) for g in gvals],
-                    "taus": [round(taus[i].item(), 2) for i in range(3)],
-                    "node_sim_mean": round(node_sim.mean().item(), 5),
-                    "time_sim_mean": round(time_sim.mean().item(), 5),
-                    "data_sim_mean": round(data_sim.mean().item(), 5),
-                }
-            if DistanceFunction._n % 200 == 1:
-                ms = (time.perf_counter() - t0) * 1000
-                d = self._diag_last
-                print(
-                    f"        [BilinDist #{DistanceFunction._n}] {ms:.2f}ms | "
-                    f"gates={d['gates']} τ={d['taus']} | "
-                    f"node_μ={d['node_sim_mean']:.4f} "
-                    f"time_μ={d['time_sim_mean']:.4f} "
-                    f"data_μ={d['data_sim_mean']:.4f}"
-                )
-        return dist
+        emb1 = E_d.unsqueeze(0).expand(B, -1, -1)
+        emb2 = E_u.unsqueeze(0).expand(B, -1, -1)
+
+        X1 = torch.cat([dy_feat, T_D, D_W, emb1], dim=-1)
+        X2 = torch.cat([dy_feat, T_D, D_W, emb2], dim=-1)
+        feat_pair = [X1, X2]
+
+        adjacent_list = []
+        for feat in feat_pair:
+            # 改动1: 3-head 注意力取平均
+            head_weights = []
+            for h in range(_NUM_HEADS):
+                Q = self.WQ_heads[h](feat)
+                K = self.WK_heads[h](feat)
+                QKT = torch.bmm(Q, K.transpose(-1, -2)) / math.sqrt(self.hidden_dim)
+                W = torch.softmax(QKT, dim=-1)
+                # 改动4: attention dropout
+                W = self.attn_drop(W)
+                head_weights.append(W)
+
+            # 多头平均
+            W_avg = sum(head_weights) / _NUM_HEADS
+            adjacent_list.append(W_avg)
+
+            _dbg(_TAG, "multi_head_attn",
+                 head_var=torch.stack(head_weights).var(dim=0).mean(),
+                 W_avg=W_avg)
+
+        return adjacent_list
