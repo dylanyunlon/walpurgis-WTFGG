@@ -1,0 +1,45 @@
+---
+# start up
+start_up:
+  mode: scratch
+  resume_epoch: 0
+  model_name:   WalpurgisV6
+  device:       cuda:0
+  load_pkl:     False
+
+# Data Processing
+data_args:
+  data_dir:       datasets/METR-LA
+  adj_data_path:  datasets/sensor_graph/adj_mx_la.pkl
+  adj_type:       doubletransition
+
+# Model Args — note: gap changed 3→4 for adaptive-stride experiment
+model_args:
+  batch_size:   32
+  num_feat:     1
+  num_hidden:   32
+  node_hidden:  10
+  time_emb_dim: 10
+  dropout:      0.1
+  seq_length:   12
+  k_t:          3
+  k_s:          2
+  gap:          4
+  num_modalities: 2
+
+# Optimization Args — lrate nudged from 0.002→0.0018
+optim_args:
+  lrate:          0.0018
+  print_model:    False
+  wdecay:         1.0e-5
+  eps:            1.0e-8
+  lr_schedule:    True
+  lr_sche_steps:  [1, 28, 36, 44, 52, 60, 70, 80]
+  lr_decay_ratio: 0.5
+  if_cl:          True
+  cl_epochs:      6
+  output_seq_len: 12
+  warm_epochs:    0
+  epochs:         80
+  patience:       80
+  seq_length:     12
