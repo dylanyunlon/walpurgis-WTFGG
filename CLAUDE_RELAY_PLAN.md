@@ -155,3 +155,33 @@ __init__.py (顶层)
 | 第二十位 | M625-M649 | 对比表 |
 | 第二十一位 | M650-M674 | ablation |
 | 第二十二位 | M675-M699 | 论文回填 |
+
+---
+
+## 第十八位 Claude: M557-M574 — 10维正交评估体系 + LLM-as-Benchmark
+
+| M# | 内容 | ✓ |
+|----|------|---|
+| M557 | 10维taxonomy + targets + SOTA + v10理论 (via claude.hk.cn API) | ✅ |
+| M558 | walpurgis_eval.py 自动评估+打分+雷达图 | ✅ |
+| M559 | walpurgis_bench.sh API自动化benchmark runner | ✅ |
+
+### 10维体系 (论文Section映射)
+
+| Section | 维度 | 图表类型 |
+|---------|------|---------|
+| 5.2 Temporal Analysis | D1 短程精度, D2 远程衰退, D8 周期性 | 折线图(horizon曲线) |
+| 5.3 Spatial Analysis | D3 空间公平, D7 图敏感度 | heatmap + boxplot |
+| 5.4 Regime Robustness | D4 拥堵, D5 尾部, D9 标定 | 柱状图(regime分层) |
+| 5.5 Efficiency & Stability | D6 效率, D10 稳定性 | 雷达图(10维汇总) |
+
+## 后续规划
+
+| Claude # | 区间 | 任务 | 前置 |
+|----------|------|------|------|
+| **第十八位** | **M557-M574** | **✅ 10维评估体系** | M550-M556 |
+| 第十九位 | M575-M599 | GPU端到端训练: METR-LA 80epoch, 输出pred.npz, 跑walpurgis_eval.py得到10维基线值 | M557 |
+| 第二十位 | M600-M624 | PEMS-BAY/04/08: prepare脚本+config+训练, 4数据集×10维完整矩阵 | M575 |
+| 第二十一位 | M625-M649 | v10 vs upstream对比: 4数据集×10维差异表, 自动生成LaTeX table | M600 |
+| 第二十二位 | M650-M674 | ablation: 逐项关闭9个改动, 10维×9改动矩阵, 贡献热力图 | M625 |
+| 第二十三位 | M675-M699 | 论文回填: 实验结果→tex, Section 5.2-5.5图表, camera-ready | M650 |
