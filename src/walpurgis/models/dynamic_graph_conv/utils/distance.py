@@ -22,9 +22,9 @@ class DistanceFunction(nn.Module):
         self.fc_ts_emb1 = nn.Linear(self.input_seq_len, self.hidden_dim * 2)
         self.fc_ts_emb2 = nn.Linear(self.hidden_dim * 2, self.hidden_dim)
 
-        # 改动2: BN → InstanceNorm1d
-        # InstanceNorm 对每个 sample 独立, 不依赖 batch 统计量
-        self.norm = nn.InstanceNorm1d(self.hidden_dim * 2, affine=True)
+        # 改动2: BN → LayerNorm (InstanceNorm1d在spatial=1时不可训练)
+        # LayerNorm 对每个 sample 的 feature 独立归一化
+        self.norm = nn.LayerNorm(self.hidden_dim * 2)
 
         # 改动3: 残差 shortcut 投影 — upstream 无此路径
         self.ts_shortcut = nn.Linear(self.input_seq_len, self.hidden_dim)
@@ -55,9 +55,9 @@ class DistanceFunction(nn.Module):
         B, N, S = X_in.shape
         X_flat = X_in.view(B * N, S)
 
-        # 时序嵌入 + InstanceNorm
+        # 时序嵌入 + LayerNorm
         h1 = F.gelu(self.fc_ts_emb1(X_flat))
-        # 改动2: InstanceNorm1d expects (N, C)
+        # LayerNorm 直接接受 (BN, C) 输入
         h1 = self.norm(h1)
         h1 = self.dropout(h1)
         dy_feat = self.fc_ts_emb2(h1).view(B, N, -1)

@@ -25,7 +25,7 @@ class DynamicGraphConstructor(nn.Module):
         self.temporal_logits = nn.Parameter(torch.zeros(self.k_t))
 
         # 改动2: cosine-similarity 辅助投影
-        self.cos_proj = nn.Linear(self.hidden_dim, self.hidden_dim // 2, bias=False)
+        self.cos_proj = nn.Linear(model_args['node_hidden'], model_args['node_hidden'] // 2, bias=False)
 
         # 改动3: 可学习 cosine 混合系数 — upstream 无此路径
         # sigmoid(raw_alpha) 控制 cos_sim 对图的修正强度, init ≈ 0.1
