@@ -44,19 +44,13 @@ def main(**kwargs):
     _dbg(_TAG, f"start dataset={dataset_name}, device={device}")
 
     # ============ Load Data ============
-    if load_pkl and os.path.exists(f'output/dataloader_{dataset_name}.pkl'):
-        t1 = time.time()
-        dataloader = pickle.load(
-            open(f'output/dataloader_{dataset_name}.pkl', 'rb'))
-        print(f"Load dataset: {time.time()-t1:.2f}s (from pkl)")
-    else:
-        t1 = time.time()
-        batch_size = config['model_args']['batch_size']
-        dataloader = load_dataset(data_dir, batch_size, batch_size,
-                                  batch_size, dataset_name)
-        pickle.dump(dataloader,
-                     open(f'output/dataloader_{dataset_name}.pkl', 'wb'))
-        print(f"Load dataset: {time.time()-t1:.2f}s")
+    # 注: 不做 pkl dump/load — 在内存受限环境下序列化整个 dataloader
+    # 会导致内存翻倍 (原数据 + pickle buffer). load_pkl 仅在大内存服务器上有用.
+    t1 = time.time()
+    batch_size = config['model_args']['batch_size']
+    dataloader = load_dataset(data_dir, batch_size, batch_size,
+                              batch_size, dataset_name)
+    print(f"Load dataset: {time.time()-t1:.2f}s")
 
     scaler = dataloader['scaler']
 
@@ -101,14 +95,17 @@ def main(**kwargs):
     # 改动1: 多 GPU DataParallel — upstream 只支持单卡
     n_gpus = torch.cuda.device_count()
     if n_gpus > 1:
-        print(f"[walpurgis] Using DataParallel on {n_gpus} GPUs")
+        print(f"[v10] Using DataParallel on {n_gpus} GPUs")
         model = torch.nn.DataParallel(model)
     model = model.to(device)
 
     # 改动2: 混合精度 GradScaler — upstream 全 FP32
     use_amp = device.type == 'cuda'
-    amp_scaler = torch.amp.GradScaler('cuda', enabled=use_amp)
-    print(f"[walpurgis] AMP enabled: {use_amp}")
+    if use_amp:
+        amp_scaler = torch.amp.GradScaler('cuda', enabled=True)
+    else:
+        amp_scaler = None
+    print(f"[v10] AMP enabled: {use_amp}")
 
     engine = trainer(scaler, model, **optim_args)
     early_stopping = EarlyStopping(optim_args['patience'], save_path)
@@ -118,18 +115,24 @@ def main(**kwargs):
 
     # 改动6: activation tracker — 用第一个 batch 跑一遍 forward,
     # 打印所有中间层激活, 检测死神经元 / nan
-    _first_batch = next(dataloader['train_loader'].get_iterator())
-    _probe_x = data_reshaper(_first_batch[0], device)
-    _act_tracker = register_activation_hooks(model)
-    with torch.no_grad():
-        model.eval()
-        _ = model(_probe_x)
-    _act_tracker.report()
-    _dead = _act_tracker.check_dead()
-    if _dead:
-        print(f"[walpurgis:WARN] {len(_dead)} dead layers at init — "
-              f"consider checking initialization")
-    _act_tracker.remove()
+    import gc
+    try:
+        _first_batch = next(dataloader['train_loader'].get_iterator())
+        _probe_x = data_reshaper(_first_batch[0], device)
+        _act_tracker = register_activation_hooks(model)
+        with torch.no_grad():
+            model.eval()
+            _ = model(_probe_x)
+        _act_tracker.report()
+        _dead = _act_tracker.check_dead()
+        if _dead:
+            print(f"[v10:WARN] {len(_dead)} dead layers at init — "
+                  f"consider checking initialization")
+        _act_tracker.remove()
+        del _probe_x, _first_batch, _
+        gc.collect()
+    except (RuntimeError, MemoryError) as e:
+        print(f"[v10:WARN] Activation probe skipped (memory): {e}")
     model.train()
 
     train_time = []
@@ -236,7 +239,7 @@ def main(**kwargs):
                 else:
                     sd_avg[k] = sd_best[k]
             model_inner.load_state_dict(sd_avg, strict=False)
-            print("[walpurgis] Ensemble: averaged best + resume checkpoints")
+            print("[v10] Ensemble: averaged best + resume checkpoints")
         engine.test(model, save_path_resume, device, dataloader,
                     scaler, model_name, save=False,
                     _max=_max, _min=_min, loss=engine.loss,
