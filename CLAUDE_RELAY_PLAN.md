@@ -132,3 +132,26 @@ models/trainer.py
 configs/ (4 yaml)
 __init__.py (顶层)
 ```
+
+---
+
+## 第十七位 Claude: M550-M556 — LLM4Walking 实验运行 Pipeline
+
+| M# | 内容 | ✓ |
+|----|------|---|
+| M550 | fix: InstanceNorm1d/cos_proj/np.Inf | ✅ |
+| M551 | refactor: DataLoader索引化 | ✅ |
+| M552 | fix: main.py生产化 | ✅ |
+| M553 | config: METR-LA双环境 | ✅ |
+| M554 | prepare_metrla.sh | ✅ |
+| M555 | run_walpurgis.sh | ✅ |
+
+## 后续
+
+| Claude # | 区间 | 任务 |
+|----------|------|------|
+| 第十八位 | M575-M599 | GPU训练80epoch |
+| 第十九位 | M600-M624 | PEMS-BAY/04/08 |
+| 第二十位 | M625-M649 | 对比表 |
+| 第二十一位 | M650-M674 | ablation |
+| 第二十二位 | M675-M699 | 论文回填 |
