@@ -22,7 +22,7 @@ def validate_graph_pipeline(dist_fn, mask, normalizer, multi_order,
             dummy_X, model.node_emb_d, model.node_emb_u, dummy_tid, dummy_diw)
     """
     print(f"{'=' * 64}")
-    print("[v10] Graph pipeline validation")
+    print("[walpurgis] Graph pipeline validation")
 
     with _th.no_grad():
         adj_list = dist_fn(sample_X, E_d, E_u, T_D, D_W)

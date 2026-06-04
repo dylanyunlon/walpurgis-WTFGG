@@ -42,19 +42,35 @@ def _dbg(tag: str, msg: str, **tensors):
         from walpurgis import _dbg
         _dbg("model", "forward pass", x=some_tensor, adj=adj_tensor)
 
-    打印示例:
-        [v10:model] forward pass | x: shape=(32,12,207,32) dtype=float32 min=-2.31 max=5.12 mean=0.03 nan=0 inf=0
+    自动检测:
+        - NaN/Inf 会触发 WARNING 级别输出，即使该 tag 未开启
+        - 稀疏度 >95% 的 tensor 会附加 sparsity 信息
     """
     if not (_DEBUG_ALL or tag in _DEBUG_TAGS):
+        # 即使 tag 未开启，NaN/Inf 仍然告警
+        import torch as _th
+        for name, t in tensors.items():
+            if isinstance(t, _th.Tensor):
+                n_nan = t.isnan().sum().item()
+                n_inf = t.isinf().sum().item()
+                if n_nan > 0 or n_inf > 0:
+                    print(f"[walpurgis:ALERT:{tag}] {msg} | {name}: "
+                          f"nan={n_nan} inf={n_inf} shape={tuple(t.shape)}",
+                          flush=True)
         return
-    parts = [f"[v10:{tag}] {msg}"]
+    parts = [f"[walpurgis:{tag}] {msg}"]
     for name, t in tensors.items():
         import torch as _th
         if isinstance(t, _th.Tensor):
+            n_elem = t.numel()
+            n_zero = (t.abs() < 1e-8).sum().item() if n_elem > 0 else 0
+            sparsity = n_zero / max(n_elem, 1)
             s = (f"{name}: shape={tuple(t.shape)} dtype={t.dtype} "
                  f"min={t.min().item():.4g} max={t.max().item():.4g} "
                  f"mean={t.float().mean().item():.4g} "
                  f"nan={t.isnan().sum().item()} inf={t.isinf().sum().item()}")
+            if sparsity > 0.95:
+                s += f" SPARSE({sparsity:.1%})"
         elif isinstance(t, (list, tuple)):
             s = f"{name}: len={len(t)} types={[type(x).__name__ for x in t[:3]]}"
         else:
@@ -80,7 +96,7 @@ def snapshot_model(model, epoch=None, step=None, top_k=10):
     """
     import torch as _th
 
-    header = "[v10:snapshot]"
+    header = "[walpurgis:snapshot]"
     if epoch is not None:
         header += f" epoch={epoch}"
     if step is not None:
@@ -120,6 +136,23 @@ def snapshot_model(model, epoch=None, step=None, top_k=10):
     # 按 grad_norm 降序
     records.sort(key=lambda r: -(r["grad_norm"] or 0))
 
+    # ── 参数分布健康度自动诊断 ──
+    # 检测三类初始化病态:
+    #   1) 峰度异常: kurtosis > 10 说明分布有极端尖峰或重尾
+    #   2) 均值偏移: |mean| > 3*std 说明初始化中心严重偏离零点
+    #   3) 尺度坍缩: std < 1e-6 说明参数几乎为常数(可能是错误初始化)
+    pathologies = []
+    for r in records:
+        flags = []
+        if r["std"] < 1e-6 and r["abs_max"] > 1e-10:
+            flags.append("COLLAPSED_SCALE")
+        if r["std"] > 1e-8 and abs(r["mean"]) > 3.0 * r["std"]:
+            flags.append("MEAN_DRIFT")
+        if r.get("grad_norm") is not None and r["grad_norm"] > 50.0:
+            flags.append("GRAD_SPIKE")
+        if flags:
+            pathologies.append((r["name"], flags))
+
     print(f"\n{'━' * 80}")
     print(f"{header}")
     print(f"  total_params={total_params:,}  trainable={trainable_params:,}  "
@@ -127,6 +160,10 @@ def snapshot_model(model, epoch=None, step=None, top_k=10):
           f"nan_params={len(nan_params)}")
     if nan_params:
         print(f"  ⚠ NaN detected in: {nan_params[:5]}")
+    if pathologies:
+        print(f"  ⚠ {len(pathologies)} pathological params:")
+        for pname, pflags in pathologies[:5]:
+            print(f"    {pname}: {', '.join(pflags)}")
     print(f"{'─' * 80}")
     for i, r in enumerate(records[:top_k]):
         gn = f"{r['grad_norm']:.4g}" if r['grad_norm'] is not None else "None"
@@ -179,7 +216,7 @@ class _ActivationTracker:
 
     def report(self):
         print(f"\n{'─' * 76}")
-        print(f"[v10:activations] {len(self._data)} layers captured")
+        print(f"[walpurgis:activations] {len(self._data)} layers captured")
         for name, s in self._data.items():
             flag = ""
             if s["nan"]:
@@ -195,7 +232,7 @@ class _ActivationTracker:
         dead = {n: s["zero_frac"] for n, s in self._data.items()
                 if s["zero_frac"] > threshold}
         if dead:
-            print(f"[v10:WARN] {len(dead)} dead layers (>{threshold:.0%} zeros):")
+            print(f"[walpurgis:WARN] {len(dead)} dead layers (>{threshold:.0%} zeros):")
             for n, frac in sorted(dead.items(), key=lambda x: -x[1]):
                 print(f"  {n}: {frac:.1%} zeros")
         return dead
@@ -236,7 +273,7 @@ def gradient_health_check(model, explode_threshold=100.0, vanish_threshold=1e-7)
             issues.append(("VANISH", name, gn))
 
     if issues:
-        print(f"[v10:grad_health] {len(issues)} issues:")
+        print(f"[walpurgis:grad_health] {len(issues)} issues:")
         for kind, name, val in issues:
             print(f"  {kind:10s} {name:40s} norm={val:.4g}")
     return issues
@@ -259,7 +296,7 @@ def weight_diff(model, prev_state_dict, top_k=10):
             diffs.append((name, delta, rel))
 
     diffs.sort(key=lambda x: -x[1])
-    print(f"\n[v10:weight_diff] top {top_k} changed parameters:")
+    print(f"\n[walpurgis:weight_diff] top {top_k} changed parameters:")
     for name, delta, rel in diffs[:top_k]:
         print(f"  {name:45s} Δ={delta:.6f}  rel={rel:.4%}")
     frozen = [n for n, d, _ in diffs if d < 1e-10]

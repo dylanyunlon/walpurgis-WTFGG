@@ -24,7 +24,7 @@ class InhBlock(nn.Module):
 
         # 改动1: 去掉 sincos PE, 用 forecast 内的 RoPE
         # upstream 有单独的 PositionalEncoding 模块
-        # v10 在 Forecast.forward 里用 RoPE, 这里不重复加 PE
+        # 在 Forecast.forward 里用 RoPE, 这里不重复加 PE
         self.rnn_layer = RNNLayer(hidden_dim, model_args['dropout'])
         self.transformer_layer = TransformerLayer(
             hidden_dim, num_heads, model_args['dropout'], bias)

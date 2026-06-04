@@ -84,6 +84,19 @@ class trainer():
         self._prev_state_dict = None
         self._epoch_counter = 0
 
+        # 梯度噪声注入: 训练后期注入高斯噪声帮助跳出尖锐极小值
+        # σ(t) = η / (1 + t)^γ, η=0.01 初始噪声, γ=0.55 衰减指数
+        # 参考 Neelakantan et al. "Adding Gradient Noise Improves Learning"
+        self._grad_noise_eta = optim_args.get('grad_noise_eta', 0.01)
+        self._grad_noise_gamma = optim_args.get('grad_noise_gamma', 0.55)
+        self._grad_noise_start = self.warm_steps  # warmup 结束后才注入
+
+        # loss 曲面平坦度估计: 每 _flatness_interval 步扰动参数,
+        # 计算 loss(θ+ε) 与 loss(θ) 的差值, 差值越小说明越平坦
+        self._flatness_interval = optim_args.get('flatness_interval', 1000)
+        self._flatness_epsilon = 0.01
+        self._flatness_history = []
+
     def _update_adaptive_clip(self):
         """改动1: 每 _clip_update_freq 步, 用历史梯度的 p90 更新 clip 阈值."""
         if len(self._grad_history) >= self._clip_update_freq:
@@ -167,16 +180,26 @@ class trainer():
         loss = mae_loss
         loss.backward()
 
-        # 改动1: 自适应梯度裁剪
+        # 自适应梯度裁剪
         grad_norm = torch.nn.utils.clip_grad_norm_(
             self.model.parameters(), self._adaptive_clip)
         self._grad_history.append(grad_norm.item())
         if bn % self._clip_update_freq == 0 and bn > 0:
             self._update_adaptive_clip()
 
+        # 梯度噪声注入: σ(t) = η / (1+t)^γ
+        # warmup 结束后才注入; 随训练推进噪声自然衰减到接近零
+        if bn > self._grad_noise_start and self._grad_noise_eta > 0:
+            sigma = self._grad_noise_eta / (
+                (1.0 + bn) ** self._grad_noise_gamma)
+            for p in self.model.parameters():
+                if p.grad is not None:
+                    noise = torch.randn_like(p.grad) * sigma
+                    p.grad.data.add_(noise)
+
         self.optimizer.step()
 
-        # 改动5: 周期性全模型快照
+        # 周期性全模型快照
         if bn > 0 and bn % self._snapshot_interval == 0:
             snapshot_model(self.model, step=bn)
             issues = gradient_health_check(self.model)
@@ -184,13 +207,50 @@ class trainer():
                 self._grad_snapshots.append({
                     "step": bn, "issues": len(issues),
                     "loss": loss.item(), "grad_norm": grad_norm.item()})
-            # weight_diff: 对比上次快照的权重
             if self._prev_state_dict is not None:
                 weight_diff(self.model, self._prev_state_dict, top_k=5)
             self._prev_state_dict = {
                 k: v.data.clone() for k, v in self.model.named_parameters()}
 
-        # 改动4: 梯度 snapshot
+        # loss 曲面平坦度探测:
+        # 在参数空间随机方向上施加微小扰动，比较 loss(θ+ε) vs loss(θ)
+        # 差值越小说明当前处于更平坦的极小值盆地
+        if bn > 0 and bn % self._flatness_interval == 0:
+            self.model.eval()
+            with torch.no_grad():
+                # 保存原始参数
+                orig_params = {n: p.data.clone()
+                               for n, p in self.model.named_parameters()}
+                # 随机扰动
+                for p in self.model.parameters():
+                    p.data.add_(torch.randn_like(p.data) * self._flatness_epsilon)
+                perturbed_out = self.model(input).transpose(1, 2)
+                if kwargs['_max'] is not None:
+                    perturbed_pred = self.scaler(
+                        perturbed_out.transpose(1, 2).unsqueeze(-1),
+                        kwargs["_max"][0, 0, 0, 0],
+                        kwargs["_min"][0, 0, 0, 0]).transpose(1, 2).squeeze(-1)
+                    perturbed_loss = self.loss(
+                        perturbed_pred[:, :self.cl_len, :],
+                        real_val_s[:, :self.cl_len, :]).item()
+                else:
+                    perturbed_pred = self.scaler.inverse_transform(perturbed_out)
+                    perturbed_loss = self.loss(
+                        perturbed_pred[:, :self.cl_len, :],
+                        real_val_s[:, :self.cl_len, :], 0).item()
+                # 恢复原始参数
+                for n, p in self.model.named_parameters():
+                    p.data.copy_(orig_params[n])
+                flatness = abs(perturbed_loss - loss.item())
+                self._flatness_history.append({
+                    "step": bn, "flatness": flatness,
+                    "base_loss": loss.item()})
+                _dbg(_TAG, "flatness_probe",
+                     delta_loss=torch.tensor(flatness),
+                     base_loss=torch.tensor(loss.item()),
+                     epsilon=torch.tensor(self._flatness_epsilon))
+            self.model.train()
+
         _dbg(_TAG, "train_step",
              loss=loss, grad_norm=grad_norm,
              clip=torch.tensor(self._adaptive_clip),
@@ -311,7 +371,7 @@ class trainer():
         real_flat = realy.detach().cpu().float().reshape(-1)
         residual = yhat_flat - real_flat
         print(f"{'─' * 60}")
-        print(f"[v10:test] Pred vs Real distribution:")
+        print(f"[walpurgis:test] Pred vs Real distribution:")
         print(f"  Pred  — μ={yhat_flat.mean():.4f} σ={yhat_flat.std():.4f} "
               f"range=[{yhat_flat.min():.4f}, {yhat_flat.max():.4f}]")
         print(f"  Real  — μ={real_flat.mean():.4f} σ={real_flat.std():.4f} "

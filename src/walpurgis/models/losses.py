@@ -114,3 +114,22 @@ def metric(pred, real):
     _dbg(_TAG, "metric", mae=torch.tensor(mae), mape=torch.tensor(mape),
          rmse=torch.tensor(rmse), huber=torch.tensor(huber))
     return mae, mape, rmse, huber
+
+
+def temporal_consistency_penalty(preds, labels, null_val=np.nan, alpha=0.1):
+    """惩罚相邻时间步预测值的剧烈跳变.
+
+    交通流量在相邻 5-min 时间片之间通常平滑变化，
+    预测序列中的突变往往是过拟合噪声的信号。
+    penalty = α * mean(|pred[t+1] - pred[t]| - |real[t+1] - real[t]|)_+
+    只惩罚预测比真值更"抖"的情况，不惩罚真实存在的突变。
+    """
+    if preds.dim() < 2 or preds.shape[1] < 2:
+        return torch.tensor(0.0, device=preds.device)
+    pred_diff = torch.abs(preds[:, 1:, :] - preds[:, :-1, :])
+    real_diff = torch.abs(labels[:, 1:, :] - labels[:, :-1, :])
+    excess = torch.clamp(pred_diff - real_diff, min=0.0)
+    penalty = alpha * torch.mean(excess)
+    _dbg(_TAG, "temporal_penalty", penalty=penalty,
+         pred_roughness=pred_diff.mean(), real_roughness=real_diff.mean())
+    return penalty

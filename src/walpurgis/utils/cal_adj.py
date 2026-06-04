@@ -36,7 +36,7 @@ def _rbf_kernel(adj_np):
     rbf = np.exp(-adj_np ** 2 / (2.0 * sigma ** 2))
     # 保持零元素为零
     rbf = np.where(adj_np > 0, rbf, 0.0)
-    print(f"[v10 cal_adj] RBF kernel: σ={sigma:.4f}, "
+    print(f"[walpurgis cal_adj] RBF kernel: σ={sigma:.4f}, "
           f"nnz_before={np.count_nonzero(adj_np)}, "
           f"rbf_mean={rbf[rbf>0].mean():.4f}")
     return rbf
@@ -60,7 +60,7 @@ def _knn_sparsify(adj_np, k=_KNN_K):
             sparse_adj[i, topk_idx] = row[topk_idx]
     kept = np.count_nonzero(sparse_adj)
     total = np.count_nonzero(adj_np)
-    print(f"[v10 cal_adj] k-NN sparsify: k={k}, "
+    print(f"[walpurgis cal_adj] k-NN sparsify: k={k}, "
           f"edges {total} → {kept} ({100*kept/max(total,1):.1f}%)")
     return sparse_adj
 
@@ -98,7 +98,7 @@ def calculate_scaled_laplacian(adj, lambda_max=2, undirected=True):
 
 
 def symmetric_message_passing_adj(adj):
-    print("[v10] calc renormalized message passing adj "
+    print("[walpurgis] calc renormalized message passing adj "
           "(ensure self-loop added)")
     adj = sp.coo_matrix(adj)
     rowsum = np.array(adj.sum(1))
@@ -112,7 +112,7 @@ def symmetric_message_passing_adj(adj):
 
 # ---- 改动4: epsilon-smooth transition ----
 # upstream: d_inv 对零行直接设 0, 可能导致全零行
-# v10: 加 epsilon 到每行, 保证不出现全零概率行
+# walpurgis改动: 加 epsilon 到每行, 保证不出现全零概率行
 _TRANS_EPS = 1e-8
 
 

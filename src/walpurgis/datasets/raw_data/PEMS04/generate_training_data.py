@@ -36,7 +36,7 @@ def MinMaxnormalization(train, val, test):
     for name, arr in [('train', train_norm), ('val', val_norm), ('test', test_norm)]:
         n_nan = np.isnan(arr).sum()
         if n_nan > 0:
-            print(f"[v10 WARNING] {name} has {n_nan} NaN after norm, replacing with 0")
+            print(f"[walpurgis WARNING] {name} has {n_nan} NaN after norm, replacing with 0")
             arr[np.isnan(arr)] = 0.0
 
     return {'_max': _max, '_min': _min}, train_norm, val_norm, test_norm
@@ -153,7 +153,7 @@ def generate_train_val_test(args):
     }
     with open(os.path.join(args.output_dir, 'data_stats.json'), 'w') as f:
         json.dump(stats, f, indent=2)
-    print(f"[v10] Stats: {stats}")
+    print(f"[walpurgis] Stats: {stats}")
 
 
 if __name__ == "__main__":

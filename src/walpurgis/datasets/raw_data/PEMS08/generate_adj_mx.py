@@ -96,7 +96,7 @@ def _distance_to_rbf_weights(A, distaneA):
     rbf_A = np.zeros_like(A)
     mask = distaneA > 0
     rbf_A[mask] = np.exp(-distaneA[mask] ** 2 / (2.0 * sigma ** 2))
-    print(f"[v10 adj] RBF: σ={sigma:.2f}, "
+    print(f"[walpurgis adj] RBF: σ={sigma:.2f}, "
           f"weight range [{rbf_A[mask].min():.4f}, {rbf_A[mask].max():.4f}]")
     return rbf_A, distaneA
 
@@ -118,7 +118,7 @@ def _knn_sparsify(adj, k=_KNN_K):
             sparse[i, topk_idx] = row[topk_idx]
     before = np.count_nonzero(adj)
     after = np.count_nonzero(sparse)
-    print(f"[v10 adj] kNN(k={k}): edges {before} → {after} "
+    print(f"[walpurgis adj] kNN(k={k}): edges {before} → {after} "
           f"({100*after/max(before,1):.1f}%)")
     return sparse
 
@@ -135,7 +135,7 @@ def _adaptive_threshold_prune(adj):
     weak_mask = (pruned > 0) & (pruned < threshold)
     n_pruned = weak_mask.sum()
     pruned[weak_mask] = 0.0
-    print(f"[v10 adj] Adaptive prune: thresh={threshold:.4f}, "
+    print(f"[walpurgis adj] Adaptive prune: thresh={threshold:.4f}, "
           f"pruned {n_pruned} weak edges")
     return pruned
 
@@ -154,7 +154,7 @@ def _degree_audit(adj, name=""):
         hist_counts.append(f"[{lo},{hi}):{cnt}")
     overflow = int(np.sum(degrees >= hist_bins[-1]))
     hist_counts.append(f"[{hist_bins[-1]},∞):{overflow}")
-    print(f"[v10 adj] {name} Degree: nodes={adj.shape[0]}, "
+    print(f"[walpurgis adj] {name} Degree: nodes={adj.shape[0]}, "
           f"edges={np.count_nonzero(adj)}, isolated={isolated}, "
           f"range=[{min_deg},{max_deg}], avg={avg_deg:.1f}")
     print(f"  Hist: {', '.join(hist_counts)}")
@@ -172,7 +172,7 @@ def _add_weighted_self_loop(adj):
     row_max = adj.max(axis=1)
     row_max[row_max == 0] = 1.0
     np.fill_diagonal(adj, row_max)
-    print(f"[v10 adj] Self-loop: weight=row_max, "
+    print(f"[walpurgis adj] Self-loop: weight=row_max, "
           f"range [{row_max.min():.4f}, {row_max.max():.4f}]")
     return adj
 
@@ -208,4 +208,4 @@ pickle.dump(distance_mx,
 
 with open("datasets/sensor_graph/adj_mx_08_audit.json", 'w') as f:
     json.dump(stats, f, indent=2)
-print("[v10] PEMS08 adj saved with audit.")
+print("[walpurgis] PEMS08 adj saved with audit.")

@@ -77,10 +77,14 @@ class D2STGNN(nn.Module):
 
         self.embedding = nn.Linear(self._in_feat, self._hidden_dim)
 
-        # 改动4: highway gate — σ(W·x) 控制多少原始特征直接透传
-        # upstream 直接 embedding(x), 无 gate
+        # highway gate: σ(W·x / τ) 控制多少原始特征直接透传
+        # τ 是可学习温度——τ 大时 gate 接近 0.5(均匀混合)，τ 小时趋向二值化
         self.highway_fc = nn.Linear(self._in_feat, self._hidden_dim)
         self.highway_proj = nn.Linear(self._in_feat, self._hidden_dim)
+        self.log_highway_tau = nn.Parameter(torch.zeros(1))  # init τ=1.0
+
+        # embedding 后接 dropout 防止过拟合
+        self._embed_drop = nn.Dropout(model_args.get('dropout', 0.1) * 0.5)
 
         self.T_i_D_emb = nn.Parameter(torch.empty(288, model_args['time_emb_dim']))
         self.D_i_W_emb = nn.Parameter(torch.empty(7, model_args['time_emb_dim']))
@@ -158,13 +162,14 @@ class D2STGNN(nn.Module):
             history_data=history_data,
             time_in_day_feat=tid, day_in_week_feat=diw)
 
-        # 改动4: highway gate
-        gate = torch.sigmoid(self.highway_fc(history_data))
-        embed = self.embedding(history_data)
+        # highway gate: τ 控制 sigmoid 锐度
+        hw_tau = torch.exp(self.log_highway_tau).clamp(min=0.1, max=5.0)
+        gate = torch.sigmoid(self.highway_fc(history_data) / hw_tau)
+        embed = self._embed_drop(self.embedding(history_data))
         proj = self.highway_proj(history_data)
         history_data = gate * embed + (1.0 - gate) * proj
 
-        _dbg(_TAG, "highway", gate_mean=gate.mean(), embed=embed)
+        _dbg(_TAG, "highway", gate_mean=gate.mean(), hw_tau=hw_tau, embed=embed)
 
         dif_fk_list = []
         inh_fk_list = []

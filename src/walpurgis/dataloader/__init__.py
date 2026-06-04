@@ -2,7 +2,7 @@ from .dataloader import DataLoader
 import numpy as _np
 
 # upstream: from dataloader.dataloader import DataLoader, 一行结束.
-# v10: 加 validate_loader 对加载后的数据做完整性检查.
+# walpurgis改动: 加 validate_loader 对加载后的数据做完整性检查.
 
 
 def validate_loader(loader, name=""):
@@ -35,11 +35,11 @@ def validate_loader(loader, name=""):
 
     prefix = f"[{name}] " if name else ""
     if issues:
-        print(f"[v10:validate] {prefix}{len(issues)} issues found:")
+        print(f"[walpurgis:validate] {prefix}{len(issues)} issues found:")
         for iss in issues:
             print(f"  ⚠ {iss}")
     else:
-        print(f"[v10:validate] {prefix}OK — "
+        print(f"[walpurgis:validate] {prefix}OK — "
               f"x={xs.shape}, y={ys.shape}, "
               f"batches={loader.num_batch}")
     return issues

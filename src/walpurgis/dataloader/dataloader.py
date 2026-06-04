@@ -32,7 +32,7 @@ class DataLoader(object):
         if shuffle:
             self.shuffle()
 
-        print(f"[v10 DataLoader] size={self.size}, "
+        print(f"[walpurgis DataLoader] size={self.size}, "
               f"num_batch={self.num_batch}, bs={batch_size}, "
               f"pad_mode=wrap_ring")
 

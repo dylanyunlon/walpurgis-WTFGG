@@ -7,7 +7,7 @@ def build_inh_block(hidden_dim, num_heads=4, forecast_hidden_dim=256,
     """工厂函数: 构建 InhBlock 并做参数完整性断言.
 
     upstream 直接 InhBlock(...) 无任何校验;
-    v10 在构建后立即检查关键子模块的维度一致性,
+    改动: 在构建后立即检查关键子模块的维度一致性,
     防止 hidden_dim / forecast_dim 不匹配导致运行时 shape error.
     """
     blk = InhBlock(hidden_dim, num_heads=num_heads,

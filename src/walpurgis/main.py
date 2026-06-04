@@ -101,14 +101,14 @@ def main(**kwargs):
     # 改动1: 多 GPU DataParallel — upstream 只支持单卡
     n_gpus = torch.cuda.device_count()
     if n_gpus > 1:
-        print(f"[v10] Using DataParallel on {n_gpus} GPUs")
+        print(f"[walpurgis] Using DataParallel on {n_gpus} GPUs")
         model = torch.nn.DataParallel(model)
     model = model.to(device)
 
     # 改动2: 混合精度 GradScaler — upstream 全 FP32
     use_amp = device.type == 'cuda'
     amp_scaler = torch.amp.GradScaler('cuda', enabled=use_amp)
-    print(f"[v10] AMP enabled: {use_amp}")
+    print(f"[walpurgis] AMP enabled: {use_amp}")
 
     engine = trainer(scaler, model, **optim_args)
     early_stopping = EarlyStopping(optim_args['patience'], save_path)
@@ -127,7 +127,7 @@ def main(**kwargs):
     _act_tracker.report()
     _dead = _act_tracker.check_dead()
     if _dead:
-        print(f"[v10:WARN] {len(_dead)} dead layers at init — "
+        print(f"[walpurgis:WARN] {len(_dead)} dead layers at init — "
               f"consider checking initialization")
     _act_tracker.remove()
     model.train()
@@ -236,7 +236,7 @@ def main(**kwargs):
                 else:
                     sd_avg[k] = sd_best[k]
             model_inner.load_state_dict(sd_avg, strict=False)
-            print("[v10] Ensemble: averaged best + resume checkpoints")
+            print("[walpurgis] Ensemble: averaged best + resume checkpoints")
         engine.test(model, save_path_resume, device, dataloader,
                     scaler, model_name, save=False,
                     _max=_max, _min=_min, loss=engine.loss,

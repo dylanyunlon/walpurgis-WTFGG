@@ -2,7 +2,7 @@ from .trainer import trainer
 from .model import D2STGNN
 
 # upstream 用 from models.model import * 通配导入;
-# v10 显式导出 + 模型注册表, 方便扩展多模型对比实验
+# 显式导出 + 模型注册表, 方便扩展多模型对比实验
 
 _MODEL_REGISTRY = {
     "D2STGNN": D2STGNN,
@@ -36,7 +36,7 @@ def build_model(name, **model_args):
                 bucket = "norm"
             stats[bucket] += p.numel()
     total = sum(stats.values())
-    print(f"[v10] Model {name}: {total:,} params")
+    print(f"[walpurgis] Model {name}: {total:,} params")
     for k, v in stats.items():
         if v > 0:
             print(f"  {k:12s}: {v:>10,} ({100*v/max(total,1):.1f}%)")

@@ -10,7 +10,7 @@ _TAG = "train_util"
 
 def set_config(seed=0):
     # upstream: 6行固定seed, 完事.
-    # v10: 额外锁定 CUBLAS, 启用确定性算法, 并且对 seed
+    # walpurgis改动: 额外锁定 CUBLAS, 启用确定性算法, 并且对 seed
     #      做 hash 派生, 让 numpy/torch/random 各自拿到不同但可复现的子 seed.
     base = seed & 0xFFFFFFFF
     torch_seed = base
@@ -37,7 +37,7 @@ def set_config(seed=0):
 
 def save_model(model, save_path):
     # upstream: torch.save(sd, path), 一行.
-    # v10: mkdir + 先写临时文件再 rename (防写入中途断电导致损坏)
+    # walpurgis改动: mkdir + 先写临时文件再 rename (防写入中途断电导致损坏)
     #      + SHA256 校验.
     dirn = os.path.dirname(save_path) or '.'
     os.makedirs(dirn, exist_ok=True)
@@ -58,7 +58,7 @@ def save_model(model, save_path):
 
 def load_model(model, save_path):
     # upstream: model.load_state_dict(torch.load(path)); return model
-    # v10: 存在性检查 + SHA256 + strict=False 容忍 key 不完全匹配
+    # walpurgis改动: 存在性检查 + SHA256 + strict=False 容忍 key 不完全匹配
     #      + 打印 missing/unexpected keys.
     if not os.path.exists(save_path):
         raise FileNotFoundError(f"Model not found: {save_path}")
@@ -84,7 +84,7 @@ def load_model(model, save_path):
 class EarlyStopping:
     # upstream: 绝对阈值 score < best - delta, delta 默认 0.
     #           一旦不改善就 counter++, 达到 patience 就停.
-    # v10 改动:
+    # 改动:
     #   1) 相对改善判断 (0.1%)
     #   2) 趋势检测: 最近 trend_window 个 epoch 做线性回归,
     #      如果斜率为正(loss 在涨)并且持续 patience//2 轮, 提前触发.
@@ -183,7 +183,7 @@ class EarlyStopping:
 
 def data_reshaper(data, device):
     # upstream: torch.Tensor(data).to(device), 同步阻塞, 不做任何检查.
-    # v10: pin_memory + non_blocking + NaN/Inf 检测 + dtype 自适应.
+    # walpurgis改动: pin_memory + non_blocking + NaN/Inf 检测 + dtype 自适应.
     if isinstance(data, np.ndarray):
         # 如果原始数据是 float64, 降为 float32 省显存
         if data.dtype == np.float64:

@@ -31,22 +31,29 @@ class DynamicGraphConstructor(nn.Module):
         # sigmoid(raw_alpha) 控制 cos_sim 对图的修正强度, init ≈ 0.1
         self._raw_cos_alpha = nn.Parameter(torch.tensor(-2.2))
 
-        # 改动4: DropEdge 正则 — 训练时随机置零一部分边
-        # upstream 对图结构无任何 dropout
-        self._edge_drop_rate = model_args.get('dropout', 0.1) * 0.5
+        # DropEdge 正则 — 训练时随机置零一部分边
+        # 余弦退火策略: 前期高 drop 帮助正则化, 后期低 drop 精细收敛
+        self._edge_drop_base = model_args.get('dropout', 0.1) * 0.5
+        self._edge_drop_min = self._edge_drop_base * 0.1  # 最低衰减到 base 的 10%
+        self._drop_anneal_steps = 5000  # 经过多少步完成一个余弦周期
+        self._current_step = 0
 
         # 改动5: 边重要性缩放 — 对每条边乘以 softplus(learnable_bias)
         n_nodes = model_args['num_nodes']
         self.edge_scale = nn.Parameter(torch.zeros(n_nodes))
 
     def _drop_edges(self, adj):
-        """训练时随机丢弃 adj 中的边, 类似 DropEdge 正则."""
-        if not self.training or self._edge_drop_rate <= 0:
+        """训练时随机丢弃 adj 中的边, drop rate 按余弦退火."""
+        if not self.training or self._edge_drop_base <= 0:
             return adj
-        mask = torch.bernoulli(
-            torch.full_like(adj, 1.0 - self._edge_drop_rate))
-        # rescale 保持期望不变
-        return adj * mask / max(1.0 - self._edge_drop_rate, 1e-6)
+        # 余弦退火: rate 从 base 衰减到 min
+        import math
+        progress = min(self._current_step / max(self._drop_anneal_steps, 1), 1.0)
+        rate = self._edge_drop_min + 0.5 * (self._edge_drop_base - self._edge_drop_min) * (
+            1.0 + math.cos(math.pi * progress))
+        self._current_step += 1
+        mask = torch.bernoulli(torch.full_like(adj, 1.0 - rate))
+        return adj * mask / max(1.0 - rate, 1e-6)
 
     def st_localization(self, graph_ordered):
         t_weights = F.softmax(self.temporal_logits, dim=0)

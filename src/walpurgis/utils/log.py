@@ -68,7 +68,7 @@ class TrainLogger():
         self._csv_initialized = False
 
         _dbg(_TAG, f"logger_init dir={self.log_dir}")
-        print(f"[v10 TrainLogger] Log dir: {self.log_dir}")
+        print(f"[walpurgis TrainLogger] Log dir: {self.log_dir}")
 
     def log_jsonl(self, record: dict):
         """改动1: 追加一条 JSON Lines 记录."""

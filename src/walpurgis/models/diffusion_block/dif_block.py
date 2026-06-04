@@ -25,7 +25,7 @@ class DifBlock(nn.Module):
 
         # 改动1: 单层 FC → 3层 MLP + GELU
         # upstream: nn.Linear(hidden, hidden) 单层 backcast
-        # v10: 3层 MLP 给 backcast 更多表达能力
+        # walpurgis改动: 3层 MLP 给 backcast 更多表达能力
         self.backcast_mlp = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim * 2),
             nn.GELU(),

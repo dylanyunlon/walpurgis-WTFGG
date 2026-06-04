@@ -35,7 +35,7 @@ class StandardScaler():
         # 改动3: eps 防零 std — upstream 直接除 std, std=0 时爆炸
         self.std = std if std > 1e-8 else 1.0
         if std <= 1e-8:
-            print(f"[v10 StandardScaler] WARNING: std={std} too small, "
+            print(f"[walpurgis StandardScaler] WARNING: std={std} too small, "
                   f"clamped to 1.0")
 
     def transform(self, data):
@@ -74,7 +74,7 @@ def _tukey_clip(data, feat_idx=0):
     upper = q3 + 1.5 * iqr
     before_clip = np.sum((vals_clean < lower) | (vals_clean > upper))
     data[..., feat_idx] = np.clip(data[..., feat_idx], lower, upper)
-    print(f"[v10 Tukey] Q1={q1:.2f}, Q3={q3:.2f}, IQR={iqr:.2f}, "
+    print(f"[walpurgis Tukey] Q1={q1:.2f}, Q3={q3:.2f}, IQR={iqr:.2f}, "
           f"bounds=[{lower:.2f}, {upper:.2f}], clipped={before_clip} samples")
     return data
 
@@ -96,7 +96,7 @@ def _add_periodic_encoding(data):
 
     # 拼到最后
     data = np.concatenate([data, tod_sin, tod_cos, dow_sin, dow_cos], axis=-1)
-    print(f"[v10 periodic] Added sin/cos encoding, "
+    print(f"[walpurgis periodic] Added sin/cos encoding, "
           f"new feat dim: {data.shape[-1]}")
     return data
 
@@ -113,7 +113,7 @@ def load_dataset(data_dir, batch_size, valid_batch_size,
     for mode in ['train', 'val', 'test']:
         data_dict['x_' + mode] = _tukey_clip(data_dict['x_' + mode], feat_idx=0)
 
-    print(f"[v10] Dataset={dataset_name}, "
+    print(f"[walpurgis] Dataset={dataset_name}, "
           f"train={data_dict['x_train'].shape}, "
           f"val={data_dict['x_val'].shape}, "
           f"test={data_dict['x_test'].shape}")
@@ -176,12 +176,12 @@ def load_adj(file_path, adj_type):
 
     # ---- 改动4: adj 预处理链 RBF → kNN → 对称闭包 ----
     # upstream 直接用原始 adj_mx 计算 transition 等
-    # v10 先做 RBF + kNN + 对称闭包, 再送入后续
+    # 先做 RBF + kNN + 对称闭包, 再送入后续
     if isinstance(adj_mx, np.ndarray) and adj_mx.ndim == 2:
         adj_processed = _rbf_kernel(adj_mx.astype(np.float64))
         adj_processed = _knn_sparsify(adj_processed)
         adj_processed = _symmetric_closure(adj_processed)
-        print(f"[v10 load_adj] Preprocessing chain applied: "
+        print(f"[walpurgis load_adj] Preprocessing chain applied: "
               f"RBF → kNN(15) → symmetric closure")
     else:
         adj_processed = adj_mx

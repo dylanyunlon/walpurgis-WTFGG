@@ -1,7 +1,7 @@
 import os as _os
 import json as _json
 
-# upstream 无 datasets/__init__.py; v10 新增.
+# upstream 无 datasets/__init__.py; 新增.
 # 提供数据集自动发现 + 元信息打印.
 
 _DATASET_DIR = _os.path.join(_os.path.dirname(__file__), "raw_data")
@@ -29,7 +29,7 @@ def list_datasets():
 def print_dataset_info():
     """打印所有数据集的元信息表."""
     ds_list = list_datasets()
-    print(f"[v10:datasets] {len(ds_list)} datasets found under {_DATASET_DIR}")
+    print(f"[walpurgis:datasets] {len(ds_list)} datasets found under {_DATASET_DIR}")
     for ds in ds_list:
         extras = ", ".join(f"{k}={v}" for k, v in ds.items()
                            if k not in ("name", "path"))

@@ -32,7 +32,7 @@ def MinMaxnormalization(train, val, test):
                       ('test', test_norm)]:
         n_nan = np.isnan(arr).sum()
         if n_nan > 0:
-            print(f"[v10 WARNING] {name} has {n_nan} NaN, replacing with 0")
+            print(f"[walpurgis WARNING] {name} has {n_nan} NaN, replacing with 0")
             arr[np.isnan(arr)] = 0.0
 
     return {'_max': _max, '_min': _min}, train_norm, val_norm, test_norm
@@ -89,7 +89,7 @@ def generate_train_val_test(args):
     num_samples = x.shape[0]
     samples_per_week = 288 * 7
     # upstream: num_train = round(num_samples * 0.6) - 1  (那个-1很诡异)
-    # v10: 按周对齐, 去掉那个-1
+    # walpurgis改动: 按周对齐, 去掉那个-1
     num_train = round(num_samples * 0.6)
     num_test = round(num_samples * 0.2)
     num_train = (num_train // samples_per_week) * samples_per_week or round(
@@ -150,7 +150,7 @@ def generate_train_val_test(args):
     }
     with open(os.path.join(args.output_dir, 'data_stats.json'), 'w') as f:
         json.dump(stats, f, indent=2)
-    print(f"[v10] Stats: {stats}")
+    print(f"[walpurgis] Stats: {stats}")
 
 
 if __name__ == "__main__":

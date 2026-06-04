@@ -18,7 +18,7 @@ def load_pickle(pickle_file):
 
 # ========== 改动1: 图密度 ==========
 # upstream: 只数 edge 总数
-# v10: edges / (n * (n-1)) 判断稀疏/稠密
+# walpurgis改动: edges / (n * (n-1)) 判断稀疏/稠密
 def _compute_density(adj):
     n = adj.shape[0]
     edges = np.count_nonzero(adj)
@@ -32,7 +32,7 @@ def _compute_density(adj):
 
 # ========== 改动2: 权重分布统计 ==========
 # upstream: 无 — 只计二值edge
-# v10: 对非零权重算 mean/std/median/p10/p90
+# walpurgis改动: 对非零权重算 mean/std/median/p10/p90
 def _weight_stats(adj):
     nz = adj[adj > 0].flatten()
     if len(nz) == 0:
@@ -51,7 +51,7 @@ def _weight_stats(adj):
 
 # ========== 改动3: BFS 连通分量分析 ==========
 # upstream: 无连通性检查
-# v10: BFS 找所有连通分量, 输出是否全连通 + 最大分量大小
+# walpurgis改动: BFS 找所有连通分量, 输出是否全连通 + 最大分量大小
 def _connected_components(adj):
     n = adj.shape[0]
     visited = np.zeros(n, dtype=bool)
@@ -82,7 +82,7 @@ def _connected_components(adj):
 
 # ========== 改动4: 度分布 5 数概要 ==========
 # upstream: 无度分析
-# v10: 出度 + 入度的 min/Q1/median/Q3/max
+# walpurgis改动: 出度 + 入度的 min/Q1/median/Q3/max
 def _degree_summary(adj):
     out_deg = np.count_nonzero(adj, axis=1)
     in_deg = np.count_nonzero(adj, axis=0)
@@ -102,7 +102,7 @@ def _degree_summary(adj):
 
 # ========== 改动5: 非对称性检测 ==========
 # upstream: 不检查对称性
-# v10: ||A - A^T||_F / ||A||_F, 0=完美对称, >0 有向
+# walpurgis改动: ||A - A^T||_F / ||A||_F, 0=完美对称, >0 有向
 def _asymmetry_score(adj):
     diff = adj - adj.T
     norm_diff = np.linalg.norm(diff, 'fro')

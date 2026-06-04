@@ -87,7 +87,7 @@ def get_adjacency_matrix_2direction(distance_df_filename, num_of_vertices,
 
 # ========== 改动1: 距离矩阵 → RBF连续权重 ==========
 # upstream: A是0/1二值, distanceA单独存但不参与后续GNN计算
-# v10: 将距离转成连续权重 exp(-d²/2σ²), σ=非零距离中位数
+# walpurgis改动: 将距离转成连续权重 exp(-d²/2σ²), σ=非零距离中位数
 def _distance_to_rbf_weights(A, distaneA):
     nz_dists = distaneA[distaneA > 0].flatten()
     if len(nz_dists) == 0:
@@ -102,14 +102,14 @@ def _distance_to_rbf_weights(A, distaneA):
     mask = distaneA > 0
     rbf_A[mask] = np.exp(-distaneA[mask] ** 2 / (2.0 * sigma ** 2))
 
-    print(f"[v10 adj] RBF: σ={sigma:.2f}, "
+    print(f"[walpurgis adj] RBF: σ={sigma:.2f}, "
           f"weight range [{rbf_A[mask].min():.4f}, {rbf_A[mask].max():.4f}]")
     return rbf_A, distaneA
 
 
 # ========== 改动2: k-NN 稀疏化 ==========
 # upstream: 保留CSV中所有边, 完全取决于原始数据密度
-# v10: 每节点只保留权重最大的k个邻居
+# walpurgis改动: 每节点只保留权重最大的k个邻居
 _KNN_K = 15
 
 
@@ -127,14 +127,14 @@ def _knn_sparsify(adj, k=_KNN_K):
 
     before = np.count_nonzero(adj)
     after = np.count_nonzero(sparse)
-    print(f"[v10 adj] kNN(k={k}): edges {before} → {after} "
+    print(f"[walpurgis adj] kNN(k={k}): edges {before} → {after} "
           f"({100*after/max(before,1):.1f}%)")
     return sparse
 
 
 # ========== 改动3: 自适应阈值剪枝 ==========
 # upstream: 无阈值, 保留所有非零边
-# v10: 权重 < (mean - 2*std) 的弱边删掉, 减少噪声连接
+# walpurgis改动: 权重 < (mean - 2*std) 的弱边删掉, 减少噪声连接
 def _adaptive_threshold_prune(adj):
     nz_vals = adj[adj > 0]
     if len(nz_vals) < 10:
@@ -148,14 +148,14 @@ def _adaptive_threshold_prune(adj):
     n_pruned = weak_mask.sum()
     pruned[weak_mask] = 0.0
 
-    print(f"[v10 adj] Adaptive prune: threshold={threshold:.4f} "
+    print(f"[walpurgis adj] Adaptive prune: threshold={threshold:.4f} "
           f"(μ={mu:.4f}, σ={sigma:.4f}), pruned {n_pruned} weak edges")
     return pruned
 
 
 # ========== 改动4: 度分布审计 ==========
 # upstream: 只输出总 edge 数
-# v10: 输出 degree 直方图、孤立节点数、最大度、平均度
+# walpurgis改动: 输出 degree 直方图、孤立节点数、最大度、平均度
 def _degree_audit(adj, name=""):
     degrees = np.count_nonzero(adj, axis=1)
     isolated = int(np.sum(degrees == 0))
@@ -173,7 +173,7 @@ def _degree_audit(adj, name=""):
     overflow = int(np.sum(degrees >= hist_bins[-1]))
     hist_counts.append(f"[{hist_bins[-1]},∞):{overflow}")
 
-    print(f"[v10 adj] {name} Degree audit: "
+    print(f"[walpurgis adj] {name} Degree audit: "
           f"nodes={adj.shape[0]}, edges={np.count_nonzero(adj)}, "
           f"isolated={isolated}, deg_range=[{min_deg},{max_deg}], "
           f"avg={avg_deg:.1f}")
@@ -191,13 +191,13 @@ def _degree_audit(adj, name=""):
 
 # ========== 改动5: 自环权重 = 行最大值 ==========
 # upstream: 自环加 identity (权重=1), 不考虑边权尺度
-# v10: 自环权重设为该行的最大权重, 让自连接不被邻居淹没
+# walpurgis改动: 自环权重设为该行的最大权重, 让自连接不被邻居淹没
 def _add_weighted_self_loop(adj):
     row_max = adj.max(axis=1)
     # 没有邻居的节点自环设1
     row_max[row_max == 0] = 1.0
     np.fill_diagonal(adj, row_max)
-    print(f"[v10 adj] Self-loop: weight=row_max, "
+    print(f"[walpurgis adj] Self-loop: weight=row_max, "
           f"range [{row_max.min():.4f}, {row_max.max():.4f}]")
     return adj
 
@@ -215,12 +215,12 @@ else:
     adj_mx, distance_mx = get_adjacency_matrix(
         distance_df_filename, num_of_vertices, id_filename=None)
 
-# v10 pipeline: RBF → kNN → threshold → self-loop → audit
+# pipeline: RBF → kNN → threshold → self-loop → audit
 adj_mx, distance_mx = _distance_to_rbf_weights(adj_mx, distance_mx)
 adj_mx = _knn_sparsify(adj_mx)
 adj_mx = _adaptive_threshold_prune(adj_mx)
 
-add_self_loop = True  # upstream default False; v10 default True
+add_self_loop = True  # upstream default False; default True
 if add_self_loop:
     adj_mx = _add_weighted_self_loop(adj_mx)
 
@@ -235,4 +235,4 @@ pickle.dump(distance_mx,
 # 保存审计JSON
 with open("datasets/sensor_graph/adj_mx_04_audit.json", 'w') as f:
     json.dump(stats, f, indent=2)
-print("[v10] PEMS04 adj saved with audit.")
+print("[walpurgis] PEMS04 adj saved with audit.")

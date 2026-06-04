@@ -27,7 +27,7 @@ class STLocalizedConv(nn.Module):
 
         # 改动4: 单层 FC → 两层 FC + GELU
         # upstream: 1个 Linear(k_t*D, k_t*D)
-        # v10: Linear → GELU → Linear, 增加非线性容量
+        # walpurgis改动: Linear → GELU → Linear, 增加非线性容量
         kt_dim = self.k_t * hidden_dim
         self.fc_pre = nn.Linear(kt_dim, kt_dim, bias=False)
         self.fc_post = nn.Linear(kt_dim, kt_dim, bias=False)

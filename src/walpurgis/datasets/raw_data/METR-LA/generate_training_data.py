@@ -114,7 +114,7 @@ def generate_train_val_test(args):
 
     with open(os.path.join(args.output_dir, 'data_stats.json'), 'w') as f:
         json.dump(stats, f, indent=2)
-    print(f"[v10] Stats saved: {stats}")
+    print(f"[walpurgis] Stats saved: {stats}")
 
 
 if __name__ == "__main__":
