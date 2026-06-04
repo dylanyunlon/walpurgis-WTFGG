@@ -32,10 +32,27 @@ class DecoupleLayer(nn.Module):
         gated = self.estimation_gate(
             node_embedding_u, node_embedding_d,
             time_in_day_feat, day_in_week_feat, history_data)
+
+        # 改动5: gate 通过率 — gated/history 的能量比
+        # 如果 ratio ≈ 0 说明 gate 几乎全部屏蔽了信号
+        gate_energy = gated.detach().norm()
+        input_energy = history_data.detach().norm().clamp(min=1e-8)
+        _dbg("decouple", "gate_passthrough",
+             ratio=gate_energy / input_energy)
+
         dif_res, dif_fk = self.dif_layer(
             history_data=history_data, gated_history_data=gated,
             dynamic_graph=dynamic_graph, static_graph=static_graph)
         inh_res, inh_fk = self.inh_layer(dif_res)
+
+        # 改动6: dif vs inh 能量比 — 监控两条路径的贡献是否平衡
+        dif_e = dif_fk.detach().norm().item()
+        inh_e = inh_fk.detach().norm().item()
+        _dbg("decouple", "branch_balance",
+             dif_energy=dif_fk.detach().norm(),
+             inh_energy=inh_fk.detach().norm(),
+             ratio=torch.tensor(dif_e / max(inh_e, 1e-8)))
+
         return inh_res, dif_fk, inh_fk
 
 

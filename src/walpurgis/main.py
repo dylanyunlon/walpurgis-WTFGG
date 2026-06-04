@@ -12,7 +12,8 @@ from utils.log import TrainLogger
 from models.losses import masked_mae
 from models import trainer
 from models.model import D2STGNN
-from walpurgis import _dbg
+from walpurgis import (_dbg, snapshot_model, register_activation_hooks,
+                       gradient_health_check)
 import numpy as np
 
 _TAG = "main"
@@ -111,6 +112,25 @@ def main(**kwargs):
 
     engine = trainer(scaler, model, **optim_args)
     early_stopping = EarlyStopping(optim_args['patience'], save_path)
+
+    # 改动5: 训练前初始参数快照 — 确认初始化是否合理
+    snapshot_model(model, epoch=0, step=0)
+
+    # 改动6: activation tracker — 用第一个 batch 跑一遍 forward,
+    # 打印所有中间层激活, 检测死神经元 / nan
+    _first_batch = next(dataloader['train_loader'].get_iterator())
+    _probe_x = data_reshaper(_first_batch[0], device)
+    _act_tracker = register_activation_hooks(model)
+    with torch.no_grad():
+        model.eval()
+        _ = model(_probe_x)
+    _act_tracker.report()
+    _dead = _act_tracker.check_dead()
+    if _dead:
+        print(f"[v10:WARN] {len(_dead)} dead layers at init — "
+              f"consider checking initialization")
+    _act_tracker.remove()
+    model.train()
 
     train_time = []
     val_time = []

@@ -3,7 +3,7 @@ import numpy as np
 import torch
 import torch.optim as optim
 from collections import deque
-from walpurgis import _dbg
+from walpurgis import _dbg, snapshot_model, gradient_health_check, weight_diff
 
 from utils.train import data_reshaper, save_model
 from .losses import masked_mae, masked_rmse, masked_mape, metric
@@ -76,6 +76,13 @@ class trainer():
 
         # 改动4: 梯度 snapshot 存储
         self._grad_snapshots = []
+
+        # 改动5: 周期性全模型快照 — upstream 无任何中间诊断
+        # 每 _snapshot_interval 步做一次 snapshot_model + gradient_health_check
+        # 每 epoch 首步做一次 weight_diff 对比上一 epoch 权重变化
+        self._snapshot_interval = optim_args.get('snapshot_interval', 500)
+        self._prev_state_dict = None
+        self._epoch_counter = 0
 
     def _update_adaptive_clip(self):
         """改动1: 每 _clip_update_freq 步, 用历史梯度的 p90 更新 clip 阈值."""
@@ -169,6 +176,20 @@ class trainer():
 
         self.optimizer.step()
 
+        # 改动5: 周期性全模型快照
+        if bn > 0 and bn % self._snapshot_interval == 0:
+            snapshot_model(self.model, step=bn)
+            issues = gradient_health_check(self.model)
+            if issues:
+                self._grad_snapshots.append({
+                    "step": bn, "issues": len(issues),
+                    "loss": loss.item(), "grad_norm": grad_norm.item()})
+            # weight_diff: 对比上次快照的权重
+            if self._prev_state_dict is not None:
+                weight_diff(self.model, self._prev_state_dict, top_k=5)
+            self._prev_state_dict = {
+                k: v.data.clone() for k, v in self.model.named_parameters()}
+
         # 改动4: 梯度 snapshot
         _dbg(_TAG, "train_step",
              loss=loss, grad_norm=grad_norm,
@@ -211,7 +232,25 @@ class trainer():
             valid_mape.append(mp)
             valid_rmse.append(rm)
 
-        return np.mean(valid_loss), np.mean(valid_mape), np.mean(valid_rmse)
+        mv_loss = np.mean(valid_loss)
+        mv_mape = np.mean(valid_mape)
+        mv_rmse = np.mean(valid_rmse)
+
+        # 改动5: 验证集分布诊断 — 打印 loss 分布的 percentiles
+        # 帮助发现个别 batch 异常拉高均值的情况
+        if len(valid_loss) > 4:
+            sorted_vl = sorted(valid_loss)
+            p50 = sorted_vl[len(sorted_vl) // 2]
+            p90 = sorted_vl[int(len(sorted_vl) * 0.9)]
+            worst = sorted_vl[-1]
+            _dbg(_TAG, "val_distribution",
+                 mean=torch.tensor(mv_loss),
+                 p50=torch.tensor(p50),
+                 p90=torch.tensor(p90),
+                 worst=torch.tensor(worst),
+                 n_batches=torch.tensor(float(len(valid_loss))))
+
+        return mv_loss, mv_mape, mv_rmse
 
     @staticmethod
     def test(model, save_path_resume, device, dataloader, scaler,
@@ -266,6 +305,26 @@ class trainer():
 
         log = ('Avg 12h | MAE: {:.2f} | RMSE: {:.2f} | MAPE: {:.2f}%')
         print(log.format(np.mean(amae), np.mean(armse), np.mean(amape) * 100))
+
+        # 改动5: 预测 vs 真值分布对比
+        yhat_flat = yhat.detach().cpu().float().reshape(-1)
+        real_flat = realy.detach().cpu().float().reshape(-1)
+        residual = yhat_flat - real_flat
+        print(f"{'─' * 60}")
+        print(f"[v10:test] Pred vs Real distribution:")
+        print(f"  Pred  — μ={yhat_flat.mean():.4f} σ={yhat_flat.std():.4f} "
+              f"range=[{yhat_flat.min():.4f}, {yhat_flat.max():.4f}]")
+        print(f"  Real  — μ={real_flat.mean():.4f} σ={real_flat.std():.4f} "
+              f"range=[{real_flat.min():.4f}, {real_flat.max():.4f}]")
+        print(f"  Resid — μ={residual.mean():.4f} σ={residual.std():.4f} "
+              f"|p5|={residual.quantile(0.05):.4f} "
+              f"|p95|={residual.quantile(0.95):.4f}")
+        # 检测系统性偏差: 如果 residual 均值 > 0.5*std(real), 有问题
+        bias_ratio = abs(residual.mean().item()) / max(real_flat.std().item(), 1e-6)
+        if bias_ratio > 0.1:
+            print(f"  ⚠ Systematic bias detected: "
+                  f"|μ_resid|/σ_real = {bias_ratio:.4f}")
+        print(f"{'─' * 60}")
 
         _dbg(_TAG, "test_done",
              avg_mae=torch.tensor(np.mean(amae)),

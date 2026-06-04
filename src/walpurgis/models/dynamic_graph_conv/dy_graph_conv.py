@@ -22,14 +22,33 @@ class DynamicGraphConstructor(nn.Module):
         self.multi_order = MultiOrder(order=self.k_s)
 
         # 改动1: 可学习时间权重 — upstream 对 k_t 步均匀 expand
-        # 这里让每个时间步有独立权重, softmax 归一化
         self.temporal_logits = nn.Parameter(torch.zeros(self.k_t))
 
         # 改动2: cosine-similarity 辅助投影
         self.cos_proj = nn.Linear(self.hidden_dim, self.hidden_dim // 2, bias=False)
 
+        # 改动3: 可学习 cosine 混合系数 — upstream 无此路径
+        # sigmoid(raw_alpha) 控制 cos_sim 对图的修正强度, init ≈ 0.1
+        self._raw_cos_alpha = nn.Parameter(torch.tensor(-2.2))
+
+        # 改动4: DropEdge 正则 — 训练时随机置零一部分边
+        # upstream 对图结构无任何 dropout
+        self._edge_drop_rate = model_args.get('dropout', 0.1) * 0.5
+
+        # 改动5: 边重要性缩放 — 对每条边乘以 softplus(learnable_bias)
+        n_nodes = model_args['num_nodes']
+        self.edge_scale = nn.Parameter(torch.zeros(n_nodes))
+
+    def _drop_edges(self, adj):
+        """训练时随机丢弃 adj 中的边, 类似 DropEdge 正则."""
+        if not self.training or self._edge_drop_rate <= 0:
+            return adj
+        mask = torch.bernoulli(
+            torch.full_like(adj, 1.0 - self._edge_drop_rate))
+        # rescale 保持期望不变
+        return adj * mask / max(1.0 - self._edge_drop_rate, 1e-6)
+
     def st_localization(self, graph_ordered):
-        # 改动1: 取 softmax 时间权重
         t_weights = F.softmax(self.temporal_logits, dim=0)
 
         _dbg(_TAG, "temporal_weights",
@@ -38,11 +57,9 @@ class DynamicGraphConstructor(nn.Module):
         st_local_graph = []
         for modality_i in graph_ordered:
             for k_order_graph in modality_i:
-                # expand 到 k_t 维
                 g_exp = k_order_graph.unsqueeze(-2).expand(
                     -1, -1, self.k_t, -1)
-                # 改动1: 用可学习权重加权每个时间步
-                # upstream 直接 expand 不加权, 所有时间步等权
+                # 改动1: 可学习时间权重加权
                 w = t_weights.view(1, 1, self.k_t, 1)
                 g_exp = g_exp * w
                 g_exp = g_exp.reshape(
@@ -64,29 +81,36 @@ class DynamicGraphConstructor(nn.Module):
         dist_mx = self.mask(dist_mx)
         dist_mx = self.normalizer(dist_mx)
 
-        # 改动2: cosine-similarity 辅助 —
-        # 在 dist_mx 上加一个 cosine similarity 项作为修正
+        # 改动2+3: cosine-similarity 辅助, 可学习混合系数
         B = X.shape[0]
         ed_proj = self.cos_proj(E_d.unsqueeze(0).expand(B, -1, -1))
         eu_proj = self.cos_proj(E_u.unsqueeze(0).expand(B, -1, -1))
         cos_sim = F.cosine_similarity(
             ed_proj.unsqueeze(2), eu_proj.unsqueeze(1), dim=-1)
-        # 归一化到 [0, 1] 范围
         cos_sim = (cos_sim + 1.0) * 0.5
 
+        cos_alpha = torch.sigmoid(self._raw_cos_alpha)
         for i in range(len(dist_mx)):
-            dist_mx[i] = dist_mx[i] + 0.1 * cos_sim
+            dist_mx[i] = dist_mx[i] + cos_alpha * cos_sim
 
-        _dbg(_TAG, "cos_augment", cos_sim_mean=cos_sim.mean())
+        _dbg(_TAG, "cos_augment",
+             cos_alpha=cos_alpha, cos_sim_mean=cos_sim.mean())
+
+        # 改动4: DropEdge
+        dist_mx = [self._drop_edges(a) for a in dist_mx]
+
+        # 改动5: 边重要性缩放 — 每个目标节点有独立的接收增益
+        # scale_j 控制节点 j 接收多少邻居信息
+        scale = F.softplus(self.edge_scale)     # 保证 > 0
+        for i in range(len(dist_mx)):
+            # dist_mx[i]: (B, N, N), scale: (N,) → 广播到列维
+            dist_mx[i] = dist_mx[i] * scale.unsqueeze(0).unsqueeze(0)
 
         mul_mx = self.multi_order(dist_mx)
         dynamic_graphs = self.st_localization(mul_mx)
 
-        _dbg(_TAG, "output", n_graphs=len(dynamic_graphs))
-
-        # 改动3: 梯度范数监控 (只在训练时有意义)
-        if self.training and self.temporal_logits.grad is not None:
-            _dbg(_TAG, "grad_check",
-                 temporal_grad_norm=self.temporal_logits.grad.norm())
+        _dbg(_TAG, "output", n_graphs=len(dynamic_graphs),
+             edge_scale_mean=scale.mean(),
+             edge_scale_std=scale.std())
 
         return dynamic_graphs
