@@ -1,0 +1,44 @@
+{
+  "baseline_MAE": 3.04,
+  "modifications": [
+    {
+      "name": "Huber+log-cosh loss",
+      "delta_pct": -1.5
+    },
+    {
+      "name": "Swish gate+GroupNorm",
+      "delta_pct": -0.8
+    },
+    {
+      "name": "Mish+learnable residual scale",
+      "delta_pct": -0.6
+    },
+    {
+      "name": "LayerNorm replacing BN",
+      "delta_pct": -0.5
+    },
+    {
+      "name": "3-head attention dynamic graph",
+      "delta_pct": -1.8
+    },
+    {
+      "name": "RMSNorm GRU+RotaryPE",
+      "delta_pct": -1.2
+    },
+    {
+      "name": "adaptive p90 clip+warmup-cosine LR",
+      "delta_pct": -1.0
+    },
+    {
+      "name": "Tukey outlier removal+sin/cos encoding",
+      "delta_pct": -0.9
+    },
+    {
+      "name": "RBF+kNN(15) adj",
+      "delta_pct": -1.3
+    }
+  ],
+  "combined_delta_pct": -7.8,
+  "expected_v10_MAE": 2.8,
+  "confidence": "low"
+}

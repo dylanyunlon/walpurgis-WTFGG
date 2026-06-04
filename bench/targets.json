@@ -1,0 +1,105 @@
+{
+  "targets": [
+    {
+      "id": "D1",
+      "name": "Short-Horizon MAE@h3",
+      "baseline": 2.55,
+      "target": 2.45,
+      "stretch": 2.35,
+      "unit": "mph",
+      "direction": "lower_better",
+      "compute": "np.mean(np.abs(y_pred[:,:,2] - y_true[:,:,2]))"
+    },
+    {
+      "id": "D2",
+      "name": "Long-Horizon Ratio MAE@h12/MAE@h3",
+      "baseline": 1.18,
+      "target": 1.14,
+      "stretch": 1.1,
+      "unit": "dimensionless",
+      "direction": "lower_better",
+      "compute": "np.mean(np.abs(y_pred[:,:,11]-y_true[:,:,11])) / np.mean(np.abs(y_pred[:,:,2]-y_true[:,:,2]))"
+    },
+    {
+      "id": "D3",
+      "name": "Spatial Equity sparse/dense MAE ratio",
+      "baseline": 1.35,
+      "target": 1.2,
+      "stretch": 1.1,
+      "unit": "dimensionless",
+      "direction": "lower_better",
+      "compute": "np.mean(np.abs(y_pred[:,sparse_idx,:]-y_true[:,sparse_idx,:])) / np.mean(np.abs(y_pred[:,dense_idx,:]-y_true[:,dense_idx,:]))"
+    },
+    {
+      "id": "D4",
+      "name": "Congestion MAE (speed<30)",
+      "baseline": 5.8,
+      "target": 5.2,
+      "stretch": 4.6,
+      "unit": "mph",
+      "direction": "lower_better",
+      "compute": "np.mean(np.abs(y_pred[y_true<30] - y_true[y_true<30]))"
+    },
+    {
+      "id": "D5",
+      "name": "Tail P95 absolute error",
+      "baseline": 9.5,
+      "target": 8.5,
+      "stretch": 7.5,
+      "unit": "mph",
+      "direction": "lower_better",
+      "compute": "np.percentile(np.abs(y_pred.ravel() - y_true.ravel()), 95)"
+    },
+    {
+      "id": "D6",
+      "name": "Efficiency MAE/M_params",
+      "baseline": 1.95,
+      "target": 1.75,
+      "stretch": 1.55,
+      "unit": "mph/M-params",
+      "direction": "lower_better",
+      "compute": "np.mean(np.abs(y_pred - y_true)) / (param_count / 1e6)"
+    },
+    {
+      "id": "D7",
+      "name": "Graph Sensitivity MAE-drop (adj=I)",
+      "baseline": 0.42,
+      "target": 0.55,
+      "stretch": 0.7,
+      "unit": "mph",
+      "direction": "higher_better",
+      "note": "Higher = model genuinely uses graph; low value means graph is not contributing",
+      "compute": "np.mean(np.abs(y_pred_identity_adj - y_true)) - np.mean(np.abs(y_pred - y_true))"
+    },
+    {
+      "id": "D8",
+      "name": "Periodicity weekend-weekday MAE gap",
+      "baseline": 0.32,
+      "target": 0.22,
+      "stretch": 0.14,
+      "unit": "mph",
+      "direction": "lower_better",
+      "compute": "np.abs(np.mean(np.abs(y_pred[weekend_mask]-y_true[weekend_mask])) - np.mean(np.abs(y_pred[weekday_mask]-y_true[weekday_mask])))"
+    },
+    {
+      "id": "D9",
+      "name": "Calibration mean signed error",
+      "baseline": 0.08,
+      "target": 0.04,
+      "stretch": 0.01,
+      "unit": "mph (signed, abs)",
+      "direction": "lower_better",
+      "compute": "np.abs(np.mean(y_pred - y_true))"
+    },
+    {
+      "id": "D10",
+      "name": "Stability MAE std across seeds",
+      "baseline": 0.08,
+      "target": 0.05,
+      "stretch": 0.02,
+      "unit": "mph",
+      "direction": "lower_better",
+      "compute": "np.std(np.array([np.mean(np.abs(y_pred_s - y_true)) for y_pred_s in y_pred_per_seed]))"
+    }
+  ]
+}

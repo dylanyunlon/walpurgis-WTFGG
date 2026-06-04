@@ -1,0 +1,482 @@
+{
+  "taxonomy_name": "Walpurgis Evaluation Taxonomy",
+  "dimensions": [
+    {
+      "id": "D1",
+      "name": "Short-Horizon Temporal Accuracy",
+      "category": "temporal",
+      "description": "Measures prediction fidelity for near-future steps (horizons 1–4, i.e., 5–20 min). These steps benefit most from autoregressive momentum and are dominated by inertial traffic dynamics. Models that learn good short-term patterns exhibit low MAE/RMSE at h=1–4 even if long-horizon degrades.",
+      "metrics": [
+        {
+          "name": "MAE@h1",
+          "formula": "mean(|y_1 - ŷ_1|)",
+          "unit": "mph or km/h",
+          "direction": "lower_better"
+        },
+        {
+          "name": "RMSE@h1",
+          "formula": "sqrt(mean((y_1 - ŷ_1)^2))",
+          "unit": "mph",
+          "direction": "lower_better"
+        },
+        {
+          "name": "MAPE@h1",
+          "formula": "mean(|y_1 - ŷ_1| / max(y_1, ε)) * 100",
+          "unit": "%",
+          "direction": "lower_better"
+        },
+        {
+          "name": "Short-Horizon Slope",
+          "formula": "slope of MAE vs horizon for h in [1,4] via linear regression",
+          "unit": "mph/step",
+          "direction": "lower_better"
+        }
+      ],
+      "d2stgnn_baseline": {
+        "value": {
+          "MAE@h1": 2.49,
+          "RMSE@h1": 4.76,
+          "MAPE@h1": 6.21
+        },
+        "source": "D2STGNN paper Table 1, METR-LA 15-min horizon"
+      },
+      "v10_modifications_affecting": [
+        "mod1_huber_logcosh",
+        "mod6_rmsnorm_rotarype",
+        "mod7_adaptive_clip_lr"
+      ],
+      "expected_v10_delta": "Huber+log-cosh reduces sensitivity to near-zero-error gradients at h=1, potentially improving MAE@h1 by 1–3%. RotaryPE provides better positional context for short sequences. Net effect: slight improvement expected.",
+      "visualization": "line_chart"
+    },
+    {
+      "id": "D2",
+      "name": "Long-Horizon Temporal Degradation",
+      "category": "temporal",
+      "description": "Measures how gracefully accuracy degrades across horizons 5–12 (25–60 min). Captures error accumulation in autoregressive rollout and the model's ability to maintain meaningful signal beyond immediate future. Quantified by the degradation rate, not just the endpoint value.",
+      "metrics": [
+        {
+          "name": "MAE@h12",
+          "formula": "mean(|y_12 - ŷ_12|)",
+          "unit": "mph",
+          "direction": "lower_better"
+        },
+        {
+          "name": "Horizon Degradation Rate (HDR)",
+          "formula": "(MAE@h12 - MAE@h1) / 11",
+          "unit": "mph/step",
+          "direction": "lower_better"
+        },
+        {
+          "name": "AUC-MAE",
+          "formula": "trapz([MAE@h1,...,MAE@h12]) / 11",
+          "unit": "mph",
+          "direction": "lower_better"
+        },
+        {
+          "name": "Rank Correlation Stability",
+          "formula": "Spearman corr between predicted and actual node rankings at h=12",
+          "unit": "dimensionless [-1,1]",
+          "direction": "higher_better"
+        }
+      ],
+      "d2stgnn_baseline": {
+        "value": {
+          "MAE@h12": 3.0,
+          "HDR": 0.047,
+          "AUC-MAE": 2.73
+        },
+        "source": "D2STGNN paper Table 1, METR-LA 60-min horizon and average"
+      },
+      "v10_modifications_affecting": [
+        "mod1_huber_logcosh",
+        "mod3_mish_residual_scale",
+        "mod6_rmsnorm_rotarype"
+      ],
+      "expected_v10_delta": "Learnable residual scale (α init 0.9) preserves gradient flow across deep unrolling steps, potentially reducing HDR. RotaryPE's relative position encoding is theoretically better for long sequences. log-cosh component provides smoother loss landscape for multi-step. Estimated 2–5% reduction in MAE@h12.",
+      "visualization": "line_chart"
+    },
+    {
+      "id": "D3",
+      "name": "Spatial Density Generalization",
+      "category": "spatial",
+      "description": "Measures prediction quality stratified by node connectivity (degree in the road graph). Dense-hub nodes (high degree, e.g., major intersections) vs. leaf nodes (low degree, e.g., dead-end sensors) have fundamentally different information environments. A good model should not systematically fail on sparse nodes.",
+      "metrics": [
+        {
+          "name": "MAE-Dense (top quartile by degree)",
+          "formula": "mean MAE over nodes with degree >= Q75(degree)",
+          "unit": "mph",
+          "direction": "lower_better"
+        },
+        {
+          "name": "MAE-Sparse (bottom quartile by degree)",
+          "formula": "mean MAE over nodes with degree <= Q25(degree)",
+          "unit": "mph",
+          "direction": "lower_better"
+        },
+        {
+          "name": "Spatial Equity Ratio (SER)",
+          "formula": "MAE-Sparse / MAE-Dense",
+          "unit": "dimensionless",
+          "direction": "lower_better"
+        },
+        {
+          "name": "Node-level MAE Gini",
+          "formula": "Gini coefficient of per-node MAE distribution",
+          "unit": "dimensionless [0,1]",
+          "direction": "lower_better"
+        }
+      ],
+      "d2stgnn_baseline": {
+        "value": {
+          "SER": "~1.2–1.5 estimated",
+          "note": "Not reported in paper; estimate from degree distribution of METR-LA (207 nodes, avg degree ~5.8)"
+        },
+        "source": "Estimated from METR-LA graph statistics; no published decomposition in D2STGNN paper"
+      },
+      "v10_modifications_affecting": [
+        "mod5_3head_attention_graph",
+        "mod9_rbf_knn_adj"
+      ],
+      "expected_v10_delta": "kNN(15) adjacency construction creates denser connectivity for geographically isolated sensors, potentially improving MAE-Sparse. 3-head dynamic graph attention can learn sensor-specific weights. SER expected to decrease (more equitable). Risk: kNN(15) may introduce spurious long-range edges that hurt dense nodes.",
+      "visualization": "boxplot"
+    },
+    {
+      "id": "D4",
+      "name": "Traffic Regime Discrimination",
+      "category": "regime",
+      "description": "Measures model performance stratified by traffic state: free-flow (speed > 50 mph), transitional (20–50 mph), and congested (< 20 mph). These regimes have distinct dynamics—free-flow is near-linear and predictable; congestion is nonlinear, unstable, and high-variance. Good models must adapt to regime without explicit regime labels.",
+      "metrics": [
+        {
+          "name": "MAE-FreeFlow",
+          "formula": "mean MAE over (node, time) pairs where ground truth speed > 50 mph",
+          "unit": "mph",
+          "direction": "lower_better"
+        },
+        {
+          "name": "MAE-Congested",
+          "formula": "mean MAE over (node, time) pairs where ground truth speed < 20 mph",
+          "unit": "mph",
+          "direction": "lower_better"
+        },
+        {
+          "name": "Regime Sensitivity Ratio (RSR)",
+          "formula": "MAE-Congested / MAE-FreeFlow",
+          "unit": "dimensionless",
+          "direction": "lower_better"
+        },
+        {
+          "name": "Regime Transition RMSE",
+          "formula": "RMSE on samples within ±2 time steps of a regime boundary (speed crosses 20 or 50 mph)",
+          "unit": "mph",
+          "direction": "lower_better"
+        }
+      ],
+      "d2stgnn_baseline": {
+        "value": {
+          "RSR": "~2.5–4.0 estimated",
+          "note": "D2STGNN does not report regime-stratified results. Estimated from METR-LA speed distribution: ~70% free-flow, ~20% transitional, ~10% congested"
+        },
+        "source": "Estimated; regime stratification is non-standard in ST-GNN literature"
+      },
+      "v10_modifications_affecting": [
+        "mod1_huber_logcosh",
+        "mod2_swish_groupnorm",
+        "mod8_tukey_sincos"
+      ],
+      "expected_v10_delta": "Tukey outlier removal at preprocessing stage clips extreme congestion events, potentially reducing MAE-Congested by removing unlearnable spikes but also discarding real congestion signal. Huber loss with δ=5 is still sensitive to congestion errors (5 mph range is meaningful in congested regime). Net effect ambiguous—regime transition RMSE likely improves due to smoother loss.",
+      "visualization": "bar_chart"
+    },
+    {
+      "id": "D5",
+      "name": "Distributional Robustness",
+      "category": "robustness",
+      "description": "Measures model behavior under distributional shift: sensor dropout (missing data), anomalous events (accidents, incidents), and temporal OOD (e.g., holidays, weekends vs. weekday training). Distinct from average-case accuracy—a model can have excellent average MAE but collapse catastrophically on 5% of edge cases.",
+      "metrics": [
+        {
+          "name": "MAE under 20% random sensor masking",
+          "formula": "mean MAE when 20% of input nodes are zeroed at test time",
+          "unit": "mph",
+          "direction": "lower_better"
+        },
+        {
+          "name": "Tail Error (P95-MAE)",
+          "formula": "95th percentile of per-sample MAE distribution",
+          "unit": "mph",
+          "direction": "lower_better"
+        },
+        {
+          "name": "Prediction σ / Ground Truth σ (Variance Coverage)",
+          "formula": "std(ŷ) / std(y) across test set",
+          "unit": "dimensionless, ideal=1.0",
+          "direction": "lower_better"
+        },
+        {
+          "name": "Worst-Node MAE",
+          "formula": "max MAE over all nodes in test set",
+          "unit": "mph",
+          "direction": "lower_better"
+        }
+      ],
+      "d2stgnn_baseline": {
+        "value": {
+          "Variance_Coverage": "~0.75–0.85 estimated",
+          "P95_MAE": "~8–12 mph estimated"
+        },
+        "source": "Not reported in paper. Variance coverage estimated from reported RMSE/MAE ratio: RMSE/MAE ≈ 5.17/2.73 ≈ 1.89, consistent with moderate tail errors"
+      },
+      "v10_modifications_affecting": [
+        "mod1_huber_logcosh",
+        "mod7_adaptive_clip_lr",
+        "mod8_tukey_sincos"
+      ],
+      "expected_v10_delta": "Current v10 shows Pred σ=0.51 vs Real σ=14.76 (variance coverage ≈ 0.035), indicating severe mode collapse—this is the most critical robustness failure. Tukey removal at training may be suppressing the model's exposure to high-variance events. Adaptive p90 gradient clipping may be over-regularizing. Primary concern: P95-MAE will be poor due to systematic bias of 10.76%.",
+      "visualization": "boxplot"
+    },
+    {
+      "id": "D6",
+      "name": "Computational Efficiency",
+      "category": "efficiency",
+      "description": "Measures the compute-accuracy Pareto frontier: inference latency, memory footprint, throughput, and the marginal accuracy gain per parameter. Critical for deployment—a model with 10% better MAE but 10x inference cost may be inferior in production. Also captures training efficiency (convergence speed).",
+      "metrics": [
+        {
+          "name": "Inference Latency per Epoch",
+          "formula": "wall-clock time for one full pass over test set",
+          "unit": "seconds",
+          "direction": "lower_better"
+        },
+        {
+          "name": "Parameters (M)",
+          "formula": "total trainable parameter count",
+          "unit": "millions",
+          "direction": "lower_better"
+        },
+        {
+          "name": "MAE per Million Params (Efficiency Ratio)",
+          "formula": "MAE_test / (params / 1e6)",
+          "unit": "mph/M-params",
+          "direction": "lower_better"
+        },
+        {
+          "name": "Convergence Epoch",
+          "formula": "first epoch where Val MAE < (final Val MAE * 1.05)",
+          "unit": "epochs",
+          "direction": "lower_better"
+        },
+        {
+          "name": "Memory Footprint",
+          "formula": "peak GPU memory during training forward+backward pass",
+          "unit": "GB",
+          "direction": "lower_better"
+        }
+      ],
+      "d2stgnn_baseline": {
+        "value": {
+          "params_M": "~1.4M estimated",
+          "inference_s": "not reported",
+          "note": "D2STGNN paper does not report latency. Parameter count estimated from architecture description."
+        },
+        "source": "Estimated from D2STGNN architecture; no official efficiency benchmark"
+      },
+      "v10_modifications_affecting": [
+        "mod2_swish_groupnorm",
+        "mod4_layernorm",
+        "mod5_3head_attention_graph",
+        "mod6_rmsnorm_rotarype",
+        "mod7_adaptive_clip_lr"
+      ],
+      "expected_v10_delta": "v10 has 515K params (0.515M) vs estimated ~1.4M baseline—significantly leaner. However, 3-head attention and RMSNorm GRU add per-step compute. Gradient checkpoint (mentioned in architecture) trades memory for compute. Current 2.86s inference on CPU for 20 nodes is unmeasurable at scale—GPU benchmark on 207 nodes needed.",
+      "visualization": "bar_chart"
+    },
+    {
+      "id": "D7",
+      "name": "Graph Structure Sensitivity",
+      "category": "structural",
+      "description": "Measures how model performance depends on the quality and construction of the graph adjacency matrix. Tests whether learned dynamic graphs actually capture meaningful spatial dependencies vs. overfitting graph structure. Probed by: (a) graph ablation (use identity), (b) graph perturbation (random edge flipping), (c) comparing learned dynamic graph to ground-truth topology.",
+      "metrics": [
+        {
+          "name": "MAE with identity adjacency (no graph)",
+          "formula": "MAE when A = I (no spatial message passing)",
+          "unit": "mph",
+          "direction": "lower_better"
+        },
+        {
+          "name": "Graph Perturbation Sensitivity (GPS)",
+          "formula": "ΔMAE when 20% of edges are randomly flipped, averaged over 5 seeds",
+          "unit": "mph",
+          "direction": "lower_better"
+        },
+        {
+          "name": "Dynamic Graph Entropy",
+          "formula": "mean entropy of learned attention weights: -sum(α_ij * log(α_ij)) per node per step",
+          "unit": "nats",
+          "direction": "higher_better"
+        },
+        {
+          "name": "Spatial Correlation Recovery (SCR)",
+          "formula": "Pearson corr between learned edge weights and empirical speed correlation matrix",
+          "unit": "dimensionless [-1,1]",
+          "direction": "higher_better"
+        }
+      ],
+      "d2stgnn_baseline": {
+        "value": {
+          "GPS": "~0.3–0.5 mph estimated",
+          "SCR": "~0.6–0.75 estimated",
+          "note": "D2STGNN uses a fixed diffusion graph + learned dynamic graph. Ablation in paper shows ~15% MAE increase without dynamic graph."
+        },
+        "source": "D2STGNN ablation study Table 3 (approximate, dynamic graph contribution)"
+      },
+      "v10_modifications_affecting": [
+        "mod5_3head_attention_graph",
+        "mod9_rbf_knn_adj"
+      ],
+      "expected_v10_delta": "RBF+kNN(15) provides a geometrically grounded initial adjacency, potentially improving SCR. 3-head attention creates diverse edge weight distributions (higher Dynamic Graph Entropy). Risk: kNN(15) with k=15 on 207 nodes creates a very dense graph (~7.25% density), potentially diluting spatial locality signal.",
+      "visualization": "heatmap"
+    },
+    {
+      "id": "D8",
+      "name": "Temporal Pattern Disentanglement",
+      "category": "temporal",
+      "description": "Measures whether the model correctly separates periodic patterns (daily/weekly cycles) from aperiodic residuals (incidents, weather effects). A model that conflates them will fail on atypical days even if it excels on typical days. Probed by decomposing test error into periodic vs. residual components using STL decomposition of ground truth.",
+      "metrics": [
+        {
+          "name": "Periodic Component MAE",
+          "formula": "MAE computed only on the seasonal component of y (via STL decomposition)",
+          "unit": "mph",
+          "direction": "lower_better"
+        },
+        {
+          "name": "Residual Component MAE",
+          "formula": "MAE computed only on the residual component of y (via STL decomposition)",
+          "unit": "mph",
+          "direction": "lower_better"
+        },
+        {
+          "name": "Disentanglement Ratio",
+          "formula": "Residual_MAE / Periodic_MAE",
+          "unit": "dimensionless",
+          "direction": "lower_better"
+        },
+        {
+          "name": "Weekend vs. Weekday MAE Gap",
+          "formula": "|MAE_weekend - MAE_weekday|",
+          "unit": "mph",
+          "direction": "lower_better"
+        }
+      ],
+      "d2stgnn_baseline": {
+        "value": {
+          "Weekend_Weekday_Gap": "~0.2–0.4 mph estimated",
+          "Disentanglement_Ratio": "~2.0–3.5 estimated",
+          "note": "D2STGNN does not report periodic decomposition. Estimates based on typical METR-LA periodicity (strong daily cycle, moderate weekly)."
+        },
+        "source": "Estimated from METR-LA temporal characteristics; no published decomposition"
+      },
+      "v10_modifications_affecting": [
+        "mod6_rmsnorm_rotarype",
+        "mod8_tukey_sincos"
+      ],
+      "expected_v10_delta": "Sin/cos time encoding in mod8 explicitly injects periodic priors (time-of-day, day-of-week), which should improve Periodic Component MAE. RotaryPE provides relative temporal position encoding that is theoretically superior for capturing periodic structure. Expected improvement in Disentanglement Ratio. However, Tukey outlier removal may clip real anomalous-day signal, artificially improving residual MAE on training data while hurting test residual MAE.",
+      "visualization": "line_chart"
+    },
+    {
+      "id": "D9",
+      "name": "Calibration and Uncertainty Quantification",
+      "category": "robustness",
+      "description": "Measures whether the model's point predictions are well-calibrated—i.e., that prediction errors are predictable and not systematically biased in specific regimes. Even without explicit probabilistic outputs, calibration can be assessed by examining bias patterns across speed quantiles, time-of-day, and node types. Particularly important for safety-critical routing applications.",
+      "metrics": [
+        {
+          "name": "Systematic Bias",
+          "formula": "mean(ŷ - y) across full test set",
+          "unit": "mph (signed)",
+          "direction": "lower_better"
+        },
+        {
+          "name": "Bias by Speed Quantile",
+          "formula": "mean(ŷ - y) computed within each decile of ground truth speed",
+          "unit": "mph",
+          "direction": "lower_better"
+        },
+        {
+          "name": "Prediction Variance Coverage",
+          "formula": "std(ŷ) / std(y)",
+          "unit": "dimensionless, ideal=1.0",
+          "direction": "lower_better"
+        },
+        {
+          "name": "Mean Absolute Bias (MABias)",
+          "formula": "mean(ŷ) - mean(y)",
+          "unit": "mph",
+          "direction": "lower_better"
+        }
+      ],
+      "d2stgnn_baseline": {
+        "value": {
+          "Systematic_Bias": "~0.05–0.15 mph estimated (near zero)",
+          "Variance_Coverage": "~0.80–0.90 estimated"
+        },
+        "source": "Inferred from RMSE/MAE ratio of 1.89; well-calibrated models typically show |bias| < 0.1 * MAE"
+      },
+      "v10_modifications_affecting": [
+        "mod1_huber_logcosh",
+        "mod3_mish_residual_scale",
+        "mod7_adaptive_clip_lr"
+      ],
+      "expected_v10_delta": "CRITICAL: Current v10 shows Systematic Bias = 10.76% and Variance Coverage ≈ 0.035—both catastrophically miscalibrated. This is the single most urgent dimension to fix. The Huber+log-cosh loss combination with δ=5 creates very flat gradient regions for mid-range errors, causing the model to converge to a biased mean predictor. Learnable residual scale (α=0.9) and warmup-cosine LR are insufficient to counteract this with only 3 training epochs.",
+      "visualization": "bar_chart"
+    },
+    {
+      "id": "D10",
+      "name": "Training Stability and Optimization Landscape",
+      "category": "robustness",
+      "description": "Measures the smoothness and reliability of the training process: gradient health, loss landscape sharpness, sensitivity to random seed, and convergence behavior. Distinct from final accuracy—a model with good final MAE but unstable training is unreproducible and difficult to tune. Particularly important for multi-component architectures with many interacting regularizers.",
+      "metrics": [
+        {
+          "name": "Gradient Norm Coefficient of Variation",
+          "formula": "std(||∇L||) / mean(||∇L||) across training steps",
+          "unit": "dimensionless",
+          "direction": "lower_better"
+        },
+        {
+          "name": "Loss Landscape Sharpness (SAM-proxy)",
+          "formula": "max over unit-ball perturbation ε of |L(θ+ε) - L(θ)|, approximated by largest Hessian eigenvalue via power iteration",
+          "unit": "loss units",
+          "direction": "lower_better"
+        },
+        {
+          "name": "Seed Sensitivity (σ_seed)",
+          "formula": "std(MAE_test) over 5 different random seeds",
+          "unit": "mph",
+          "direction": "lower_better"
+        },
+        {
+          "name": "Dead Neuron Rate",
+          "formula": "fraction of neurons with mean activation < 1e-3 over test set",
+          "unit": "%",
+          "direction": "lower_better"
+        },
+        {
+          "name": "Gradient Health Score",
+          "formula": "fraction of parameter groups with gradient norm in [0.001, 10.0]",
+          "unit": "%",
+          "direction": "higher_better"
+        }
+      ],
+      "d2stgnn_baseline": {
+        "value": {
+          "Dead_Neuron_Rate": "~2–8% estimated",
+          "Seed_Sensitivity": "±0.05–0.10 MAE estimated"
+        },
+        "source": "Estimated from typical GNN training behavior; D2STGNN paper does not report stability metrics"
+      },
+      "v10_modifications_affecting": [
+        "mod2_swish_groupnorm",
+        "mod3_mish_residual_scale",
+        "mod6_rmsnorm_rotarype",
+        "mod7_adaptive_clip_lr"
+      ],
+      "expected_v10_delta": "v10 shows Dead Neuron Rate = 0.0%, which is unusual and may indicate mode collapse rather than health (all neurons active in narrow output range). Adaptive p90 gradient clipping provides data-dependent stability. RMSNorm is known to improve training stability over LayerNorm. GroupNorm is more stable than BN for small batches. Expected: low Gradient Norm CV, but Seed Sensitivity may be high due to many interacting hyperparameters (α, γ, δ, temperature).",
+      "visualization": "line_chart"
+    }
+  ]
+}

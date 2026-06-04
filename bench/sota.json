@@ -1,0 +1,68 @@
+{
+  "dataset": "METR-LA",
+  "models": [
+    {
+      "name": "DCRNN",
+      "year": 2018,
+      "MAE": 3.33,
+      "RMSE": 6.9,
+      "MAPE": 10.8
+    },
+    {
+      "name": "STGCN",
+      "year": 2018,
+      "MAE": 3.47,
+      "RMSE": 6.89,
+      "MAPE": 10.94
+    },
+    {
+      "name": "Graph WaveNet",
+      "year": 2019,
+      "MAE": 3.19,
+      "RMSE": 6.52,
+      "MAPE": 10.15
+    },
+    {
+      "name": "AGCRN",
+      "year": 2020,
+      "MAE": 3.07,
+      "RMSE": 6.34,
+      "MAPE": 9.81
+    },
+    {
+      "name": "STFGNN",
+      "year": 2021,
+      "MAE": 3.12,
+      "RMSE": 6.48,
+      "MAPE": 10.23
+    },
+    {
+      "name": "STG-NCDE",
+      "year": 2022,
+      "MAE": 2.96,
+      "RMSE": 6.51,
+      "MAPE": 9.13
+    },
+    {
+      "name": "D2STGNN",
+      "year": 2022,
+      "MAE": 3.04,
+      "RMSE": 6.23,
+      "MAPE": 8.33
+    },
+    {
+      "name": "PDFormer",
+      "year": 2023,
+      "MAE": 2.94,
+      "RMSE": 6.08,
+      "MAPE": 8.56
+    },
+    {
+      "name": "STAEFormer",
+      "year": 2023,
+      "MAE": 2.9,
+      "RMSE": 5.91,
+      "MAPE": 8.12
+    }
+  ]
+}
