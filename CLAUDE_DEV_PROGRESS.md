@@ -75,6 +75,37 @@ M038-M040  __init__.py 断点快照系统:
 **产出**: 14 文件改动, +814/-70 行, 总计 ~4809 行
 **验证**: 28个算法文件全部 ≥20% 纯算法改动率 (SequenceMatcher, 去掉注释/import/debug行)
 
+### 第三位 Claude — M041-M055: 标签清除 + 算法增强
+
+```
+M041-M043  __init__.py 核心诊断算法:
+           - _dbg() NaN/Inf 自动告警: 即使tag未开启也触发 ALERT 级别
+           - _dbg() tensor 稀疏度追踪: >95% 自动标记 SPARSE(xx.x%)
+           - snapshot_model 参数病态自动诊断:
+             COLLAPSED_SCALE (std<1e-6) / MEAN_DRIFT (|μ|>3σ) / GRAD_SPIKE (>50)
+M044-M047  trainer.py 训练算法:
+           - 梯度噪声注入 σ(t) = η/(1+t)^γ, warmup后启动, 自然衰减
+           - loss曲面平坦度探测: 每1000步随机扰动θ, 比较Δloss
+           - 平坦度历史记录用于收敛质量判断
+M048-M049  model.py highway gate:
+           - 可学习温度τ控制sigmoid锐度, log_highway_tau参数
+           - embedding后接dropout (rate=dropout*0.5)
+M050-M051  losses.py 时序一致性约束:
+           - temporal_consistency_penalty: 惩罚pred比real更粗糙的时序跳变
+           - α * mean(|pred_diff| - |real_diff|)_+, 只罚超出部分
+M052-M053  dy_graph_conv.py DropEdge退火:
+           - 余弦退火: rate从base衰减到min(base*0.1)
+           - 前期高drop帮助正则化探索, 后期低drop精细收敛
+M054-M055  inh_model.py:
+           - RMSNorm: 可选affine bias + running_rms指数移动平均(momentum=0.1)
+           - 注意力head diversity: 各head attention pattern余弦相似度
+           - head坍缩检测(所有head关注相同位置)
+全局:      清除34文件中81处v10标签 + 4个yaml配置段重命名
+```
+
+**产出**: 35 文件改动, +610/-119 行, 总计 ~4,969 行
+**验证**: 41个.py文件全部 AST parse 通过, v10/port 残留 = 0
+
 ---
 
 ## Claude 接力计划
@@ -83,17 +114,17 @@ M038-M040  __init__.py 断点快照系统:
 |----------|--------|------|------|
 | **第一位** | **M001-M025** | **创建 src/walpurgis/ — 41py+4yaml** | **✅ 已完成** |
 | **第二位** | **M026-M040** | **算法深化 + 断点快照系统** | **✅ 已完成** |
-| 第三位 | M041-M065 | 待定 | ⏳ 待开发 |
-| 第四位 | M066-M090 | 待定 | ⏳ 待开发 |
-| 第五位 | M091-M115 | 待定 | ⏳ 待开发 |
-| 第六位 | M116-M140 | 待定 | ⏳ 待开发 |
+| **第三位** | **M041-M055** | **标签清除 + 算法增强(诊断/噪声/平坦度/退火)** | **✅ 已完成** |
+| 第四位 | M056-M075 | 待定 | ⏳ 待开发 |
+| 第五位 | M076-M095 | 待定 | ⏳ 待开发 |
+| 第六位 | M096-M115 | 待定 | ⏳ 待开发 |
 
 ---
 
 ## 文件统计快照
 
 ```
-src/walpurgis/               4,809 行 Python (41 .py + 4 .yaml)
+src/walpurgis/               4,969 行 Python (41 .py + 4 .yaml)
 src/core/                   ~2,000 行 C++
 src/bridge/                 ~1,200 行 C++
 src/scheduler/                ~600 行 C++

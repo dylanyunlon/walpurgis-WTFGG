@@ -29,12 +29,12 @@
 
 | Claude # | Milestones | Status |
 |----------|------------|--------|
-| **Claude 1** (current) | M005 – M010 | ✅ COMPLETE — walpurgis_ported_v3 全部 45 文件, 20% 变形 + debug instrumentation |
-| **Claude 2** | M011 – M012 | 🔜 integration test + C++ bridge |
-| **Claude 3** | M013 – M014 | 🔜 CUDA integration + benchmark |
-| **Claude 4** | M015 – M016 | 🔜 CI pipeline + documentation |
-| **Claude 5** | M017 | 🔜 final review + merge |
-| **Claude 6** | M018 | 🔜 post-merge regression |
+| **第一位 Claude** | M001 – M025 | ✅ 已完成 — 创建 src/walpurgis/ 41py+4yaml |
+| **第二位 Claude** | M026 – M040 | ✅ 已完成 — 算法深化 + 断点快照系统 |
+| **第三位 Claude** | M041 – M055 | ✅ 已完成 — 标签清除 + 算法增强(诊断/噪声/平坦度/退火) |
+| **第四位 Claude** | M056 – M075 | ⏳ 待开发 |
+| **第五位 Claude** | M076 – M095 | ⏳ 待开发 |
+| **第六位 Claude** | M096 – M115 | ⏳ 待开发 |
 
 ---
 
