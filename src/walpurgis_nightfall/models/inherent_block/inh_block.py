@@ -8,10 +8,10 @@ InhBlock — Nightfall变体
 import math
 import torch
 import torch.nn as nn
-from models.decouple.residual_decomp import ResidualDecomp
-from models.inherent_block.inh_model import RNNLayer, TransformerLayer
-from models.inherent_block.forecast import Forecast
-from walpurgis_nightfall import _dbg
+from ..decouple.residual_decomp import ResidualDecomp
+from .inh_model import RNNLayer, TransformerLayer
+from .forecast import Forecast
+from ... import _dbg
 
 
 class PositionalEncoding(nn.Module):

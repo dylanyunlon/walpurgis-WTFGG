@@ -9,7 +9,7 @@ import scipy.sparse as sp
 import numpy as np
 from scipy.sparse import linalg
 import torch
-from walpurgis_nightfall import _dbg
+from .. import _dbg
 
 
 def check_nan_inf(tensor, raise_ex=True):

@@ -5,7 +5,7 @@ PEMS-BAY generate_training_data — Nightfall变体
 import argparse
 import os
 import sys
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', '..'))
 from datasets._gen_speed_common import generate_train_val_test
 
 

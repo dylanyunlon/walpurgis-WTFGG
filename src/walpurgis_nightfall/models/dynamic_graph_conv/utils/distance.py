@@ -9,7 +9,7 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from walpurgis_nightfall import _dbg
+from .... import _dbg
 
 
 class DistanceFunction(nn.Module):

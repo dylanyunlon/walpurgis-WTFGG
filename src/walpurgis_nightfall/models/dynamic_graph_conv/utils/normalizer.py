@@ -5,8 +5,8 @@ Normalizer — Nightfall变体
 """
 import torch
 import torch.nn as nn
-from utils.cal_adj import remove_nan_inf
-from walpurgis_nightfall import _dbg
+from ....utils.cal_adj import remove_nan_inf
+from .... import _dbg
 
 
 class Normalizer(nn.Module):

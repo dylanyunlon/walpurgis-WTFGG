@@ -6,7 +6,7 @@ DynamicGraphConstructor — Nightfall变体
 """
 import torch.nn as nn
 from .utils import DistanceFunction, Mask, Normalizer, MultiOrder
-from walpurgis_nightfall import _dbg
+from ... import _dbg
 
 
 class DynamicGraphConstructor(nn.Module):

@@ -1,6 +1,6 @@
 """PEMS04 generate_training_data — Nightfall, 调用_gen_flow_common"""
 import argparse, os, sys
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', '..'))
 from datasets._gen_flow_common import generate_train_val_test
 
 if __name__ == "__main__":

@@ -7,7 +7,7 @@ losses.py — Nightfall变体
 """
 import torch
 import numpy as np
-from walpurgis_nightfall import _dbg
+from .. import _dbg
 
 _CHARB_EPS = 1e-6  # Charbonnier平滑常数
 

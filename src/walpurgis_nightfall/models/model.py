@@ -13,7 +13,7 @@ from .diffusion_block import DifBlock
 from .inherent_block import InhBlock
 from .dynamic_graph_conv import DynamicGraphConstructor
 from .decouple.estimation_gate import EstimationGate
-from walpurgis_nightfall import _dbg
+from .. import _dbg
 
 
 class DecoupleLayer(nn.Module):

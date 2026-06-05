@@ -10,9 +10,9 @@ import numpy as np
 import torch
 import torch.optim as optim
 from sklearn.metrics import mean_absolute_error
-from utils.train import data_reshaper, save_model
+from ..utils.train import data_reshaper, save_model
 from .losses import masked_mae, masked_rmse, masked_mape, metric, temporal_consistency_penalty
-from walpurgis_nightfall import _dbg, _is_debug
+from .. import _dbg, _is_debug
 import sys
 
 

@@ -4,7 +4,7 @@ DataLoader — Nightfall变体
 这减少了尾部样本的过度表示
 """
 import numpy as np
-from walpurgis_nightfall import _dbg
+from .. import _dbg
 
 
 class DataLoader(object):

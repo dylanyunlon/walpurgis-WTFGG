@@ -12,13 +12,13 @@ torch.set_num_threads(1)
 import pickle
 import numpy as np
 
-from utils.train import set_config, EarlyStopping, data_reshaper, load_model
-from utils.load_data import load_dataset, load_adj
-from utils.log import TrainLogger
-from models.losses import masked_mae, masked_rmse, masked_mape, metric
-from models import trainer
-from models.model import D2STGNN
-from walpurgis_nightfall import (
+from .utils.train import set_config, EarlyStopping, data_reshaper, load_model
+from .utils.load_data import load_dataset, load_adj
+from .utils.log import TrainLogger
+from .models.losses import masked_mae, masked_rmse, masked_mape, metric
+from .models import trainer
+from .models.model import D2STGNN
+from . import (
     _dbg, _is_debug, snapshot_model, register_activation_hooks, gradient_health_check)
 import yaml
 

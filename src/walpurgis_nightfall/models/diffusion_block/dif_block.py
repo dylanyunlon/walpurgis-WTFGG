@@ -8,7 +8,7 @@ import torch.nn as nn
 from .forecast import Forecast
 from .dif_model import STLocalizedConv
 from ..decouple.residual_decomp import ResidualDecomp
-from walpurgis_nightfall import _dbg
+from ... import _dbg
 
 
 class DifBlock(nn.Module):

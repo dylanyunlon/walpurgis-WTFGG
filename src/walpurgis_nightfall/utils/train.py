@@ -7,7 +7,7 @@ train utils — Nightfall变体
 import torch
 import numpy as np
 import random
-from walpurgis_nightfall import _dbg
+from .. import _dbg
 
 
 def set_config(seed=0):

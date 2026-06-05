@@ -6,7 +6,7 @@ ResidualDecomp — Nightfall变体
 """
 import torch
 import torch.nn as nn
-from walpurgis_nightfall import _dbg
+from ... import _dbg
 
 
 class ResidualDecomp(nn.Module):

@@ -8,9 +8,9 @@ load_data — Nightfall变体
 import pickle
 import os
 import numpy as np
-from dataloader import DataLoader
-from utils.cal_adj import *
-from walpurgis_nightfall import _dbg
+from ..dataloader import DataLoader
+from .cal_adj import *
+from .. import _dbg
 
 
 def re_normalization(x, mean, std):
