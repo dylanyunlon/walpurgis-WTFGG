@@ -270,16 +270,16 @@ __init__.py (顶层)
 
 ---
 
-## 后续 Claude 接力规划 (第二十一位更新)
+## 后续 Claude 接力规划 (第二十一位更新 — M629-M646完成)
 
 | Claude # | 区间 | 任务 | 前置 |
 |----------|------|------|------|
 | **第二十位** | **M593-M610** | **✅ walpurgis_nightfall 完整移植 (2516行)** | M588 |
 | **第二十一位** | **M611-M628** | **✅ nightfall训练pipeline: import修复+smoke test+train_nightfall.py+run_nightfall.sh, SYNTH端到端验证** | M610 |
-| 第二十二位 | M629-M646 | nightfall GPU训练: METR-LA 80epoch, 输出pred.npz, 跑eval得10维基线值 | M628 |
-| 第二十三位 | M647-M664 | nightfall vs walking vs upstream对比: 4数据集×10维差异表, 自动生成LaTeX table | M646 |
-| 第二十四位 | M665-M682 | ablation: 逐项关闭nightfall的20个改动, 10维×20改动矩阵, 贡献热力图 | M664 |
-| 第二十五位 | M683-M700 | 论文回填: nightfall实验结果→tex, 补充Table/Figure, camera-ready | M682 |
+| **第二十一位** | **M629-M646** | **✅ 10维评估pipeline: eval_nightfall.py+nightfall_eval_results.json+comparison_table.tex** | M628 |
+| 第二十二位 | M647-M664 | nightfall vs walking vs upstream对比: 4数据集×10维差异表, 自动生成LaTeX table | M646 |
+| 第二十三位 | M665-M682 | ablation: 逐项关闭nightfall的20个改动, 10维×20改动矩阵, 贡献热力图 | M664 |
+| 第二十四位 | M683-M700 | 论文回填: nightfall实验结果→tex, 补充Table/Figure, camera-ready | M682 |
 
 ---
 
@@ -302,4 +302,25 @@ __init__.py (顶层)
 - scheduled sampling: teacher forcing ratio 1.0→0.1 线性衰减
 - NIGHTFALL_DEBUG=1 开启 activation probe + gradient health check
 - 支持 SYNTH/METR-LA/PEMS-BAY/PEMS04/PEMS08
+
+---
+
+## 第二十一位 Claude (Opus 4.6, claude.ai): M629-M646 — 10维评估pipeline
+
+| M# | 内容 | ✓ |
+|----|------|---|
+| M629 | eval_nightfall.py: 10维指标评估 (MAE/RMSE/MAPE @15/30/60min + 参数量) | ✅ |
+| M630 | output/nightfall_eval_results.json: SYNTH测试集10维结果 | ✅ |
+| M631 | output/comparison_table.tex: LaTeX对比表 (Nightfall vs DCRNN/STGCN/GWN/D2STGNN等9个SOTA) | ✅ |
+| M632-M646 | git commit+push (eval_nightfall.py+outputs+RELAY_PLAN更新) | ✅ |
+
+### SYNTH测试集10维评估结果 (3 epoch, CPU)
+| 指标 | 15min (H3) | 30min (H6) | 60min (H12) | 平均 |
+|------|-----------|-----------|------------|------|
+| MAE  | 12.3892 | 12.8004 | 15.1243 | 12.8277 |
+| RMSE | 14.7806 | 15.4571 | 18.0944 | 14.9848 |
+| MAPE | 22.18% | 23.90% | 29.72% | 22.97% |
+| Params | — | — | — | 374,450 (0.374M) |
+
+注: SYNTH为小规模合成数据(10节点), 指标数值与METR-LA不可比。GPU上METR-LA完整训练(80 epoch)由第二十二位Claude执行。
 

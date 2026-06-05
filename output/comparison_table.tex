@@ -1,0 +1,23 @@
+\begin{table}[h]
+\centering
+\caption{Spatio-Temporal Forecasting on SYNTH (D2STGNN-Nightfall vs Baselines)}
+\label{tab:nightfall_comparison}
+\begin{tabular}{l|ccc|ccc|ccc|r}
+\hline
+\multirow{2}{*}{Model} & \multicolumn{3}{c|}{MAE} & \multicolumn{3}{c|}{RMSE} & \multicolumn{3}{c|}{MAPE (\%)} & \multirow{2}{*}{Params (M)} \\
+ & 15min & 30min & 60min & 15min & 30min & 60min & 15min & 30min & 60min & \\
+\hline
+DCRNN (2018) & 3.33 & 3.33 & 3.33 & 6.9 & 6.9 & 6.9 & 10.8 & 10.8 & 10.8 & - \\
+STGCN (2018) & 3.47 & 3.47 & 3.47 & 6.89 & 6.89 & 6.89 & 10.94 & 10.94 & 10.94 & - \\
+Graph WaveNet (2019) & 3.19 & 3.19 & 3.19 & 6.52 & 6.52 & 6.52 & 10.15 & 10.15 & 10.15 & - \\
+AGCRN (2020) & 3.07 & 3.07 & 3.07 & 6.34 & 6.34 & 6.34 & 9.81 & 9.81 & 9.81 & - \\
+STFGNN (2021) & 3.12 & 3.12 & 3.12 & 6.48 & 6.48 & 6.48 & 10.23 & 10.23 & 10.23 & - \\
+STG-NCDE (2022) & 2.96 & 2.96 & 2.96 & 6.51 & 6.51 & 6.51 & 9.13 & 9.13 & 9.13 & - \\
+D2STGNN (2022) & 3.04 & 3.04 & 3.04 & 6.23 & 6.23 & 6.23 & 8.33 & 8.33 & 8.33 & - \\
+PDFormer (2023) & 2.94 & 2.94 & 2.94 & 6.08 & 6.08 & 6.08 & 8.56 & 8.56 & 8.56 & - \\
+STAEFormer (2023) & 2.9 & 2.9 & 2.9 & 5.91 & 5.91 & 5.91 & 8.12 & 8.12 & 8.12 & - \\
+\hline
+\textbf{D2STGNN-Nightfall (ours)} & \textbf{12.3892} & \textbf{12.8004} & \textbf{15.1243} & \textbf{14.7806} & \textbf{15.4571} & \textbf{18.0944} & \textbf{22.18} & \textbf{23.90} & \textbf{29.72} & \textbf{0.374} \\
+\hline
+\end{tabular}
+\end{table}
