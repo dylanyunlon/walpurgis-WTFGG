@@ -1,321 +1,254 @@
 #!/usr/bin/env bash
 # ================================================================
-#  walpurgis_bench.sh — 通过 claude.hk.cn 构建理论基线 benchmark
-#
-#  原理: 向远端Claude发送结构化prompt, 要求它:
-#    1) 查文献获取published baseline (D2STGNN原文Table 3/4)
-#    2) 用code execution计算v10改动的理论预期偏移
-#    3) 按固定JSON格式返回结果
-#  本地解析SSE流, 提取数字, 生成对比表.
-#
-#  用法: bash walpurgis_bench.sh
-#  依赖: curl, python3, jq(可选)
+#  walpurgis_bench_v3.sh — 远端Claude code execution + git clone
+#  
+#  让远端Claude:
+#    1) git clone walpurgis-WTFGG
+#    2) tree/diff/grep分析真实代码
+#    3) 基于真实代码结构输出benchmark数字
+#    4) 每个prompt独立新对话
 # ================================================================
 set -euo pipefail
 
-# ── API 配置 (从你的claude-hk-chat.sh复制) ─────────────────────
-API="https://claude.hk.cn/api/organizations/0de6831b-fb77-41c7-bfb9-0899fb74f90f/chat_conversations/8ea00470-e663-405c-8020-26f1b8a7e1fc/completion"
+ORG="0de6831b-fb77-41c7-bfb9-0899fb74f90f"
 MODEL="${MODEL:-claude-sonnet-4-6}"
 EFFORT="${EFFORT:-high}"
-TIMEOUT="${TIMEOUT:-180}"
+TIMEOUT="${TIMEOUT:-300}"  # code execution需要更长
 
-COOKIES='CH-prefers-color-scheme=dark; ajs_anonymous_id=claudeai.v1.d6ccc63a-21ab-47e6-9214-d6edfc518c7e; share-session=6rrqz00r1ffzg0dizxnz0rb0zn63t3e7; lastActiveOrg=0de6831b-fb77-41c7-bfb9-0899fb74f90f'
+# 重要: 用完整cookie
+CK='lastActiveOrg=0de6831b-fb77-41c7-bfb9-0899fb74f90f; CH-prefers-color-scheme=dark; g_state={"i_l":0,"i_ll":1778115570300,"i_b":"lqbhq/LibeNDVywiN36ev6CfJb/M9byi5v9sTOB0beg","i_e":{"enable_itp_optimization":0},"i_et":1778115570300,"i_t":1778201970306}; ajs_anonymous_id=claudeai.v1.d6ccc63a-21ab-47e6-9214-d6edfc518c7e; user-sidebar-pinned=false; share-session=6rrqz00r1ffzg0dizxnz0rb0zn63t3e7; lastActiveOrg=0de6831b-fb77-41c7-bfb9-0899fb74f90f; user-sidebar-visible-on-load=false; _dd_s=aid=5212c48b-ec8f-488b-929d-77b816ba6d67&rum=2&id=cb196ab3-7017-41c2-a1a3-96fd887bc5f1&created=1780623403660&expire=1780624622174'
 UA='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36'
-ORIGIN='https://claude.hk.cn'
+BASE="https://claude.hk.cn/api/organizations/${ORG}"
 
-# ── 输出目录 ────────────────────────────────────────────────────
-OUT_DIR="bench_results"
-mkdir -p "$OUT_DIR"
-TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-LOG="$OUT_DIR/bench_${TIMESTAMP}.log"
-RESULT_JSON="$OUT_DIR/bench_${TIMESTAMP}.json"
+OUT="bench_results"; mkdir -p "$OUT"
+TS=$(date +%Y%m%d_%H%M%S)
 
-# ── 颜色 ────────────────────────────────────────────────────────
-R='\033[0m'; C='\033[36m'; G='\033[32m'; Y='\033[33m'; D='\033[90m'
+R='\033[0m'; C='\033[36m'; G='\033[32m'; Y='\033[33m'
 
-# ── 核心: 发prompt, 返回completion全文 ──────────────────────────
-send() {
-  local prompt="$1"
-  local escaped
-  escaped=$(printf '%s' "$prompt" | python3 -c 'import sys,json; print(json.dumps(sys.stdin.read()))')
+# ── 发送函数(支持code execution) ────────────────────────────
+bench_one() {
+  local TAG="$1"
+  local PROMPT_FILE="$2"
+  local OUT_FILE="$OUT/${TAG}_${TS}.json"
 
-  local payload="{\"prompt\":${escaped},\"timezone\":\"Asia/Shanghai\",\"personalized_styles\":[{\"type\":\"default\",\"key\":\"Default\",\"name\":\"Normal\",\"nameKey\":\"normal_style_name\",\"prompt\":\"Normal\\n\",\"summary\":\"Default responses from Claude\",\"summaryKey\":\"normal_style_summary\",\"isDefault\":true}],\"locale\":\"en-US\",\"model\":\"${MODEL}\",\"effort\":\"${EFFORT}\",\"thinking_mode\":\"off\",\"tools\":[]}"
+  echo -ne "${G}[${TAG}]${R} "
 
-  local raw
-  raw=$(curl -s --max-time "$TIMEOUT" "$API" \
-    -H 'accept: text/event-stream' \
-    -H 'content-type: application/json' \
-    -b "$COOKIES" \
-    -H "origin: $ORIGIN" \
-    -H "user-agent: $UA" \
-    --data-raw "$payload" 2>&1)
+  # 创建conversation
+  local CONV_ID
+  CONV_ID=$(curl -sf --max-time 15 "${BASE}/chat_conversations" \
+    -X POST -H 'content-type: application/json' -b "$CK" \
+    -H 'origin: https://claude.hk.cn' -H "user-agent: $UA" \
+    --data-raw '{"name":"","project_uuid":null,"model":null}' \
+    | python3 -c 'import sys,json; print(json.loads(sys.stdin.read())["uuid"])')
 
-  # 从SSE流拼接completion
-  echo "$raw" | python3 -c '
-import sys, json
-text = ""
-for line in sys.stdin:
-    line = line.strip()
-    if line.startswith("data: "):
-        try:
-            d = json.loads(line[6:])
-            text += d.get("completion", "")
-        except: pass
-print(text)
-'
-}
+  [[ -z "$CONV_ID" ]] && { echo "conv创建失败"; return 1; }
 
-# ── Benchmark Prompt 模板 ──────────────────────────────────────
+  # 构建payload（关键: rendering_mode=messages + create_conversation_params）
+  local H_UUID A_UUID
+  H_UUID=$(python3 -c 'import uuid; print(str(uuid.uuid4()))')
+  A_UUID=$(python3 -c 'import uuid; print(str(uuid.uuid4()))')
 
-# Prompt 1: 从文献中提取D2STGNN published baselines
-PROMPT_BASELINES='You are a research assistant. I need the EXACT published results from the D2STGNN paper (Shao et al., VLDB 2022, "Decoupled Dynamic Spatial-Temporal Graph Neural Network for Traffic Forecasting").
-
-From Table 3 and Table 4 of the paper, extract the D2STGNN results for these datasets and horizons:
-
-Datasets: METR-LA, PEMS-BAY, PEMS04, PEMS08
-Metrics: MAE, RMSE, MAPE
-Horizons: 15min (3-step), 30min (6-step), 60min (12-step), and Average
-
-Output ONLY a JSON object, no other text, no markdown fences:
-{
-  "source": "D2STGNN VLDB2022 Table3/Table4",
-  "results": {
-    "METR-LA": {
-      "horizon_3":  {"MAE": ..., "RMSE": ..., "MAPE": ...},
-      "horizon_6":  {"MAE": ..., "RMSE": ..., "MAPE": ...},
-      "horizon_12": {"MAE": ..., "RMSE": ..., "MAPE": ...},
-      "average":    {"MAE": ..., "RMSE": ..., "MAPE": ...}
+  python3 << PYEOF
+import json
+prompt = open("$PROMPT_FILE").read()
+payload = {
+    "prompt": prompt,
+    "timezone": "Asia/Shanghai",
+    "personalized_styles": [{"type":"default","key":"Default","name":"Normal",
+        "nameKey":"normal_style_name","prompt":"Normal\n",
+        "summary":"Default responses from Claude",
+        "summaryKey":"normal_style_summary","isDefault":True}],
+    "locale": "en-US",
+    "model": "${MODEL}",
+    "effort": "${EFFORT}",
+    "thinking_mode": "off",
+    "tools": [
+        {"type": "web_search_v0", "name": "web_search"},
+        {"type": "artifacts_v0", "name": "artifacts"},
+        {"type": "repl_v0", "name": "repl"}
+    ],
+    "turn_message_uuids": {
+        "human_message_uuid": "$H_UUID",
+        "assistant_message_uuid": "$A_UUID"
     },
-    "PEMS-BAY": { ... same structure ... },
-    "PEMS04":   { ... same structure ... },
-    "PEMS08":   { ... same structure ... }
-  }
+    "attachments": [],
+    "files": [],
+    "sync_sources": [],
+    "rendering_mode": "messages",
+    "create_conversation_params": {
+        "name": "",
+        "model": "${MODEL}",
+        "include_conversation_preferences": True,
+        "paprika_mode": None,
+        "compass_mode": None,
+        "tool_search_mode": "auto",
+        "is_temporary": False,
+        "enabled_imagine": True
+    }
 }
-
-Use the exact numbers from the paper. If a specific horizon is not reported separately, use the average. PEMS04/PEMS08 may only have average results - that is fine, fill what is available.'
-
-# Prompt 2: v10改动的理论影响分析
-PROMPT_THEORY='You are an expert in spatio-temporal graph neural networks. Given the D2STGNN baseline and the following algorithmic modifications (our "v10" variant), estimate the expected impact on MAE/RMSE/MAPE for METR-LA.
-
-v10 modifications:
-1. Loss: smooth Huber + log-cosh hybrid (replaces pure masked MAE)
-2. Estimation Gate: Swish activation, dual-head attention, GroupNorm
-3. Residual Decomp: Mish activation, learnable residual scale alpha=0.9
-4. Diffusion: InstanceNorm→LayerNorm, gconv skip connection, cosine annealing AR dropout
-5. Dynamic Graph: multi-head(3) Q-K attention, LayerNorm, cosine-sim auxiliary
-6. Inherent Block: RMSNorm GRU, Rotary PE transformer, gradient checkpoint
-7. Training: adaptive p90 gradient clipping, warmup-cosine LR schedule
-8. Data: Tukey fences outlier removal, sin/cos periodic encoding
-9. Adjacency: RBF kernel + k-NN(15) sparsification + symmetric closure
-
-For each modification, estimate the relative MAE change (positive = worse, negative = better) on METR-LA, based on your knowledge of the traffic forecasting literature.
-
-Output ONLY JSON, no other text:
-{
-  "dataset": "METR-LA",
-  "baseline_MAE": <D2STGNN published average MAE>,
-  "modifications": [
-    {"name": "huber_logcosh_loss", "expected_MAE_delta_pct": ...},
-    {"name": "swish_gate_groupnorm", "expected_MAE_delta_pct": ...},
-    {"name": "mish_residual_scale", "expected_MAE_delta_pct": ...},
-    {"name": "layernorm_skip_cosine_dropout", "expected_MAE_delta_pct": ...},
-    {"name": "multihead_attention_graph", "expected_MAE_delta_pct": ...},
-    {"name": "rmsnorm_gru_rotary_pe", "expected_MAE_delta_pct": ...},
-    {"name": "adaptive_clip_warmup_cosine", "expected_MAE_delta_pct": ...},
-    {"name": "tukey_periodic_encoding", "expected_MAE_delta_pct": ...},
-    {"name": "rbf_knn_symmetric_adj", "expected_MAE_delta_pct": ...}
-  ],
-  "combined_expected_MAE_delta_pct": ...,
-  "expected_v10_MAE": ...,
-  "confidence": "low|medium|high",
-  "reasoning_summary": "..."
-}'
-
-# Prompt 3: SOTA对比表
-PROMPT_SOTA='You are a traffic forecasting benchmark expert. For the METR-LA dataset, provide the current state-of-the-art results (as of 2025-2026) from published papers.
-
-Include these models: DCRNN, STGCN, Graph WaveNet, ASTGCN, STSGCN, AGCRN, STFGNN, STG-NCDE, D2STGNN, PDFormer, STAEFormer, and any more recent SOTA.
-
-Output ONLY JSON:
-{
-  "dataset": "METR-LA",
-  "metric": "average MAE/RMSE/MAPE across 12 horizons",
-  "models": [
-    {"name": "DCRNN", "year": 2018, "venue": "ICLR", "MAE": ..., "RMSE": ..., "MAPE": ...},
-    {"name": "Graph WaveNet", "year": 2019, "venue": "IJCAI", "MAE": ..., "RMSE": ..., "MAPE": ...},
-    ...
-  ],
-  "notes": "..."
-}'
-
-# ── 执行 benchmark ──────────────────────────────────────────────
-echo -e "${Y}╔══════════════════════════════════════════════╗${R}"
-echo -e "${Y}║  Walpurgis Benchmark Runner                  ║${R}"
-echo -e "${Y}║  Model: ${C}${MODEL}${Y}  Effort: ${C}${EFFORT}${Y}           ║${R}"
-echo -e "${Y}╚══════════════════════════════════════════════╝${R}"
-echo ""
-
-run_bench() {
-  local name="$1"
-  local prompt="$2"
-  local outfile="$OUT_DIR/${name}_${TIMESTAMP}.json"
-
-  echo -e "${G}[${name}]${R} 发送中..." | tee -a "$LOG"
-  local t_start=$(date +%s)
-
-  local result
-  result=$(send "$prompt")
-
-  local t_end=$(date +%s)
-  local elapsed=$((t_end - t_start))
-  echo -e "${G}[${name}]${R} 完成 (${elapsed}s)" | tee -a "$LOG"
-
-  # 尝试提取JSON
-  local json_part
-  json_part=$(echo "$result" | python3 -c '
-import sys, json, re
-text = sys.stdin.read()
-# 尝试直接解析
-try:
-    obj = json.loads(text.strip())
-    print(json.dumps(obj, indent=2, ensure_ascii=False))
-    sys.exit(0)
-except: pass
-# 尝试从markdown fence里提取
-m = re.search(r"```(?:json)?\s*\n(.*?)\n```", text, re.DOTALL)
-if m:
-    try:
-        obj = json.loads(m.group(1))
-        print(json.dumps(obj, indent=2, ensure_ascii=False))
-        sys.exit(0)
-    except: pass
-# 尝试找第一个{...}
-m = re.search(r"\{.*\}", text, re.DOTALL)
-if m:
-    try:
-        obj = json.loads(m.group(0))
-        print(json.dumps(obj, indent=2, ensure_ascii=False))
-        sys.exit(0)
-    except: pass
-# 全部失败, 输出原文
-print(json.dumps({"raw_response": text, "parse_error": True}, indent=2, ensure_ascii=False))
-' 2>/dev/null || echo '{"error": "python parse failed"}')
-
-  echo "$json_part" > "$outfile"
-  echo -e "${D}  -> ${outfile}${R}" | tee -a "$LOG"
-  echo "$json_part" | python3 -c '
-import sys, json
-d = json.load(sys.stdin)
-if d.get("parse_error"):
-    print("  [WARN] JSON解析失败, 存为raw_response")
-elif "error" in d:
-    print(f"  [ERROR] {d[\"error\"]}")
-else:
-    keys = list(d.keys())[:5]
-    print(f"  [OK] keys: {keys}")
-' 2>/dev/null
-  echo ""
-}
-
-# ── 依次执行三个benchmark prompt ─────────────────────────────
-echo -e "${Y}[1/3] D2STGNN Published Baselines${R}"
-run_bench "baselines" "$PROMPT_BASELINES"
-
-echo -e "${Y}[2/3] v10 Modification Impact Analysis${R}"
-run_bench "v10_theory" "$PROMPT_THEORY"
-
-echo -e "${Y}[3/3] METR-LA SOTA Leaderboard${R}"
-run_bench "sota" "$PROMPT_SOTA"
-
-# ── 汇总生成对比表 ────────────────────────────────────────────
-echo -e "${Y}[汇总] 生成对比表...${R}"
-
-python3 << PYEOF
-import json, os, glob
-
-ts = "${TIMESTAMP}"
-d = "${OUT_DIR}"
-
-# 加载结果
-def load(name):
-    path = f"{d}/{name}_{ts}.json"
-    if os.path.exists(path):
-        with open(path) as f:
-            return json.load(f)
-    return {}
-
-baselines = load("baselines")
-theory = load("v10_theory")
-sota = load("sota")
-
-print("\n" + "=" * 70)
-print("  WALPURGIS BENCHMARK REPORT")
-print("  Generated:", ts)
-print("=" * 70)
-
-# D2STGNN baselines
-if "results" in baselines:
-    print("\n[1] D2STGNN Published Baselines")
-    print("-" * 50)
-    for ds, horizons in baselines["results"].items():
-        if "average" in horizons:
-            avg = horizons["average"]
-            print(f"  {ds:12s}  MAE={avg.get('MAE','?'):>6}  "
-                  f"RMSE={avg.get('RMSE','?'):>6}  "
-                  f"MAPE={avg.get('MAPE','?'):>6}")
-
-# v10 theory
-if "modifications" in theory:
-    print(f"\n[2] v10 Modification Impact (METR-LA)")
-    print("-" * 50)
-    base = theory.get("baseline_MAE", "?")
-    print(f"  Baseline MAE: {base}")
-    for m in theory["modifications"]:
-        delta = m.get("expected_MAE_delta_pct", "?")
-        name = m.get("name", "?")
-        sign = "+" if isinstance(delta, (int,float)) and delta > 0 else ""
-        print(f"  {name:35s} {sign}{delta}%")
-    combined = theory.get("combined_expected_MAE_delta_pct", "?")
-    expected = theory.get("expected_v10_MAE", "?")
-    conf = theory.get("confidence", "?")
-    print(f"  {'COMBINED':35s} {combined}%")
-    print(f"  Expected v10 MAE: {expected}  (confidence: {conf})")
-
-# SOTA
-if "models" in sota:
-    print(f"\n[3] METR-LA SOTA Leaderboard")
-    print("-" * 50)
-    models = sorted(sota["models"], key=lambda x: x.get("MAE", 999))
-    for i, m in enumerate(models, 1):
-        print(f"  {i:2d}. {m.get('name','?'):20s} ({m.get('year','?')}) "
-              f"MAE={m.get('MAE','?'):>6}  "
-              f"RMSE={m.get('RMSE','?'):>6}")
-
-# v10 target
-if "expected_v10_MAE" in theory and "models" in sota:
-    target = theory["expected_v10_MAE"]
-    if isinstance(target, (int, float)):
-        rank = sum(1 for m in sota["models"]
-                   if isinstance(m.get("MAE"), (int,float))
-                   and m["MAE"] < target) + 1
-        print(f"\n  >>> v10 expected rank: #{rank}/{len(sota['models'])+1}")
-        print(f"  >>> Target MAE to beat: {target}")
-
-print("\n" + "=" * 70)
-
-# 保存合并结果
-combined = {
-    "timestamp": ts,
-    "baselines": baselines,
-    "v10_theory": theory,
-    "sota": sota
-}
-combined_path = f"{d}/bench_{ts}.json"
-with open(combined_path, 'w') as f:
-    json.dump(combined, f, indent=2, ensure_ascii=False)
-print(f"Full results: {combined_path}")
+open("/tmp/_bench_payload.json","w").write(json.dumps(payload))
 PYEOF
 
+  # 发送
+  curl -sf --max-time "$TIMEOUT" \
+    "${BASE}/chat_conversations/${CONV_ID}/completion" \
+    -H 'accept: text/event-stream' \
+    -H 'content-type: application/json' \
+    -H 'anthropic-client-platform: web_claude_ai' \
+    -b "$CK" \
+    -H 'origin: https://claude.hk.cn' \
+    -H 'referer: https://claude.hk.cn/new' \
+    -H "user-agent: $UA" \
+    -d @/tmp/_bench_payload.json > /tmp/_bench_sse.txt 2>&1
+
+  # 解析SSE: 提取text + tool_result
+  python3 << PYEOF
+import json, re
+
+text_parts = []
+tool_results = []
+code_blocks = []
+
+for line in open("/tmp/_bench_sse.txt"):
+    line = line.strip()
+    if not line.startswith("data: "): continue
+    try:
+        d = json.loads(line[6:])
+    except: continue
+
+    t = d.get("type", "")
+
+    # text内容
+    if t == "content_block_delta":
+        delta = d.get("delta", {})
+        if delta.get("type") == "text_delta":
+            text_parts.append(delta.get("text", ""))
+
+    # tool结果（code execution输出）
+    if t == "content_block_start":
+        cb = d.get("content_block", {})
+        if cb.get("type") == "tool_result":
+            dc = cb.get("display_content", {})
+            if dc and dc.get("type") == "json_block":
+                try:
+                    result = json.loads(dc["json_block"])
+                    tool_results.append(result)
+                except: pass
+
+    # tool调用的代码
+    if t == "content_block_delta":
+        delta = d.get("delta", {})
+        if delta.get("type") == "tool_use_block_update_delta":
+            dc = delta.get("display_content", {})
+            if dc and dc.get("type") == "json_block":
+                try:
+                    code_info = json.loads(dc["json_block"])
+                    code_blocks.append(code_info)
+                except: pass
+
+full_text = "".join(text_parts)
+
+# 保存完整结果
+result = {
+    "text": full_text,
+    "tool_results": tool_results,
+    "code_executed": code_blocks,
+    "num_tool_calls": len(tool_results)
+}
+
+# 尝试从text中提取JSON
+parsed_json = None
+for attempt_fn in [
+    lambda: json.loads(full_text.strip()),
+    lambda: json.loads(re.search(r'\x60\x60\x60(?:json)?\s*\n(.*?)\n\x60\x60\x60', full_text, re.DOTALL).group(1)),
+    lambda: json.loads(re.search(r'\{[^{}]*("targets"|"results"|"models"|"baseline_MAE")[^}]*\}', full_text, re.DOTALL).group(0)),
+]:
+    try:
+        parsed_json = attempt_fn()
+        break
+    except: pass
+
+if parsed_json:
+    result["benchmark_data"] = parsed_json
+
+# 从tool_results里提取stdout（可能包含benchmark数据）
+for tr in tool_results:
+    stdout = tr.get("stdout", "")
+    if stdout:
+        result["exec_stdout"] = result.get("exec_stdout", "") + stdout
+
+json.dump(result, open("$OUT_FILE", "w"), indent=2, ensure_ascii=False)
+
+n_tools = len(tool_results)
+n_text = len(full_text)
+has_json = "benchmark_data" in result
+print(f"tools={n_tools}, text={n_text}c, json={'✓' if has_json else '✗'}")
+PYEOF
+
+  # 清理conversation
+  curl -sf -X DELETE "${BASE}/chat_conversations/${CONV_ID}" \
+    -b "$CK" -H 'origin: https://claude.hk.cn' -H "user-agent: $UA" > /dev/null 2>&1 || true
+}
+
+# ── Prompts ───────────────────────────────────────────────────
+
+# Prompt 1: Clone + 分析代码结构 + 输出baseline
+cat > /tmp/_p1.txt << 'PROMPTEOF'
+不要立刻查看所有内容,在你的linux上用tree、git branch 先查看架构. 使用clone工具进行git clone。没有tree你就apt install tree。 看看这个项目(upstream文件夹)关于代码移植的问题，我们需要每一个文件的每一行都用上。github.com/dylanyunlon/walpurgis-WTFGG
+
+分析完代码后，你需要输出以下信息（基于你看到的真实代码）:
+
+1. walpurgis vs upstream/d2stgnn 的代码行数对比
+2. 逐文件的改动行数统计（top 10）
+3. D2STGNN论文(VLDB2022)在METR-LA上的published baseline: MAE/RMSE/MAPE at horizon 3/6/12 and average
+4. 基于你看到的真实v10代码改动，估计每个改动对MAE的影响百分比
+5. METR-LA上9个SOTA模型的published MAE排行
+
+最后把所有数字汇总成一个JSON输出:
+```json
+{
+  "code_analysis": {"walpurgis_lines": ..., "d2stgnn_lines": ..., "top_changes": [...]},
+  "d2stgnn_baselines": {"METR-LA": {"horizon_3": {"MAE": ...}, "average": {"MAE": ..., "RMSE": ..., "MAPE": ...}}},
+  "v10_impact": [{"name": "...", "file": "...", "lines_changed": ..., "delta_pct": ...}],
+  "sota": [{"name": "...", "year": ..., "MAE": ...}],
+  "expected_v10_MAE": ...
+}
+```
+PROMPTEOF
+
+# ── 执行 ──────────────────────────────────────────────────────
+echo -e "${Y}Walpurgis Bench v3 — 远端Code Execution + Git Clone${R}"
+echo -e "Model: ${C}${MODEL}${R}  Effort: ${C}${EFFORT}${R}  Timeout: ${TIMEOUT}s"
 echo ""
-echo -e "${G}Benchmark完成.${R} 结果在 ${OUT_DIR}/"
-echo -e "日志: ${LOG}"
+
+bench_one "full_analysis" "/tmp/_p1.txt"
+
+echo ""
+echo -e "${Y}结果:${R} $OUT/full_analysis_${TS}.json"
+echo ""
+
+# 摘要
+python3 << PYEOF
+import json, glob
+
+files = sorted(glob.glob("$OUT/full_analysis_${TS}.json"))
+if not files:
+    print("No results found")
+    exit(0)
+
+d = json.load(open(files[-1]))
+print(f"Tool calls: {d.get('num_tool_calls', 0)}")
+print(f"Text length: {len(d.get('text', ''))}")
+print(f"Code blocks: {len(d.get('code_executed', []))}")
+
+if d.get('exec_stdout'):
+    print(f"\n=== Execution Output ===")
+    print(d['exec_stdout'][:1000])
+
+if d.get('benchmark_data'):
+    print(f"\n=== Benchmark Data ===")
+    print(json.dumps(d['benchmark_data'], indent=2, ensure_ascii=False)[:1000])
+else:
+    print(f"\n=== Text Response ===")
+    print(d.get('text', '')[:1000])
+PYEOF
