@@ -185,3 +185,55 @@ __init__.py (顶层)
 | 第二十一位 | M625-M649 | v10 vs upstream对比: 4数据集×10维差异表, 自动生成LaTeX table | M600 |
 | 第二十二位 | M650-M674 | ablation: 逐项关闭9个改动, 10维×9改动矩阵, 贡献热力图 | M625 |
 | 第二十三位 | M675-M699 | 论文回填: 实验结果→tex, Section 5.2-5.5图表, camera-ready | M650 |
+
+---
+
+## 第十九位 Claude: M575-M592 — walpurgis_walking 算法改写 + 实验Pipeline
+
+| M# | 内容 | ✓ |
+|----|------|---|
+| M575 | __init__.py: 全新调试体系 (_dbg/snapshot/hooks/grad_health/weight_diff) | ✅ |
+| M576 | losses.py: Huber(δ=5)+log-cosh(30%) 混合损失, MAPE floor clamp, quantile loss | ✅ |
+| M577 | estimation_gate.py: 双头SiLU+GroupNorm+可学习温度τ | ✅ |
+| M578 | residual_decomp.py: Mish激活+可学习残差缩放α | ✅ |
+| M579 | dif_model.py: InstanceNorm+GELU+gconv skip connection | ✅ |
+| M580 | dif_block.py: 3层MLP+GELU+sigmoid残差门控 backcast | ✅ |
+| M581 | 模型子模块搬运+import适配 (15个.py, dynamic_graph_conv/inherent_block全套) | ✅ |
+| M582 | model.py/trainer.py: softmax层聚合+自适应p90裁剪+warmup-cosine | ✅ |
+| M583 | 数据管道: cal_adj(RBF+kNN), load_data(Tukey+sincos), dataloader(环形padding) | ✅ |
+| M584 | configs: METR-LA/PEMS-BAY/04/08 四套YAML | ✅ |
+| M585 | main.py: DataParallel+AMP+activation probe+CSV dump | ✅ |
+| M586 | datasets: 4套generate_training_data.py | ✅ |
+| M587 | llm4walking_run.sh: check→data→inspect→model→smoke→train 六步pipeline | ✅ |
+| M588 | generate_synth_data_walking.py + smoke test 全链路验证通过 | ✅ |
+
+### 算法改动清单 (≥20% vs upstream/d2stgnn)
+
+| 模块 | upstream | walpurgis_walking | 改动类型 |
+|------|----------|-------------------|----------|
+| 损失函数 | 纯 masked_mae | Huber+log-cosh混合 | 核心算法 |
+| 估计门 | FC→ReLU→FC | 双头→SiLU→GroupNorm→温度τ | 架构重写 |
+| 残差分解 | LayerNorm(x-ReLU(y)) | LayerNorm(x-α·Mish(y)) | 激活+缩放 |
+| 扩散卷积 | BN+ReLU | InstanceNorm+GELU+skip | 归一化+激活 |
+| 扩散块 | Linear backcast | 3层MLP+GELU+门控 | 架构加深 |
+| MAPE | 直接除 | floor clamp 5e-6 | 数值稳定 |
+| 新增 | 无 | quantile_loss, temporal_penalty | 全新模块 |
+| 调试 | 无 | _dbg+snapshot+hooks+grad_health | 全新体系 |
+
+### 文件统计
+- 手写改写: 6个核心算法文件, 550行
+- 搬运适配: 44个.py + 4个.yaml, 5730行
+- 总计: 50个.py, 4个.yaml, ~6280行
+
+---
+
+## 后续 Claude 规划 (第十九位更新)
+
+| Claude # | 区间 | 任务 | 前置 |
+|----------|------|------|------|
+| **第十九位** | **M575-M592** | **✅ walpurgis_walking 算法改写 + pipeline** | M557 |
+| 第二十位 | M593-M610 | GPU端到端训练: METR-LA 80epoch, 输出pred.npz, 跑walpurgis_eval.py得10维基线 | M588 |
+| 第二十一位 | M611-M628 | PEMS-BAY/04/08: prepare脚本+config+训练, 4数据集×10维完整矩阵 | M610 |
+| 第二十二位 | M629-M646 | v10 vs upstream对比: 4数据集×10维差异表, 自动生成LaTeX table | M628 |
+| 第二十三位 | M647-M664 | ablation: 逐项关闭9个改动, 10维×9改动矩阵, 贡献热力图 | M646 |
+| 第二十四位 | M665-M682 | 论文回填: 实验结果→tex, Section 5.2-5.5图表, camera-ready | M664 |

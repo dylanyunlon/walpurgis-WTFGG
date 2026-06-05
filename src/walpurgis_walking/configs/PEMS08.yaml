@@ -1,0 +1,54 @@
+---
+start_up:
+  mode: scratch
+  resume_epoch: 0
+  model_name: D2STGNN
+  device: cuda:0
+  load_pkl: False
+
+data_args:
+  data_dir: datasets/PEMS08
+  adj_data_path: datasets/sensor_graph/adj_mx_08.pkl
+  adj_type: doubletransition
+
+model_args:
+  # 改动: 16 → 24, gradient checkpoint + IN 减少显存占用
+  batch_size: 24
+  num_feat: 1
+  num_hidden: 32
+  node_hidden: 10
+  time_emb_dim: 10
+  dropout: 0.08
+  seq_length: 12
+  k_t: 3
+  k_s: 2
+  gap: 3
+  num_modalities: 2
+
+optim_args:
+  lrate: 0.002
+  print_model: False
+  wdecay: 1.0e-5
+  eps: 1.0e-8
+  lr_schedule: True
+  lr_sche_steps: [1, 30, 38, 46, 54, 200]
+  lr_decay_ratio: 0.5
+  if_cl: True
+  cl_epochs: 3
+  output_seq_len: 12
+  warm_epochs: 10
+  epochs: 200
+  patience: 100
+  seq_length: 12
+
+adj_preprocess:
+  rbf_kernel: True
+  rbf_sigma: auto
+  knn_k: 15
+  symmetric_closure: True
+
+training_opts:
+  amp_enabled: True
+  ensemble_test: True
+  adaptive_clip_percentile: 90
+  cl_ramp_mode: sigmoid
