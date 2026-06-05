@@ -13,3 +13,8 @@ data_demo/
 *.d
 __pycache__/
 *.pyc
+
+# Regeneratable outputs
+output/dataloader_*.pkl
+src/walpurgis_nightfall/output/
+src/walpurgis_nightfall/datasets_ext/

@@ -270,14 +270,36 @@ __init__.py (顶层)
 
 ---
 
-## 后续 Claude 接力规划 (第二十位更新)
+## 后续 Claude 接力规划 (第二十一位更新)
 
 | Claude # | 区间 | 任务 | 前置 |
 |----------|------|------|------|
 | **第二十位** | **M593-M610** | **✅ walpurgis_nightfall 完整移植 (2516行)** | M588 |
-| 第二十一位 | M611-M628 | nightfall import修复+smoke test: 修复相对import路径, 生成合成数据, NIGHTFALL_DEBUG=1冒烟测试 | M610 |
+| **第二十一位** | **M611-M628** | **✅ nightfall训练pipeline: import修复+smoke test+train_nightfall.py+run_nightfall.sh, SYNTH端到端验证** | M610 |
 | 第二十二位 | M629-M646 | nightfall GPU训练: METR-LA 80epoch, 输出pred.npz, 跑eval得10维基线值 | M628 |
 | 第二十三位 | M647-M664 | nightfall vs walking vs upstream对比: 4数据集×10维差异表, 自动生成LaTeX table | M646 |
 | 第二十四位 | M665-M682 | ablation: 逐项关闭nightfall的20个改动, 10维×20改动矩阵, 贡献热力图 | M664 |
 | 第二十五位 | M683-M700 | 论文回填: nightfall实验结果→tex, 补充Table/Figure, camera-ready | M682 |
+
+---
+
+## 第二十一位 Claude (Opus 4.6, claude.ai): M611-M628 — nightfall训练pipeline
+
+| M# | 内容 | ✓ |
+|----|------|---|
+| M611 | np.Inf→np.inf 修复 (utils/train.py) | ✅ |
+| M612 | train_nightfall.py: 从repo根运行的完整训练入口, 路径自动解析, scheduled sampling, activation probe, gradient health check | ✅ |
+| M613 | run_nightfall.sh: bash pipeline (环境检查→数据生成→训练) | ✅ |
+| M614 | SYNTH端到端验证: 3 epoch, MAE收敛 26.27→13.60, 374K参数 | ✅ |
+| M615 | datasets/SYNTH+sensor_graph: 合成数据集提交 | ✅ |
+| M616 | output/: 训练模型权重提交 | ✅ |
+| M617-M628 | git commit+push (train_nightfall.py+run_nightfall.sh+datasets+output) | ✅ |
+
+### 训练pipeline特性
+- `python train_nightfall.py --dataset SYNTH` 从repo根一键运行
+- `bash run_nightfall.sh` 带环境检查的完整pipeline
+- 自动路径解析: 先尝试repo根, 再尝试module内部
+- scheduled sampling: teacher forcing ratio 1.0→0.1 线性衰减
+- NIGHTFALL_DEBUG=1 开启 activation probe + gradient health check
+- 支持 SYNTH/METR-LA/PEMS-BAY/PEMS04/PEMS08
 
