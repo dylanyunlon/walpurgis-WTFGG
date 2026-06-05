@@ -147,3 +147,65 @@ upstream/d2stgnn/            2,822 行 参考代码
 8. debug: `WALPURGIS_DEBUG=1` 开启全局 _dbg() 打印
 9. **你是第几位**: 看上面表格，找到你对应的 ⏳ 行
 10. **要求**: 算法级改动(≥20%), 不是改字符串/注释/docstring
+
+---
+
+## walpurgis_walking (第十九位Claude, Opus 4.6)
+
+D2STGNN Walking变体。50个.py + 4个.yaml, ~6280行。
+算法改写: Huber+log-cosh混合损失, 双头SiLU+GroupNorm估计门, Mish激活残差,
+InstanceNorm+GELU扩散, 3层MLP门控backcast, 环形padding, RBF+kNN邻接。
+
+---
+
+## walpurgis_nightfall (第二十位Claude, Opus 4.6)
+
+D2STGNN Nightfall变体。45文件, 2516行。
+
+### 移植阶段 (M593-M610)
+- 全部39个upstream源文件移植 + 3个新增公共模块
+- 22个核心.py文件每个都有实质性算法变更 (≥20%)
+- NIGHTFALL_DEBUG环境变量控制全局调试输出
+
+### Import修复 + Smoke Test (M610续)
+- 修复22个文件的绝对import为相对import
+- datasets/raw_data脚本sys.path修正 (2级→3级)
+- tests/test_nightfall_smoke.py: 15个pytest全部通过
+- Forward pass: 374K params, [B,T,N,5]→[B,N,T]
+- Backward: 260/274 params有梯度
+
+### 算法改写清单
+| 模块 | upstream | nightfall | 改动类型 |
+|------|----------|-----------|----------|
+| 损失函数 | masked_mae (L1) | Charbonnier loss + temporal_consistency_penalty | 核心算法 |
+| 估计门 | 2层FC+ReLU | 3层FC+瓶颈LayerNorm+GELU+可学习温度τ | 架构重写 |
+| 残差分解 | LayerNorm(x-ReLU(y)) | LayerNorm(x-α·LeakyReLU(y)), α可学习 | 激活+缩放 |
+| 扩散卷积 | BN+ReLU | GroupNorm+SiLU+gconv残差skip | 归一化+激活 |
+| 扩散块 | Linear backcast | 可学习缩放因子+residual前dropout | 正则化 |
+| 距离函数 | scaled-dot attention | cosine+dot混合+可学习温度τ | 注意力机制 |
+| Mask | 硬mask | 可学习sigmoid soft-gating | 软化 |
+| 归一化器 | D⁻¹A行归一化 | D⁻½AD⁻½对称归一化 | 理论正确 |
+| GRU层 | 裸GRU | GRU后接LayerNorm | 稳定性 |
+| Transformer | 裸attention | 残差连接(out=X+attn) | 梯度流 |
+| PE | 固定正弦 | 可学习phase offset | 灵活性 |
+| Backcast | 直接减法 | sigmoid门控gated residual | 自适应 |
+| 优化器 | Adam+MultiStepLR | AdamW+CosineAnnealingWarmRestarts | 现代化 |
+| Padding | 尾部重复 | 随机采样 | 数据增强 |
+| MinMax | 直接除 | eps-guarded | 数值稳定 |
+
+### 子Claude接力
+- Opus 4.6对话 (2763d623): 已开始(clone+阅读), 因频率限制截断
+- Sonnet 4.6对话 (7e050323): 已完成import修复尝试(29 tool calls), 被container lock
+- Sonnet 4.6对话 (a2a61cfe): M629训练pipeline任务已派发, 正在执行中
+
+---
+
+## 文件统计快照 (第二十位Claude完成后)
+
+```
+src/walpurgis/               4,969 行 Python (41 .py + 4 .yaml)
+src/walpurgis_walking/       6,280 行 Python (50 .py + 4 .yaml)
+src/walpurgis_nightfall/     2,516 行 Python (41 .py + 4 .yaml) + 合成数据生成器
+tests/test_nightfall_smoke.py  15 个 pytest (import + forward + backward + debug)
+upstream/d2stgnn/            2,822 行 参考代码
+```
