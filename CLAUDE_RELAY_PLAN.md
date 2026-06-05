@@ -237,3 +237,47 @@ __init__.py (顶层)
 | 第二十二位 | M629-M646 | v10 vs upstream对比: 4数据集×10维差异表, 自动生成LaTeX table | M628 |
 | 第二十三位 | M647-M664 | ablation: 逐项关闭9个改动, 10维×9改动矩阵, 贡献热力图 | M646 |
 | 第二十四位 | M665-M682 | 论文回填: 实验结果→tex, Section 5.2-5.5图表, camera-ready | M664 |
+
+---
+
+## 第二十位 Claude (Opus 4.6, claude.ai): M593-M610 — walpurgis_nightfall 完整移植
+
+| M# | 内容 | ✓ |
+|----|------|---|
+| M593 | __init__.py: NIGHTFALL_DEBUG全局调试体系(_dbg/snapshot/ActivationTracker/gradient_health_check/weight_diff) | ✅ |
+| M594 | estimation_gate.py: 3层FC+瓶颈LayerNorm+GELU+可学习temperature τ sigmoid | ✅ |
+| M595 | residual_decomp.py: LeakyReLU(0.1)+可学习残差缩放因子alpha | ✅ |
+| M596 | dif_model.py: gconv残差skip+SiLU+GroupNorm | ✅ |
+| M597 | dif_block.py+forecast.py: 可学习backcast缩放+residual前dropout+GELU+LayerNorm | ✅ |
+| M598 | dynamic_graph_conv全套: cosine+dot混合attention+sigmoid soft-gating+对称归一化+dropout退火 | ✅ |
+| M599 | inherent_block全套: GRU后LayerNorm+Transformer残差+PE phase offset+gated residual+AR dropout | ✅ |
+| M600 | model.py: softmax加权层聚合+SiLU 3层输出头+sigmoid门控DecoupleLayer+embedding dropout | ✅ |
+| M601 | trainer.py: AdamW+CosineAnnealingWarmRestarts+梯度范数追踪+temporal_consistency_penalty | ✅ |
+| M602 | losses.py: Charbonnier loss+temporal_consistency_penalty+eps防除零 | ✅ |
+| M603 | dataloader.py: 随机采样padding替代尾部重复 | ✅ |
+| M604 | utils全套: cal_adj(eps+gaussian_kernel)+load_data(eps MinMax+NaN检测)+train(动态patience)+log(timestamp) | ✅ |
+| M605 | datasets: _gen_speed_common+_gen_flow_common+_gen_adj_common 3个公共模块 | ✅ |
+| M606 | datasets: METR-LA/PEMS-BAY/PEMS04/PEMS08 全部generate脚本 | ✅ |
+| M607 | main.py: scheduled sampling+activation probe+初始参数快照 | ✅ |
+| M608 | configs: 4套YAML直接复制 | ✅ |
+| M609 | git commit+push 45文件2516行 | ✅ |
+| M610 | 子Claude任务分配: 通过claude_hk_chat.sh派发Opus 4.6接力 | 🔄 |
+
+### 文件统计
+- 算法改写: 22个核心.py文件 (每个都有实质性算法变更)
+- 公共模块: 3个新增 (_gen_adj_common, _gen_flow_common, _gen_speed_common)
+- 总计: 41个.py + 4个.yaml = 45文件, 2516行
+
+---
+
+## 后续 Claude 接力规划 (第二十位更新)
+
+| Claude # | 区间 | 任务 | 前置 |
+|----------|------|------|------|
+| **第二十位** | **M593-M610** | **✅ walpurgis_nightfall 完整移植 (2516行)** | M588 |
+| 第二十一位 | M611-M628 | nightfall import修复+smoke test: 修复相对import路径, 生成合成数据, NIGHTFALL_DEBUG=1冒烟测试 | M610 |
+| 第二十二位 | M629-M646 | nightfall GPU训练: METR-LA 80epoch, 输出pred.npz, 跑eval得10维基线值 | M628 |
+| 第二十三位 | M647-M664 | nightfall vs walking vs upstream对比: 4数据集×10维差异表, 自动生成LaTeX table | M646 |
+| 第二十四位 | M665-M682 | ablation: 逐项关闭nightfall的20个改动, 10维×20改动矩阵, 贡献热力图 | M664 |
+| 第二十五位 | M683-M700 | 论文回填: nightfall实验结果→tex, 补充Table/Figure, camera-ready | M682 |
+
