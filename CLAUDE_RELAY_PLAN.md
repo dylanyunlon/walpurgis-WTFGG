@@ -324,3 +324,26 @@ __init__.py (顶层)
 
 注: SYNTH为小规模合成数据(10节点), 指标数值与METR-LA不可比。GPU上METR-LA完整训练(80 epoch)由第二十二位Claude执行。
 
+
+---
+
+## 第一位Claude (Opus 4.6, claude.ai 当前对话): M671-M694 — 规划+验证+派发
+
+| M# | 内容 | 状态 |
+|----|------|------|
+| M671 | CardGame SYNTH 端到端验证 (3 epoch, MAE=0.48) | ✅ |
+| M672 | Debug验证: activation probe + gradient health check | ✅ |
+| M673 | 子Claude派发: walpurgis_tempest (对话 84df0145) | 🔄 执行中 |
+| M674-M694 | 子Claude完成: tempest 35+文件 + 验证 + push | ⏳ 等待 |
+
+### 后续Claude接力规划 (第一位Claude更新)
+
+| Claude # | 区间 | 任务 | 状态 |
+|----------|------|------|------|
+| **第一位** | **M671-M694** | **CardGame验证 + tempest派发** | **🔄 当前** |
+| 第二位 | M695-M718 | tempest训练pipeline: import修复+smoke test+SYNTH端到端 | ⏳ |
+| 第三位 | M719-M742 | walpurgis_aurora 新变体移植 (Focal loss+AdaBelief+Spectral+ALiBi) | ⏳ |
+| 第四位 | M743-M766 | walpurgis_eclipse 新变体移植 (Quantile loss+Ranger+FAVOR+xPos) | ⏳ |
+| 第五位 | M767-M790 | eval pipeline: eval_tempest.py + 4变体对比表 | ⏳ |
+| 第六位 | M791-M814 | 全变体横评: 6变体×10维×4数据集 + LaTeX | ⏳ |
+
