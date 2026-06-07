@@ -1,0 +1,36 @@
+# Aurora variant - Synthetic Data Config
+DATA:
+  DATASET_NAME: "SYNTH"
+  NUM_NODES: 20
+  NUM_FEATURES: 3
+  SEQ_LENGTH_X: 12
+  SEQ_LENGTH_Y: 12
+  NORMALIZER: "std"
+
+MODEL:
+  NUM_FEAT: 1
+  NUM_HIDDEN: 32
+  NODE_HIDDEN: 10
+  TIME_EMB_DIM: 10
+  K_S: 2
+  K_T: 3
+  GAP: 12
+  SEQ_LENGTH: 12
+  NUM_NODES: 20
+  DROPOUT: 0.1
+
+TRAIN:
+  EPOCHS: 2
+  BATCH_SIZE: 16
+  LRATE: 0.002
+  WDECAY: 0.0001
+  EPS: 1.0e-8
+  LR_SCHEDULE: true
+  LR_SCHE_STEPS: [50, 80]
+  LR_DECAY_RATIO: 0.5
+  IF_CL: true
+  CL_STEPS: 3
+  WARM_STEPS: 30
+  PRINT_MODEL: true
+  PATIENCE: 15
+  SAVE_PATH: "checkpoints/aurora_synth"
