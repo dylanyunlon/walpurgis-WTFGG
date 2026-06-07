@@ -245,3 +245,82 @@ M673  子Claude (Opus 4.6) 派发: walpurgis_tempest 变体移植任务
 | 层聚合 | 平均 | Gumbel-Softmax加权 | 可微分选择 |
 | 输出头 | Linear | GeGLU+spectral norm | 表达力 |
 
+
+---
+
+## walpurgis_eclipse — 第一位Claude(当前) M694-M724
+
+### 概述
+Eclipse变体: 47个文件, 2122行代码, 20+处算法改写, 全模块debug telemetry。
+
+### 里程碑详情
+
+```
+M694-M696  规划+环境搭建+upstream分析
+           - 克隆仓库, 安装PyTorch/numpy/pyyaml/sklearn/scipy
+           - 分析upstream/d2stgnn/ 全部35+文件的算法结构
+           - 运行CardGame基线验证 (MAE=0.48, 30s)
+
+M697-M699  子Claude派发系统
+           - 从dylanyunlon/claude-hk-config拉取cookie
+           - 构建claude_hk_chat.sh API客户端
+           - 创建409行SUB_CLAUDE_PROMPT.md
+           - 派发Opus 4.6子Claude (conv: 313f9135...)
+           - Rate limit: claude-opus-4-6-max频率限制
+
+M700-M710  核心模型文件创建
+           - __init__.py: _dbg(), snapshot_model(), activation hooks, gradient_health_check(), weight_diff()
+           - model.py: EMA层聚合, GELU+SpectralNorm输出, Gaussian noise注入
+           - trainer.py: AdamW+ReduceLROnPlateau, 自适应p95 clip, 对数CL
+           - losses.py: Tukey biweight loss + gradient_penalty
+
+M711-M716  子模块算法改写
+           - estimation_gate: 3层FC+Swish+ChannelSE+可学习τ
+           - residual_decomp: RMSNorm+Mish+可学习α
+           - dif_model: InstanceNorm2d+GELU+gconv残差skip
+           - dif_block: 2层MLP+sigmoid门控backcast
+           - distance: cosine_sim+learnable_bias+LayerNorm
+           - mask: sigmoid soft-gating (nn.Parameter)
+           - normalizer: D⁻½AD⁻½对称归一化
+
+M717-M720  内生块+工具
+           - inh_model: GRU+LayerNorm, Transformer+残差
+           - inh_block: sigmoid门控残差backcast, 可学习PE phase
+           - inh_forecast: step-decay加权
+           - utils: Knuth seed, trend EarlyStopping, eps-guarded scaler, JSONL+CSV dual log
+
+M721-M724  数据+配置+验证+push
+           - dataloader: Fisher-Yates shuffle, circular-wrap padding
+           - generate_synth_data: Ornstein-Uhlenbeck过程, k-NN邻接
+           - configs: SYNTH/METR-LA/PEMS-BAY/PEMS04/PEMS08
+           - 验证: EPOCHS=2 ECLIPSE_DEBUG=1 ✓
+           - Results: MAE=12.65 RMSE=17.89 MAPE=17.87% 268K params 18.5s
+           - git push ✓
+```
+
+### 算法改写清单
+
+| 模块 | upstream | eclipse |
+|------|----------|---------|
+| Loss | masked_mae (L1) | Tukey biweight + gradient_penalty |
+| EstimationGate | 2层FC+ReLU | 3层FC+Swish+ChannelSE+τ |
+| ResidualDecomp | LayerNorm(x-ReLU(y)) | RMSNorm(x-Mish(y)*α) |
+| STLocalizedConv | BN+ReLU | InstanceNorm2d+GELU+gconv skip |
+| DifBlock backcast | Linear | 2层MLP+sigmoid gate |
+| Distance | scaled-dot | cosine_sim+bias+LayerNorm |
+| Mask | hard mask | sigmoid soft-gating |
+| Normalizer | D⁻¹A | D⁻½AD⁻½ |
+| GRU | bare | GRU+LayerNorm |
+| Transformer | bare attn | 残差(out=X+attn) |
+| PE | fixed sin | learnable phase |
+| InhBlock backcast | FC | sigmoid gated residual |
+| Layer aggregation | sum() | EMA decay |
+| Output head | ReLU FC | GELU+SpectralNorm |
+| Embedding | Linear | Linear+Gaussian noise |
+| Optimizer | Adam+MultiStepLR | AdamW+ReduceLROnPlateau |
+| Grad clip | fixed 5 | adaptive p95 |
+| CL | linear | logarithmic |
+| Synth data | simple noise | Ornstein-Uhlenbeck |
+| Shuffle | permutation | Fisher-Yates |
+| Adjacency | random | k-NN |
+
