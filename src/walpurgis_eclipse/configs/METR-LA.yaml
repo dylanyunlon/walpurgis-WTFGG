@@ -1,0 +1,38 @@
+---
+start_up:
+  mode: scratch
+  resume_epoch: 0
+  model_name: D2STGNN
+  device: cpu
+  load_pkl: False
+data_args:
+  data_dir: datasets/raw_data/METR-LA
+  adj_data_path: datasets/sensor_graph/adj_mx_metr_la.pkl
+  adj_type: doubletransition
+model_args:
+  batch_size: 64
+  num_feat: 1
+  num_hidden: 32
+  node_hidden: 10
+  time_emb_dim: 10
+  dropout: 0.1
+  seq_length: 12
+  k_t: 3
+  k_s: 2
+  gap: 3
+  num_modalities: 2
+optim_args:
+  lrate: 0.001
+  print_model: False
+  wdecay: 1.0e-4
+  eps: 1.0e-8
+  lr_schedule: True
+  lr_sche_steps: [1, 30, 60, 80]
+  lr_decay_ratio: 0.1
+  if_cl: True
+  cl_epochs: 3
+  output_seq_len: 12
+  warm_epochs: 2
+  epochs: 100
+  patience: 20
+  seq_length: 12
