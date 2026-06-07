@@ -1,15 +1,37 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import sys, os
 
-def _adbg(tag, val):
+def _sdbg(tag, val):
     if os.environ.get('SOLSTICE_DEBUG','0')!='1': return
     if isinstance(val, torch.Tensor):
         print(f"[SOL:stconv:{tag}] shape={list(val.shape)} mean={val.mean().item():.6f} std={val.std().item():.6f}", file=sys.stderr)
 
+
+class ScaleNorm(nn.Module):
+    """solstice: ScaleNorm替代BN/IN"""
+    def __init__(self, dim, eps=1e-5):
+        super().__init__()
+        self.g = nn.Parameter(torch.ones(1) * (dim ** 0.5))
+        self.eps = eps
+
+    def forward(self, x):
+        # 适配多维输入: 在最后一维做归一化
+        orig_shape = x.shape
+        if x.dim() == 4:
+            # [B, C, H, W] -> normalize on C
+            x_flat = x.permute(0, 2, 3, 1)  # [B, H, W, C]
+            norm = torch.norm(x_flat, dim=-1, keepdim=True).clamp(min=self.eps)
+            x_flat = self.g * x_flat / norm
+            return x_flat.permute(0, 3, 1, 2)
+        norm = torch.norm(x, dim=-1, keepdim=True).clamp(min=self.eps)
+        return self.g * x / norm
+
+
 class STLocalizedConv(nn.Module):
     """upstream: BN+ReLU, gconv无skip
-    solstice: InstanceNorm2d+Mish, gconv加highway残差门控, 对角线清零"""
+    solstice: ScaleNorm + Mish激活, gconv加残差skip"""
     def __init__(self, hidden_dim, pre_defined_graph=None, use_pre=None,
                  dy_graph=None, sta_graph=None, **model_args):
         super().__init__()
@@ -21,7 +43,6 @@ class STLocalizedConv(nn.Module):
         self.use_dynamic_hidden_graph = dy_graph
         self.use_static__hidden_graph = sta_graph
         self.support_len = len(self.pre_defined_graph) + int(dy_graph) + int(sta_graph)
-        # solstice: dy produces 2 distance matrices
         n_dy_graphs = 2
         self.num_matric = (int(use_pre) * len(self.pre_defined_graph) +
                           n_dy_graphs * int(dy_graph) * self.k_s +
@@ -33,12 +54,12 @@ class STLocalizedConv(nn.Module):
         self.gcn_updt = nn.Linear(self.hidden_dim * self.num_matric, self.hidden_dim)
 
         # upstream: BatchNorm2d + ReLU
-        # solstice: InstanceNorm2d + Mish
-        self.norm = nn.InstanceNorm2d(self.hidden_dim, affine=True)
-        self.activation = nn.Mish()
+        # solstice: ScaleNorm + Mish
+        self.norm = ScaleNorm(self.hidden_dim)
+        self.skip_proj = nn.Linear(hidden_dim, hidden_dim)
 
-        # solstice: highway残差门控 — gate*gconv + (1-gate)*X_0
-        self.highway_gate = nn.Linear(hidden_dim, hidden_dim)
+    def _mish(self, x):
+        return x * torch.tanh(F.softplus(x))
 
     def gconv(self, support, X_k, X_0):
         out = [X_0]
@@ -52,10 +73,8 @@ class STLocalizedConv(nn.Module):
         out = torch.cat(out, dim=-1)
         out = self.gcn_updt(out)
         out = self.dropout(out)
-        # solstice: highway门控残差
-        gate = torch.sigmoid(self.highway_gate(X_0))
-        out = gate * out + (1 - gate) * X_0
-        _adbg("gconv_out", out)
+        out = out + self.skip_proj(X_0)
+        _sdbg("gconv_out", out)
         return out
 
     def get_graph(self, support):
@@ -66,7 +85,6 @@ class STLocalizedConv(nn.Module):
             graph_ordered.append(k_1_order * mask)
             for k in range(2, self.k_s + 1):
                 k_1_order = torch.matmul(graph, k_1_order)
-                # solstice: 对角线清零去自环
                 k_1_order = k_1_order * mask
                 graph_ordered.append(k_1_order * mask)
         st_local_graph = []
@@ -89,10 +107,13 @@ class STLocalizedConv(nn.Module):
 
         X = X.reshape(B, seq_len, N, K * D)
         out = self.fc_list_updt(X)
-        out = self.activation(out)
+        # solstice: Mish激活替代GELU
+        out = self._mish(out)
         out = out.view(B, seq_len, N, K, D)
         X_0 = torch.mean(out, dim=-2)
         X_k = out.transpose(-3, -2).reshape(B, seq_len, K * N, D)
         hidden = self.gconv(support, X_k, X_0)
-        _adbg("stconv_out", hidden)
+        # solstice: ScaleNorm后处理
+        hidden = self.norm(hidden)
+        _sdbg("stconv_out", hidden)
         return hidden

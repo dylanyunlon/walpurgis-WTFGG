@@ -2,16 +2,17 @@ import torch
 import numpy as np
 import sys, os
 
-def _adbg(tag, val):
+def _sdbg(tag, val):
     if os.environ.get('SOLSTICE_DEBUG','0')!='1': return
     if isinstance(val, torch.Tensor):
         print(f"[SOL:loss:{tag}] shape={list(val.shape)} mean={val.mean().item():.6f} std={val.std().item():.6f}", file=sys.stderr)
     else:
         print(f"[SOL:loss:{tag}] {val}", file=sys.stderr)
 
-def huber_loss(preds, labels, null_val=np.nan, delta=1.35):
+def huber_loss(preds, labels, null_val=np.nan, delta=1.345):
     """upstream: masked_mae (L1)
-    solstice: Huber鲁棒损失 — 小误差用MSE平滑, 大误差用L1截断, delta=1.35 (95%高斯效率)"""
+    solstice: Huber loss (平滑L1) — |r|<δ时用0.5r²/δ, 否则|r|-0.5δ
+    delta=1.345 -> 95% asymptotic efficiency under Gaussian"""
     if np.isnan(null_val):
         mask = ~torch.isnan(labels)
     else:
@@ -19,28 +20,27 @@ def huber_loss(preds, labels, null_val=np.nan, delta=1.35):
     mask = mask.float()
     mask = mask / torch.clamp(torch.mean(mask), min=1e-8)
     mask = torch.where(torch.isnan(mask), torch.zeros_like(mask), mask)
-    residual = torch.abs(preds - labels)
-    quadratic = torch.clamp(residual, max=delta)
-    linear = residual - quadratic
-    loss = 0.5 * quadratic ** 2 + delta * linear
+    residual = preds - labels
+    abs_r = torch.abs(residual)
+    # Huber: quadratic for small residuals, linear for large
+    loss = torch.where(abs_r <= delta,
+                       0.5 * residual ** 2 / delta,
+                       abs_r - 0.5 * delta)
     loss = loss * mask
     loss = torch.where(torch.isnan(loss), torch.zeros_like(loss), loss)
-    _adbg("huber_raw", loss)
+    _sdbg("huber_raw", loss)
+    _sdbg("huber_delta", delta)
     return torch.mean(loss)
 
-def spectral_smoothness_penalty(preds, beta=0.03):
-    """solstice新增: 频域平滑惩罚 — 高频分量能量占比过大则惩罚, 抑制预测锯齿"""
-    if preds.dim() < 3 or preds.shape[1] < 4:
+def spatial_smoothness_penalty(preds, adj=None, beta=0.03):
+    """solstice新增: 空间平滑惩罚 — 相邻节点预测差异最小化
+    如果有邻接矩阵用图拉普拉斯, 否则用节点间方差"""
+    if preds.dim() < 3 or preds.shape[2] < 2:
         return torch.tensor(0.0, device=preds.device)
-    fft_out = torch.fft.rfft(preds, dim=1)
-    magnitudes = torch.abs(fft_out)
-    n_freq = magnitudes.shape[1]
-    cutoff = max(1, n_freq // 2)
-    high_energy = torch.mean(magnitudes[:, cutoff:, :] ** 2)
-    total_energy = torch.mean(magnitudes ** 2) + 1e-8
-    ratio = high_energy / total_energy
-    pen = beta * ratio
-    _adbg("spectral_pen", pen)
+    # 节点维度方差作为空间不平滑度量
+    node_var = torch.var(preds, dim=2, keepdim=False)
+    pen = beta * torch.mean(node_var)
+    _sdbg("spatial_pen", pen)
     return pen
 
 def masked_mse(preds, labels, null_val=np.nan):

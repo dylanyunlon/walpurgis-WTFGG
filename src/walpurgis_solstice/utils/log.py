@@ -4,7 +4,7 @@ import time
 import json
 import numpy as np
 
-def _adbg(tag, val):
+def _sdbg(tag, val):
     if os.environ.get('SOLSTICE_DEBUG','0')!='1': return
     print(f"[SOL:log:{tag}] {val}", file=sys.stderr)
 
@@ -20,7 +20,7 @@ class TrainLogger:
         self.best_val_loss = float('inf')
         self.best_epoch = -1
         self.start_time = time.time()
-        _adbg("init", f"model={model_name} dataset={dataset_name}")
+        _sdbg("init", f"model={model_name} dataset={dataset_name}")
 
     def log_epoch(self, epoch, train_loss, val_loss, val_mape=0, val_rmse=0, lr=0):
         self.train_losses.append(train_loss)
@@ -35,7 +35,7 @@ class TrainLogger:
                f"MAPE: {val_mape:.4f} RMSE: {val_rmse:.4f} | "
                f"LR: {lr:.6f} | Time: {elapsed:.0f}s{improved}")
         print(msg)
-        _adbg("epoch", msg)
+        _sdbg("epoch", msg)
 
     def save_log(self):
         log_data = {
@@ -50,7 +50,7 @@ class TrainLogger:
         path = os.path.join(self.log_dir, f'{self.model_name}_{self.dataset_name}.json')
         with open(path, 'w') as f:
             json.dump(log_data, f, indent=2)
-        _adbg("saved", path)
+        _sdbg("saved", path)
 
     def summary(self):
         print(f"\n{'='*60}")

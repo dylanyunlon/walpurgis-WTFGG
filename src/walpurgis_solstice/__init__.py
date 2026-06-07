@@ -1,5 +1,5 @@
 # walpurgis_solstice — D2STGNN Solstice variant
-# 算法方向: Huber loss, LSTM, PowerNorm, RAdam+CosineWarmRestarts, Performer attention, attention-pooling, Mixup
+# 算法方向: Huber loss, FAVOR+ attention, ScaleNorm, RAdam+CosineWarmRestarts, LSTM, attention-weighted pooling, Mixup
 import os, sys, torch
 
 _SOLSTICE_DEBUG = os.environ.get('SOLSTICE_DEBUG', '0') == '1'

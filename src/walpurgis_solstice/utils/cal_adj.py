@@ -5,7 +5,7 @@ import os
 import sys
 import csv
 
-def _adbg(tag, val):
+def _sdbg(tag, val):
     if os.environ.get('SOLSTICE_DEBUG','0')!='1': return
     if isinstance(val, torch.Tensor):
         print(f"[SOL:adj:{tag}] shape={list(val.shape)} nnz={int((val.abs()>1e-6).sum().item())}", file=sys.stderr)
@@ -48,7 +48,7 @@ def get_adjacency_matrix(distance_df_filename, num_of_vertices, id_filename=None
             A = A[:num_of_vertices, :num_of_vertices]
 
     result = torch.FloatTensor(A)
-    _adbg("adjacency", result)
+    _sdbg("adjacency", result)
     return result
 
 
@@ -67,7 +67,7 @@ def calc_adj_dtw(data, n_nodes, top_k=10):
     row_sums = adj.sum(axis=1, keepdims=True)
     adj = adj / np.maximum(row_sums, 1e-8)
     result = torch.FloatTensor(adj)
-    _adbg("dtw_adj", result)
+    _sdbg("dtw_adj", result)
     return result
 
 
@@ -81,5 +81,5 @@ def calc_adj_correlation(data, n_nodes, threshold=0.3):
     adj = np.where(np.abs(corr) > threshold, np.abs(corr), 0).astype(np.float32)
     np.fill_diagonal(adj, 0)
     result = torch.FloatTensor(adj)
-    _adbg("corr_adj", result)
+    _sdbg("corr_adj", result)
     return result

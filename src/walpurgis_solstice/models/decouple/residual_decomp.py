@@ -1,41 +1,41 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import sys, os
 
-def _adbg(tag, val):
+def _sdbg(tag, val):
     if os.environ.get('SOLSTICE_DEBUG','0')!='1': return
     if isinstance(val, torch.Tensor):
         print(f"[SOL:resdecomp:{tag}] mean={val.mean().item():.6f} std={val.std().item():.6f}", file=sys.stderr)
 
-class PowerNorm(nn.Module):
-    """solstice: PowerNorm — 用幂均值代替方差, 对非零偏数据更鲁棒
-    norm(x) = scale * x / (E[|x|^p])^(1/p), p=2默认"""
-    def __init__(self, dim, p=2.0, eps=1e-8):
+
+class ScaleNorm(nn.Module):
+    """solstice: ScaleNorm替代LayerNorm/RMSNorm — 仅可学习scale, 更轻量"""
+    def __init__(self, dim, eps=1e-5):
         super().__init__()
-        self.scale = nn.Parameter(torch.ones(dim))
-        self.p = p
+        self.g = nn.Parameter(torch.ones(1) * (dim ** 0.5))
         self.eps = eps
 
     def forward(self, x):
-        power_mean = torch.mean(torch.abs(x) ** self.p, dim=-1, keepdim=True)
-        denom = torch.pow(power_mean + self.eps, 1.0 / self.p)
-        return self.scale * x / denom
+        norm = torch.norm(x, dim=-1, keepdim=True).clamp(min=self.eps)
+        return self.g * x / norm
 
 
 class ResidualDecomp(nn.Module):
     """upstream: LayerNorm(x - ReLU(y))
-    solstice: PowerNorm(x - SiLU(y) * α), α可学习标量初始化0.85"""
+    solstice: ScaleNorm(x - Mish(y) * α), α可学习标量初始化0.9"""
     def __init__(self, input_shape):
         super().__init__()
-        self.norm = PowerNorm(input_shape[-1])
-        self.act = nn.SiLU()
-        # solstice: 可学习残差缩放系数
-        self.alpha = nn.Parameter(torch.tensor(0.85))
+        self.norm = ScaleNorm(input_shape[-1])
+        self.alpha = nn.Parameter(torch.tensor(0.9))
+
+    def _mish(self, x):
+        return x * torch.tanh(F.softplus(x))
 
     def forward(self, x, y):
         alpha = torch.clamp(self.alpha, 0.0, 2.0)
-        u = x - self.act(y) * alpha
+        u = x - self._mish(y) * alpha
         u = self.norm(u)
-        _adbg("residual_norm", u)
-        _adbg("alpha", alpha)
+        _sdbg("residual_norm", u)
+        _sdbg("alpha", alpha)
         return u

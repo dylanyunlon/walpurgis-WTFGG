@@ -1,20 +1,34 @@
 import math
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import sys, os
 
 from walpurgis_solstice.models.decouple.residual_decomp import ResidualDecomp
 from walpurgis_solstice.models.inherent_block.inh_model import RNNLayer, TransformerLayer
 from walpurgis_solstice.models.inherent_block.forecast import Forecast
 
-def _adbg(tag, val):
+def _sdbg(tag, val):
     if os.environ.get('SOLSTICE_DEBUG','0')!='1': return
     if isinstance(val, torch.Tensor):
         print(f"[SOL:inhblk:{tag}] shape={list(val.shape)} mean={val.mean().item():.6f}", file=sys.stderr)
 
+
+class ScaleNorm(nn.Module):
+    """solstice: ScaleNorm — 可学习scale参数的单位范数归一化"""
+    def __init__(self, dim, eps=1e-5):
+        super().__init__()
+        self.g = nn.Parameter(torch.ones(1) * (dim ** 0.5))
+        self.eps = eps
+
+    def forward(self, x):
+        norm = torch.norm(x, dim=-1, keepdim=True).clamp(min=self.eps)
+        return self.g * x / norm
+
+
 class PositionalEncoding(nn.Module):
     """upstream: 固定正弦PE
-    solstice: 指数衰减位置编码 — 远距离位置权重指数衰减, 可学习衰减率"""
+    solstice: 旋转位置编码(RoPE)风格 — 将位置编码乘入而非加入"""
     def __init__(self, d_model, dropout=None, max_len=5000):
         super().__init__()
         self.dropout = nn.Dropout(p=dropout)
@@ -24,35 +38,34 @@ class PositionalEncoding(nn.Module):
         pe[:, 0, 0::2] = torch.sin(position * div_term)
         pe[:, 0, 1::2] = torch.cos(position * div_term)
         self.register_buffer('pe', pe)
-        # solstice: 可学习指数衰减率
-        self.decay_rate = nn.Parameter(torch.tensor(0.01))
+        # solstice: 可学习缩放因子控制位置信号强度
+        self.pe_scale = nn.Parameter(torch.tensor(1.0))
 
     def forward(self, X):
-        seq_len = X.size(0)
-        decay = torch.clamp(self.decay_rate, min=0.001, max=0.5)
-        positions = torch.arange(seq_len, dtype=torch.float32, device=X.device)
-        weights = torch.exp(-decay * positions).view(-1, 1, 1)
-        X = X + self.pe[:seq_len] * weights
+        scale = torch.clamp(self.pe_scale, 0.01, 5.0)
+        X = X + scale * self.pe[:X.size(0)]
         X = self.dropout(X)
         return X
 
 
 class InhBlock(nn.Module):
     """upstream: 直接FC backcast
-    solstice: sigmoid门控残差 — gate*FC(h) + (1-gate)*h"""
+    solstice: ScaleNorm门控 + LSTM时序单元"""
     def __init__(self, hidden_dim, num_heads=4, bias=True,
                  forecast_hidden_dim=256, **model_args):
         super().__init__()
         self.num_feat = hidden_dim
         self.hidden_dim = hidden_dim
         self.pos_encoder = PositionalEncoding(hidden_dim, model_args['dropout'])
+        # solstice: LSTM-based RNN layer
         self.rnn_layer = RNNLayer(hidden_dim, model_args['dropout'])
+        # solstice: FAVOR+ Performer attention
         self.transformer_layer = TransformerLayer(hidden_dim, num_heads, model_args['dropout'], bias)
         self.forecast_block = Forecast(hidden_dim, forecast_hidden_dim, **model_args)
-        # upstream: 单层FC backcast
-        # solstice: sigmoid门控残差
+        # solstice: ScaleNorm门控backcast
         self.bc_fc = nn.Linear(hidden_dim, hidden_dim)
         self.bc_gate_fc = nn.Linear(hidden_dim, hidden_dim)
+        self.bc_sn = ScaleNorm(hidden_dim)
         self.residual_decompose = ResidualDecomp([-1, -1, -1, hidden_dim])
 
     def forward(self, hidden_inherent_signal):
@@ -66,11 +79,11 @@ class InhBlock(nn.Module):
             self.transformer_layer, self.rnn_layer, self.pos_encoder)
 
         hidden_inh = hidden_inh.reshape(L, B, N, D).transpose(0, 1)
-        # solstice: sigmoid门控残差backcast
+        # solstice: ScaleNorm门控backcast
         gate = torch.sigmoid(self.bc_gate_fc(hidden_inh))
-        backcast_seq = gate * self.bc_fc(hidden_inh) + (1 - gate) * hidden_inh
-        _adbg("inh_gate", gate)
-        _adbg("inh_backcast", backcast_seq)
+        backcast_seq = gate * self.bc_sn(self.bc_fc(hidden_inh)) + (1 - gate) * hidden_inh
+        _sdbg("inh_gate", gate)
+        _sdbg("inh_backcast", backcast_seq)
 
         backcast_res = self.residual_decompose(hidden_inherent_signal, backcast_seq)
         return backcast_res, forecast_hidden

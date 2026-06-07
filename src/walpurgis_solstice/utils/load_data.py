@@ -6,7 +6,7 @@ import pickle
 
 from walpurgis_solstice.utils.cal_adj import get_adjacency_matrix, calc_adj_dtw, calc_adj_correlation
 
-def _adbg(tag, val):
+def _sdbg(tag, val):
     if os.environ.get('SOLSTICE_DEBUG','0')!='1': return
     if isinstance(val, torch.Tensor):
         print(f"[SOL:load:{tag}] shape={list(val.shape)} mean={val.mean().item():.4f}", file=sys.stderr)
@@ -20,7 +20,7 @@ class StandardScaler:
     def __init__(self, mean, std):
         self.mean = mean
         self.std = std
-        _adbg("scaler_init", f"mean={mean:.4f} std={std:.4f}")
+        _sdbg("scaler_init", f"mean={mean:.4f} std={std:.4f}")
 
     def transform(self, data):
         return (data - self.mean) / self.std
@@ -45,7 +45,7 @@ def load_dataset(dataset_dir, batch_size, valid_batch_size=None, test_batch_size
     from walpurgis_solstice.dataloader import DataLoaderM
 
     cat_dim = kwargs.get('normalizer', 'std')
-    _adbg("loading", f"dir={dataset_dir} batch={batch_size} dataset={dataset_name}")
+    _sdbg("loading", f"dir={dataset_dir} batch={batch_size} dataset={dataset_name}")
 
     data_files = {}
     for cat in ['train', 'val', 'test']:
@@ -53,7 +53,7 @@ def load_dataset(dataset_dir, batch_size, valid_batch_size=None, test_batch_size
         if os.path.exists(cat_path):
             data_files[cat] = np.load(cat_path)
         else:
-            _adbg("warn", f"missing {cat_path}")
+            _sdbg("warn", f"missing {cat_path}")
             return None
 
     x_train = data_files['train']['x']
@@ -63,8 +63,8 @@ def load_dataset(dataset_dir, batch_size, valid_batch_size=None, test_batch_size
     x_test = data_files['test']['x']
     y_test = data_files['test']['y']
 
-    _adbg("x_train", x_train)
-    _adbg("y_train", y_train)
+    _sdbg("x_train", x_train)
+    _sdbg("y_train", y_train)
 
     if cat_dim == 'minmax':
         _max = np.max(x_train[..., 0])
@@ -103,7 +103,7 @@ def load_dataset(dataset_dir, batch_size, valid_batch_size=None, test_batch_size
         data['_max'] = torch.FloatTensor([_max]).unsqueeze(0).unsqueeze(0).unsqueeze(0)
         data['_min'] = torch.FloatTensor([_min]).unsqueeze(0).unsqueeze(0).unsqueeze(0)
 
-    _adbg("loaded", f"train={x_train.shape} val={x_val.shape} test={x_test.shape}")
+    _sdbg("loaded", f"train={x_train.shape} val={x_val.shape} test={x_test.shape}")
     return data
 
 
@@ -122,5 +122,5 @@ def load_adj(adj_path, adj_type='doubletransition', num_nodes=None):
         adj = [get_adjacency_matrix(adj_path, num_nodes)]
     else:
         adj = [torch.eye(num_nodes)]
-    _adbg("adj_loaded", adj[0])
+    _sdbg("adj_loaded", adj[0])
     return adj

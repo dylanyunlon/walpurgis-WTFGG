@@ -14,7 +14,7 @@ from walpurgis_solstice.models.model import D2STGNN
 from walpurgis_solstice.models.trainer import trainer
 from walpurgis_solstice import snapshot_model, register_activation_hooks, gradient_health_check, _is_debug
 
-def _adbg(tag, val):
+def _sdbg(tag, val):
     if os.environ.get('SOLSTICE_DEBUG','0')!='1': return
     print(f"[SOL:main:{tag}] {val}", file=sys.stderr)
 
@@ -54,7 +54,7 @@ def main(config_path, device_str='cpu', epochs_override=None):
     if os.path.exists(adj_file):
         adjs = load_adj(adj_file, num_nodes=num_nodes)
     else:
-        _adbg("adj", f"No adj file, using identity {num_nodes}x{num_nodes}")
+        _sdbg("adj", f"No adj file, using identity {num_nodes}x{num_nodes}")
         adjs = [torch.eye(num_nodes)]
 
     adjs = [a.to(device) for a in adjs]
@@ -77,7 +77,7 @@ def main(config_path, device_str='cpu', epochs_override=None):
     model = D2STGNN(**model_args).to(device)
     total_params = get_num_params(model)
     print(f"Solstice D2STGNN: {total_params:,} trainable parameters")
-    _adbg("model_params", total_params)
+    _sdbg("model_params", total_params)
 
     # Trainer
     optim_args = {
@@ -144,7 +144,7 @@ def main(config_path, device_str='cpu', epochs_override=None):
         logger.log_epoch(epoch, train_avg, val_loss, val_mape, val_rmse, lr)
 
         if engine.lr_scheduler is not None:
-            engine.lr_scheduler.step(epoch)
+            engine.lr_scheduler.step(val_loss)
 
         if val_loss < best_val:
             best_val = val_loss

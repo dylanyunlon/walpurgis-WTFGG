@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import sys, os
 
-def _adbg(tag, val):
+def _sdbg(tag, val):
     if os.environ.get('SOLSTICE_DEBUG','0')!='1': return
     if isinstance(val, torch.Tensor):
         print(f"[SOL:norm:{tag}] row_sum_mean={val.sum(dim=-1).mean().item():.6f}", file=sys.stderr)
@@ -14,7 +14,7 @@ def remove_nan_inf(tensor):
 
 class Normalizer(nn.Module):
     """upstream: D^-1 A 行归一化
-    solstice: D^-1/2 A D^-1/2 对称归一化 (谱等价)"""
+    aurora/solstice: D^-1/2 A D^-1/2 对称归一化 (谱等价)"""
     def __init__(self):
         super().__init__()
 
@@ -23,9 +23,8 @@ class Normalizer(nn.Module):
         d_inv_sqrt = remove_nan_inf(1.0 / torch.sqrt(degree + 1e-8))
         D_left = torch.diag_embed(d_inv_sqrt)
         D_right = torch.diag_embed(d_inv_sqrt)
-        # solstice: 对称归一化 D^{-1/2} A D^{-1/2}
         normed = torch.bmm(torch.bmm(D_left, graph), D_right)
-        _adbg("sym_norm", normed)
+        _sdbg("sym_norm", normed)
         return normed
 
     def forward(self, adj):
