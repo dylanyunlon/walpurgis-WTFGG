@@ -1,0 +1,15 @@
+{
+  "model": "equinox",
+  "dataset": "SYNTH",
+  "train_losses": [
+    0.07072786901188993,
+    0.0
+  ],
+  "val_losses": [
+    0.0,
+    0.0
+  ],
+  "best_val_loss": 0.0,
+  "best_epoch": 1,
+  "total_time": 88.96559119224548
+}
