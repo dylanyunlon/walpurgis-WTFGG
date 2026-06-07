@@ -1,6 +1,5 @@
 # walpurgis_equinox — D2STGNN Equinox variant
-# 算法方向: LogCosh loss, Linformer注意力, WeightNorm, Lookahead(Adam)+OneCycleLR,
-#           Highway GRU, DenseNet式dense connection, Gumbel-Softmax图采样, CutMix增强
+# 算法方向: LogCosh loss, Linformer低秩投影注意力, WeightNorm, Lookahead(Adam)+OneCycleLR, Highway GRU, DenseNet残差, Gumbel-Softmax图采样
 import os, sys, torch
 
 _EQUINOX_DEBUG = os.environ.get('EQUINOX_DEBUG', '0') == '1'

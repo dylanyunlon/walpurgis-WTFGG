@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.utils as nnutils
 import sys, os
 
 from .forecast import Forecast
@@ -13,8 +14,7 @@ def _edbg(tag, val):
 
 class DifBlock(nn.Module):
     """upstream: 单层Linear backcast
-    equinox: DenseNet式dense connection — 聚合gated_input + stconv_hidden
-    + 门控backcast + WeightNorm"""
+    equinox: 2层WeightNorm-MLP+Mish门控backcast, Dropout在forecast前"""
     def __init__(self, hidden_dim, forecast_hidden_dim=256,
                  use_pre=None, dy_graph=None, sta_graph=None, **model_args):
         super().__init__()
@@ -24,33 +24,28 @@ class DifBlock(nn.Module):
             use_pre=use_pre, dy_graph=dy_graph, sta_graph=sta_graph, **model_args)
         self.forecast_branch = Forecast(hidden_dim,
                                         forecast_hidden_dim=forecast_hidden_dim, **model_args)
-
-        # equinox: DenseNet式dense connection for backcast
-        # 聚合 gated_history (input) + stconv_hidden 两路
-        self.dense_proj = nn.Linear(hidden_dim * 2, hidden_dim)
-        self.dense_gate = nn.Linear(hidden_dim * 2, hidden_dim)
-        self.bc_fc = nn.utils.weight_norm(nn.Linear(hidden_dim, hidden_dim))
+        # upstream: 单层 Linear
+        # equinox: 2层WeightNorm-MLP + Mish门控
+        self.bc_fc1 = nnutils.weight_norm(nn.Linear(hidden_dim, hidden_dim))
+        self.bc_fc2 = nnutils.weight_norm(nn.Linear(hidden_dim, hidden_dim))
+        self.bc_gate = nn.Linear(hidden_dim, hidden_dim)
+        self.bc_act = nn.Mish()
         # equinox: forecast前Dropout
         self.forecast_dropout = nn.Dropout(0.1)
         self.residual_decompose = ResidualDecomp([-1, -1, -1, hidden_dim])
 
     def forward(self, history_data, gated_history_data, dynamic_graph, static_graph):
         hidden_dif = self.localized_st_conv(gated_history_data, dynamic_graph, static_graph)
+        # equinox: forecast前加dropout
         hidden_dropped = self.forecast_dropout(hidden_dif)
         forecast_hidden = self.forecast_branch(
             gated_history_data, hidden_dropped, self.localized_st_conv,
             dynamic_graph, static_graph)
-
-        # equinox: DenseNet — 将gated_input和stconv_hidden拼接
-        # 截断到相同时间长度
-        T_hidden = hidden_dif.shape[1]
-        gated_trunc = gated_history_data[:, -T_hidden:, :, :]
-        dense_cat = torch.cat([gated_trunc, hidden_dif], dim=-1)  # [B, T, N, 2D]
-        gate = torch.sigmoid(self.dense_gate(dense_cat))
-        dense_fused = gate * self.dense_proj(dense_cat)
-        backcast_seq = self.bc_fc(dense_fused)
-
-        _edbg("dense_bc_gate", gate.mean())
+        # equinox: 2层WeightNorm-MLP + 门控backcast
+        bc = self.bc_act(self.bc_fc1(hidden_dif))
+        gate = torch.sigmoid(self.bc_gate(hidden_dif))
+        backcast_seq = gate * self.bc_fc2(bc)
+        _edbg("bc_gate_mean", gate.mean())
         _edbg("bc_vs_fk", torch.norm(backcast_seq) / (torch.norm(forecast_hidden) + 1e-8))
 
         history_data = history_data[:, -backcast_seq.shape[1]:, :, :]

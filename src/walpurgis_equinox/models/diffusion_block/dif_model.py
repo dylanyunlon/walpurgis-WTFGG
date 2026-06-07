@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.utils as nnutils
 import sys, os
 
 def _edbg(tag, val):
@@ -9,7 +10,7 @@ def _edbg(tag, val):
 
 class STLocalizedConv(nn.Module):
     """upstream: BN+ReLU, gconv无skip
-    equinox: WeightNorm + Mish激活, gconv加残差skip, 对角线清零"""
+    equinox: WeightNorm+Mish激活, gconv加残差skip, 对角线清零"""
     def __init__(self, hidden_dim, pre_defined_graph=None, use_pre=None,
                  dy_graph=None, sta_graph=None, **model_args):
         super().__init__()
@@ -21,7 +22,8 @@ class STLocalizedConv(nn.Module):
         self.use_dynamic_hidden_graph = dy_graph
         self.use_static__hidden_graph = sta_graph
         self.support_len = len(self.pre_defined_graph) + int(dy_graph) + int(sta_graph)
-        n_dy_graphs = 2
+        # equinox: dy produces 2 distance matrices (not len(pre_defined_graph))
+        n_dy_graphs = 2  # distance function returns [W_d, W_u]
         self.num_matric = (int(use_pre) * len(self.pre_defined_graph) +
                           n_dy_graphs * int(dy_graph) * self.k_s +
                           int(sta_graph) * self.k_s) + 1
@@ -32,11 +34,11 @@ class STLocalizedConv(nn.Module):
         self.gcn_updt = nn.Linear(self.hidden_dim * self.num_matric, self.hidden_dim)
 
         # upstream: BatchNorm2d + ReLU
-        # equinox: WeightNorm + Mish (batch无关, 小batch更稳定)
-        self.wn_proj = nn.utils.weight_norm(nn.Linear(self.k_t * hidden_dim, self.k_t * hidden_dim))
+        # equinox: WeightNorm + Mish激活 (self-gated: x*tanh(softplus(x)))
+        self.norm_fc = nnutils.weight_norm(nn.Linear(hidden_dim, hidden_dim))
         self.activation = nn.Mish()
 
-        # equinox: gconv残差skip
+        # equinox: gconv残差skip连接
         self.skip_proj = nn.Linear(hidden_dim, hidden_dim)
 
     def gconv(self, support, X_k, X_0):
@@ -51,7 +53,7 @@ class STLocalizedConv(nn.Module):
         out = torch.cat(out, dim=-1)
         out = self.gcn_updt(out)
         out = self.dropout(out)
-        # equinox: 残差skip
+        # equinox: 残差skip X_0
         out = out + self.skip_proj(X_0)
         _edbg("gconv_out", out)
         return out
@@ -64,6 +66,7 @@ class STLocalizedConv(nn.Module):
             graph_ordered.append(k_1_order * mask)
             for k in range(2, self.k_s + 1):
                 k_1_order = torch.matmul(graph, k_1_order)
+                # equinox: 对角线清零去自环
                 k_1_order = k_1_order * mask
                 graph_ordered.append(k_1_order * mask)
         st_local_graph = []
@@ -86,8 +89,6 @@ class STLocalizedConv(nn.Module):
 
         X = X.reshape(B, seq_len, N, K * D)
         out = self.fc_list_updt(X)
-        # equinox: WeightNorm + Mish
-        out = self.wn_proj(out)
         out = self.activation(out)
         out = out.view(B, seq_len, N, K, D)
         X_0 = torch.mean(out, dim=-2)

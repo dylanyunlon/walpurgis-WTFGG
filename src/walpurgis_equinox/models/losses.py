@@ -9,11 +9,9 @@ def _edbg(tag, val):
     else:
         print(f"[EQX:loss:{tag}] {val}", file=sys.stderr)
 
-
-def logcosh_loss(preds, labels, null_val=np.nan):
+def logcosh_loss(preds, labels, null_val=np.nan, scale=1.0):
     """upstream: masked_mae (L1)
-    equinox: LogCosh损失 L(r)=log(cosh(r)), 平滑可微的Huber替代
-    在小残差时近似L2, 大残差时近似L1, 兼顾灵敏度和鲁棒性"""
+    equinox: LogCosh鲁棒损失 L(r)=log(cosh(r/scale)), scale=1.0 -> 平滑L1近似"""
     if np.isnan(null_val):
         mask = ~torch.isnan(labels)
     else:
@@ -21,44 +19,27 @@ def logcosh_loss(preds, labels, null_val=np.nan):
     mask = mask.float()
     mask = mask / torch.clamp(torch.mean(mask), min=1e-8)
     mask = torch.where(torch.isnan(mask), torch.zeros_like(mask), mask)
-    residual = preds - labels
-    # log(cosh(x)) = x + softplus(-2x) - log(2), 数值稳定版本
+    residual = (preds - labels) / scale
+    # log(cosh(x)) = x + softplus(-2x) - log(2), numerically stable
     loss = residual + torch.nn.functional.softplus(-2.0 * residual) - np.log(2.0)
     loss = loss * mask
     loss = torch.where(torch.isnan(loss), torch.zeros_like(loss), loss)
     _edbg("logcosh_raw", loss)
     return torch.mean(loss)
 
-
-def cutmix_spatiotemporal(x, y, alpha=1.0):
-    """equinox新增: CutMix时空块替换数据增强
-    随机选取时间窗口和节点子集, 在batch内交换对应区域
-    增强模型对局部缺失/异常的鲁棒性
-    x: [B, T, N, D] or [B, T, N]"""
-    if alpha <= 0 or x.shape[0] < 2:
-        return x, y
-    B, T, N = x.shape[0], x.shape[1], x.shape[2]
-    lam = np.random.beta(alpha, alpha)
-    # 随机选择混合对象
-    indices = torch.randperm(B, device=x.device)
-    # 时间维度CutMix窗口
-    t_len = max(1, int(T * (1 - lam)))
-    t_start = np.random.randint(0, max(1, T - t_len))
-    # 空间维度CutMix节点子集
-    n_cut = max(1, int(N * (1 - lam)))
-    n_perm = torch.randperm(N, device=x.device)[:n_cut]
-    # 执行替换 — 使用切片避免广播问题
-    x_mixed = x.clone()
-    y_mixed = y.clone()
-    # 逐节点替换, 避免高级索引广播不兼容
-    for ni in n_perm:
-        x_mixed[:, t_start:t_start+t_len, ni] = x[indices][:, t_start:t_start+t_len, ni]
-    if y.dim() >= 3 and y.shape[2] == N:
-        for ni in n_perm:
-            y_mixed[:, :, ni] = y[indices][:, :, ni]
-    _edbg("cutmix", f"lam={lam:.3f} t_window=[{t_start},{t_start+t_len}) n_nodes={n_cut}/{N}")
-    return x_mixed, y_mixed
-
+def spectral_smoothness_penalty(preds, beta=0.03):
+    """equinox新增: 频域平滑惩罚 — 高频分量L2正则"""
+    if preds.dim() < 3 or preds.shape[1] < 4:
+        return torch.tensor(0.0, device=preds.device)
+    # 沿时间轴做实数FFT, 惩罚高频能量
+    fft_out = torch.fft.rfft(preds, dim=1)
+    n_freq = fft_out.shape[1]
+    # 高频: 后半部分
+    high_start = n_freq // 2
+    high_freq_energy = torch.mean(torch.abs(fft_out[:, high_start:, :]) ** 2)
+    pen = beta * high_freq_energy
+    _edbg("spectral_pen", pen)
+    return pen
 
 def masked_mse(preds, labels, null_val=np.nan):
     if np.isnan(null_val): mask = ~torch.isnan(labels)

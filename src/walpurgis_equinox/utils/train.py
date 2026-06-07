@@ -11,7 +11,8 @@ def _edbg(tag, val):
 
 
 class EarlyStopping:
-    """equinox: patience-based早停"""
+    """upstream: 无
+    aurora: 新增patience-based早停, 避免过拟合"""
     def __init__(self, patience=15, min_delta=0.0):
         self.patience = patience
         self.min_delta = min_delta

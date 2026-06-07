@@ -1,6 +1,5 @@
 import numpy as np
 
-
 class DataLoaderM(object):
     def __init__(self, xs, ys, batch_size, shuffle=True, pad_with_last_sample=True):
         self.batch_size = batch_size

@@ -23,6 +23,7 @@ class Normalizer(nn.Module):
         d_inv_sqrt = remove_nan_inf(1.0 / torch.sqrt(degree + 1e-8))
         D_left = torch.diag_embed(d_inv_sqrt)
         D_right = torch.diag_embed(d_inv_sqrt)
+        # equinox: 对称归一化 D^{-1/2} A D^{-1/2}
         normed = torch.bmm(torch.bmm(D_left, graph), D_right)
         _edbg("sym_norm", normed)
         return normed

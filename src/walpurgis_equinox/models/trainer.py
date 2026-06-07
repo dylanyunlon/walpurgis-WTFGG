@@ -2,10 +2,10 @@ import numpy as np
 import torch
 import torch.optim as optim
 import sys, os
-from collections import OrderedDict
+from sklearn.metrics import mean_absolute_error
 
 from walpurgis_equinox.utils.train import data_reshaper, save_model
-from .losses import logcosh_loss, cutmix_spatiotemporal, masked_mae, masked_rmse, masked_mape, metric
+from .losses import logcosh_loss, spectral_smoothness_penalty, masked_mae, masked_rmse, masked_mape, metric
 
 def _edbg(tag, val):
     if os.environ.get('EQUINOX_DEBUG','0')!='1': return
@@ -16,40 +16,46 @@ def _edbg(tag, val):
 
 
 class Lookahead(optim.Optimizer):
-    """equinox: Lookahead包装器 — 慢权重平滑加速收敛
-    k步快权重更新后, 慢权重向快权重方向插值一步
-    减少训练震荡, 提升泛化能力"""
-    def __init__(self, base_optimizer, k=5, alpha=0.5):
+    """upstream: 无
+    equinox: Lookahead optimizer wrapper — 每k步对slow weights做插值更新
+    slow_weights = slow_weights + α*(fast_weights - slow_weights)"""
+    def __init__(self, base_optimizer, la_steps=5, la_alpha=0.5):
         self.base_optimizer = base_optimizer
-        self.k = k
-        self.alpha = alpha
+        self.la_steps = la_steps
+        self.la_alpha = la_alpha
         self._step_count = 0
-        # 缓存慢权重
-        self.slow_params = []
-        for group in self.base_optimizer.param_groups:
-            slow = []
+        self.slow_state = {}
+        for group in base_optimizer.param_groups:
             for p in group['params']:
-                slow.append(p.data.clone())
-            self.slow_params.append(slow)
-        # 需要暴露param_groups以兼容lr_scheduler
-        self.param_groups = self.base_optimizer.param_groups
-        self.state = self.base_optimizer.state
-        self.defaults = self.base_optimizer.defaults
+                if p.requires_grad:
+                    self.slow_state[p] = p.data.clone()
+        # Must pass param_groups to parent
+        self.param_groups = base_optimizer.param_groups
+        self.state = base_optimizer.state
+        self.defaults = base_optimizer.defaults
+        _edbg("lookahead_init", f"la_steps={la_steps} la_alpha={la_alpha} params={len(self.slow_state)}")
 
     def step(self, closure=None):
         loss = self.base_optimizer.step(closure)
         self._step_count += 1
-        if self._step_count % self.k == 0:
-            for g_idx, group in enumerate(self.base_optimizer.param_groups):
-                for p_idx, p in enumerate(group['params']):
-                    slow = self.slow_params[g_idx][p_idx]
-                    slow.add_(self.alpha * (p.data - slow))
-                    p.data.copy_(slow)
-            _edbg("lookahead_sync", f"step={self._step_count} k={self.k} alpha={self.alpha}")
+        if self._step_count % self.la_steps == 0:
+            for group in self.base_optimizer.param_groups:
+                for p in group['params']:
+                    if p in self.slow_state:
+                        slow = self.slow_state[p]
+                        slow.add_(self.la_alpha, p.data - slow) if hasattr(slow, 'add_') and False else None
+                        # compatible add_
+                        self.slow_state[p] = slow + self.la_alpha * (p.data - slow)
+                        p.data.copy_(self.slow_state[p])
+            _edbg("lookahead_sync", f"step={self._step_count}")
         return loss
 
     def zero_grad(self):
         self.base_optimizer.zero_grad()
+
+    @property
+    def _param_groups(self):
+        return self.base_optimizer.param_groups
 
 
 class trainer():
@@ -62,39 +68,56 @@ class trainer():
         self.lrate = optim_args['lrate']
         self.wdecay = optim_args['wdecay']
         self.eps = optim_args['eps']
-        self.if_lr_scheduler = optim_args.get('lr_schedule', True)
-        self.if_cl = optim_args.get('if_cl', True)
-        self.cl_steps = optim_args.get('cl_steps', 3)
+        self.if_lr_scheduler = optim_args['lr_schedule']
+        self.lr_sche_steps = optim_args['lr_sche_steps']
+        self.lr_decay_ratio = optim_args['lr_decay_ratio']
+        self.if_cl = optim_args['if_cl']
+        self.cl_steps = optim_args['cl_steps']
+        # aurora: 对数CL增长代替线性
         self.cl_len = 0 if self.if_cl else self.output_seq_len
-        self.warm_steps = optim_args.get('warm_steps', 30)
+        self.warm_steps = optim_args['warm_steps']
 
         # upstream: Adam + MultiStepLR
-        # equinox: Lookahead(Adam, k, alpha) + OneCycleLR
-        lookahead_k = optim_args.get('lookahead_k', 5)
-        lookahead_alpha = optim_args.get('lookahead_alpha', 0.5)
-        base_adam = optim.Adam(self.model.parameters(), lr=self.lrate,
-                               weight_decay=self.wdecay, eps=self.eps)
-        self.optimizer = Lookahead(base_adam, k=lookahead_k, alpha=lookahead_alpha)
+        # aurora: AdamW + ReduceLROnPlateau (基于验证loss自动调参)
+        # equinox: Lookahead(Adam) + OneCycleLR (余弦退火+warm restart)
+        base_optimizer = optim.Adam(self.model.parameters(), lr=self.lrate,
+                                     weight_decay=self.wdecay, eps=self.eps)
+        self.optimizer = Lookahead(base_optimizer, la_steps=5, la_alpha=0.5)
 
-        # equinox: OneCycleLR — 余弦退火
-        total_steps = optim_args.get('total_steps', 500)
-        max_lr = optim_args.get('max_lr', self.lrate * 2)
-        self.lr_scheduler = optim.lr_scheduler.OneCycleLR(
-            self.optimizer.base_optimizer,
-            max_lr=max_lr,
-            total_steps=max(total_steps, 10),
-            pct_start=0.3,
-            anneal_strategy='cos',
-            div_factor=10.0,
-            final_div_factor=100.0
-        ) if self.if_lr_scheduler else None
+        # equinox: OneCycleLR需要total_steps, 在第一次train()时延迟初始化
+        self._total_steps = optim_args.get('total_steps', None)
+        self.lr_scheduler = None
+        self._scheduler_initialized = False
 
         # upstream: masked_mae
-        # equinox: LogCosh loss
+        # aurora: cauchy_loss + temporal_coherence_penalty
+        # equinox: logcosh_loss + spectral_smoothness_penalty
         self.loss = logcosh_loss
+        # upstream: 固定clip=5
+        # aurora: 自适应裁剪 (初始5, 按p90梯度动态调)
         self.clip = 5.0
-        # equinox: CutMix增强开关
-        self.cutmix_alpha = optim_args.get('cutmix_alpha', 0.5)
+        self._grad_history = []
+
+    def _init_onecycle(self, num_batches, epochs):
+        """equinox: 延迟初始化OneCycleLR (需要知道total_steps)"""
+        if self._scheduler_initialized:
+            return
+        total_steps = max(num_batches * epochs, 1)
+        self.lr_scheduler = optim.lr_scheduler.OneCycleLR(
+            self.optimizer.base_optimizer, max_lr=self.lrate,
+            total_steps=total_steps, pct_start=0.3,
+            anneal_strategy='cos')
+        self._scheduler_initialized = True
+        _edbg("onecycle_init", f"total_steps={total_steps} max_lr={self.lrate}")
+
+    def _adaptive_clip(self):
+        """aurora: 根据最近梯度范数的p90分位数动态调整clip阈值"""
+        if len(self._grad_history) < 10:
+            return self.clip
+        recent = self._grad_history[-50:]
+        p90 = np.percentile(recent, 90)
+        self.clip = max(1.0, min(p90 * 1.5, 20.0))
+        return self.clip
 
     def set_resume_lr_and_cl(self, epoch_num, batch_num):
         if batch_num == 0:
@@ -108,9 +131,11 @@ class trainer():
                 for pg in self.optimizer.param_groups:
                     pg["lr"] = self.lrate
             else:
+                # aurora: 对数增长 cl_len = 1 + int(log2(1 + steps/cl_steps) * out_len)
                 elapsed = _ - self.warm_steps
                 if self.cl_steps > 0:
-                    self.cl_len = min(int(elapsed / self.cl_steps) + 1, self.output_seq_len)
+                    self.cl_len = 1 + int(math.log2(1 + elapsed / self.cl_steps) * self.output_seq_len)
+                    self.cl_len = min(self.cl_len, self.output_seq_len)
         _edbg("resume", f"epoch={epoch_num} lr={self.lrate} cl_len={self.cl_len}")
 
     def print_model(self, **kwargs):
@@ -119,22 +144,15 @@ class trainer():
             _edbg("param_count", total)
 
     def train(self, input, real_val, **kwargs):
+        import math
         self.model.train()
         self.optimizer.zero_grad()
         self.print_model(**kwargs)
 
-        # equinox: CutMix时空数据增强
-        if self.training_cutmix_enabled:
-            input_aug, _ = cutmix_spatiotemporal(
-                input[:, :, :, 0], real_val[:, :, :, 0] if real_val.dim() == 4 else real_val,
-                alpha=self.cutmix_alpha)
-            input = input.clone()
-            input[:, :, :, 0] = input_aug
-
         output = self.model(input)
         output = output.transpose(1, 2)
 
-        # CL调度
+        # aurora: 对数CL增长
         bn = kwargs.get('batch_num', 0)
         if bn < self.warm_steps:
             self.cl_len = self.output_seq_len
@@ -146,31 +164,42 @@ class trainer():
         else:
             elapsed = bn - self.warm_steps
             if self.cl_steps > 0 and self.if_cl:
-                self.cl_len = min(int(elapsed / self.cl_steps) + 1, self.output_seq_len)
+                self.cl_len = 1 + int(math.log2(1 + elapsed / self.cl_steps) * self.output_seq_len)
+                self.cl_len = min(self.cl_len, self.output_seq_len)
 
         if kwargs.get('_max') is not None:
             predict = self.scaler(output.transpose(1, 2).unsqueeze(-1),
                                   kwargs["_max"][0, 0, 0, 0], kwargs["_min"][0, 0, 0, 0]).transpose(1, 2).squeeze(-1)
             real_val = self.scaler(real_val.transpose(1, 2).unsqueeze(-1),
                                   kwargs["_max"][0, 0, 0, 0], kwargs["_min"][0, 0, 0, 0]).transpose(1, 2).squeeze(-1)
-            loss = self.loss(predict[:, :self.cl_len, :], real_val[:, :self.cl_len, :])
+            main_loss = self.loss(predict[:, :self.cl_len, :], real_val[:, :self.cl_len, :])
         else:
             predict = self.scaler.inverse_transform(output)
             real_val_inv = self.scaler.inverse_transform(real_val[:, :, :, 0])
-            loss = self.loss(predict[:, :self.cl_len, :], real_val_inv[:, :self.cl_len, :], 0)
+            main_loss = self.loss(predict[:, :self.cl_len, :], real_val_inv[:, :self.cl_len, :], 0)
 
+        # equinox: spectral smoothness penalty (replaces temporal coherence)
+        sp = spectral_smoothness_penalty(predict)
+        loss = main_loss + sp
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.clip)
+
+        # aurora: 自适应梯度裁剪
+        total_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1e9).item()
+        self._grad_history.append(total_norm)
+        clip_val = self._adaptive_clip()
+        torch.nn.utils.clip_grad_norm_(self.model.parameters(), clip_val)
+
         self.optimizer.step()
 
-        # equinox: OneCycleLR每步更新
+        # equinox: OneCycleLR step per batch
         if self.lr_scheduler is not None:
             try:
                 self.lr_scheduler.step()
             except ValueError:
-                pass  # OneCycleLR超出total_steps时忽略
+                pass
 
-        _edbg("step", f"loss={loss.item():.6f} cl_len={self.cl_len} "
+        _edbg("step", f"loss={loss.item():.6f} logcosh={main_loss.item():.6f} sp={sp.item():.6f} "
+               f"grad={total_norm:.4f} clip={clip_val:.2f} cl_len={self.cl_len} "
                f"lr={self.optimizer.param_groups[0]['lr']:.6f}")
 
         if kwargs.get('_max') is not None:
@@ -179,11 +208,7 @@ class trainer():
         else:
             mape = masked_mape(predict, real_val_inv, 0.0)
             rmse = masked_rmse(predict, real_val_inv, 0.0)
-        return loss.item(), mape.item(), rmse.item()
-
-    @property
-    def training_cutmix_enabled(self):
-        return self.cutmix_alpha > 0 and self.model.training
+        return main_loss.item(), mape.item(), rmse.item()
 
     def eval(self, device, dataloader, model_name, **kwargs):
         valid_loss, valid_mape, valid_rmse = [], [], []

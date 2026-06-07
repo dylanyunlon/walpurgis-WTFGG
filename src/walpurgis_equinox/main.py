@@ -79,32 +79,31 @@ def main(config_path, device_str='cpu', epochs_override=None):
     print(f"Equinox D2STGNN: {total_params:,} trainable parameters")
     _edbg("model_params", total_params)
 
-    # equinox: Trainer with Lookahead(Adam) + OneCycleLR + CutMix + LogCosh loss
-    total_steps = train_cfg['EPOCHS'] * dataloader['train_loader'].num_batch
+    # Trainer
     optim_args = {
         'output_seq_len': model_cfg['SEQ_LENGTH'],
         'print_model': train_cfg.get('PRINT_MODEL', False),
         'lrate': train_cfg['LRATE'],
         'wdecay': train_cfg['WDECAY'],
         'eps': train_cfg['EPS'],
-        # equinox: Lookahead parameters
-        'lookahead_k': train_cfg.get('LOOKAHEAD_K', 5),
-        'lookahead_alpha': train_cfg.get('LOOKAHEAD_ALPHA', 0.5),
-        # equinox: OneCycleLR
-        'lr_schedule': train_cfg.get('LR_SCHEDULE', True),
-        'max_lr': train_cfg.get('MAX_LR', train_cfg['LRATE'] * 2),
-        'total_steps': total_steps,
-        # equinox: CutMix
-        'cutmix_alpha': train_cfg.get('CUTMIX_ALPHA', 1.0),
-        'cutmix_prob': train_cfg.get('CUTMIX_PROB', 0.5),
-        # curriculum learning
+        'lr_schedule': train_cfg.get('LR_SCHEDULE', False),
+        'lr_sche_steps': train_cfg.get('LR_SCHE_STEPS', [50, 80]),
+        'lr_decay_ratio': train_cfg.get('LR_DECAY_RATIO', 0.5),
         'if_cl': train_cfg.get('IF_CL', True),
         'cl_steps': train_cfg.get('CL_STEPS', 3),
         'warm_steps': train_cfg.get('WARM_STEPS', 30)
     }
 
     scaler = dataloader['scaler']
-    engine = trainer(scaler, model, **optim_args)
+    if hasattr(scaler, 'inverse_transform'):
+        engine = trainer(scaler, model, **optim_args)
+    else:
+        engine = trainer(scaler, model, **optim_args)
+
+    # equinox: 初始化OneCycleLR (需要知道total batches和epochs)
+    epochs = train_cfg['EPOCHS']
+    num_batches = dataloader['train_loader'].num_batch
+    engine._init_onecycle(num_batches, epochs)
 
     logger = TrainLogger('equinox', dataset_name)
     early_stop = EarlyStopping(patience=train_cfg.get('PATIENCE', 15))
@@ -118,13 +117,8 @@ def main(config_path, device_str='cpu', epochs_override=None):
         snapshot_model(model, epoch=0, step=0)
 
     # Train
-    epochs = train_cfg['EPOCHS']
     print(f"\nStarting training: {epochs} epochs, batch_size={train_cfg['BATCH_SIZE']}")
     print(f"Dataset: {dataset_name}, Nodes: {num_nodes}")
-    print(f"Optimizer: Lookahead(Adam, k={optim_args['lookahead_k']}, alpha={optim_args['lookahead_alpha']})")
-    print(f"Scheduler: OneCycleLR (max_lr={optim_args['max_lr']})")
-    print(f"CutMix: alpha={optim_args['cutmix_alpha']}, prob={optim_args['cutmix_prob']}")
-    print(f"Loss: LogCosh")
     print(f"Debug: {_is_debug()}\n")
 
     best_val = float('inf')
@@ -153,6 +147,8 @@ def main(config_path, device_str='cpu', epochs_override=None):
         lr = engine.optimizer.param_groups[0]['lr']
         logger.log_epoch(epoch, train_avg, val_loss, val_mape, val_rmse, lr)
 
+        # equinox: OneCycleLR steps per-batch in trainer.train(), no epoch-level step needed
+
         if val_loss < best_val:
             best_val = val_loss
             save_model(model, save_path + '_best.pt')
@@ -173,7 +169,7 @@ def main(config_path, device_str='cpu', epochs_override=None):
     print("\n--- Testing ---")
     best_path = save_path + '_best.pt'
     if os.path.exists(best_path):
-        model.load_state_dict(torch.load(best_path, map_location=device, weights_only=True))
+        model.load_state_dict(torch.load(best_path, map_location=device))
     kwargs_test = {}
     if hasattr(scaler, '_min'):
         kwargs_test['_max'] = dataloader['_max'].to(device)

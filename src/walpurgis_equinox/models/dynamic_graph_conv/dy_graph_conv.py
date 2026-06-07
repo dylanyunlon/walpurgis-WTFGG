@@ -1,6 +1,5 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import sys, os
 
 from .utils import DistanceFunction, Mask, Normalizer, MultiOrder
@@ -9,15 +8,9 @@ def _edbg(tag, val):
     if os.environ.get('EQUINOX_DEBUG','0')!='1': return
     if isinstance(val, torch.Tensor):
         print(f"[EQX:dygraph:{tag}] shape={list(val.shape)} mean={val.mean().item():.6f} nnz_frac={((val.abs()>1e-6).float().mean().item()):.2%}", file=sys.stderr)
-    else:
-        print(f"[EQX:dygraph:{tag}] {val}", file=sys.stderr)
-
 
 class DynamicGraphConstructor(nn.Module):
-    """equinox: Gumbel-Softmax离散图采样 + 可学习时间权重
-    upstream: 简单时间复制 + softmax归一化
-    equinox: DistanceFunction内已集成Gumbel-Softmax采样,
-             此处增加可学习时间权重对k_t步加权"""
+    """equinox: 增加可学习时间权重对k_t步加权"""
     def __init__(self, **model_args):
         super().__init__()
         self.k_s = model_args['k_s']
@@ -54,7 +47,6 @@ class DynamicGraphConstructor(nn.Module):
         E_u = inputs['node_embedding_u']
         T_D = inputs['time_in_day_feat']
         D_W = inputs['day_in_week_feat']
-        # equinox: DistanceFunction内部使用Gumbel-Softmax采样
         dist_mx = self.distance_function(X, E_d, E_u, T_D, D_W)
         dist_mx = self.mask(dist_mx)
         dist_mx = self.normalizer(dist_mx)

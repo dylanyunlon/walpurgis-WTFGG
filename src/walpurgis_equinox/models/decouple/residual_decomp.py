@@ -1,6 +1,5 @@
 import torch
 import torch.nn as nn
-import torch.nn.utils as utils
 import sys, os
 
 def _edbg(tag, val):
@@ -9,36 +8,39 @@ def _edbg(tag, val):
         print(f"[EQX:resdecomp:{tag}] mean={val.mean().item():.6f} std={val.std().item():.6f}", file=sys.stderr)
 
 
-class WeightNormLinear(nn.Module):
-    """equinox: WeightNorm替代BatchNorm/LayerNorm
-    对权重矩阵做方向/幅度分解: w = g * v/||v||
-    无需batch统计量, 训练更稳定, 适合小batch场景"""
-    def __init__(self, in_features, out_features):
+class DenseNorm(nn.Module):
+    """equinox: DenseNet-style归一化 — 拼接原始+变换后特征再投影,
+    替代RMSNorm, 保留更多原始信息"""
+    def __init__(self, dim, eps=1e-8):
         super().__init__()
-        linear = nn.Linear(in_features, out_features)
-        self.layer = utils.weight_norm(linear, name='weight')
+        self.dense_proj = nn.Linear(dim * 2, dim)
+        self.scale = nn.Parameter(torch.ones(dim))
+        self.eps = eps
 
-    def forward(self, x):
-        return self.layer(x)
+    def forward(self, x_orig, x_trans):
+        # DenseNet: concat原始和变换特征
+        concat = torch.cat([x_orig, x_trans], dim=-1)
+        fused = self.dense_proj(concat)
+        # 然后做简单的均值归一化
+        rms = torch.sqrt(torch.mean(fused ** 2, dim=-1, keepdim=True) + self.eps)
+        return self.scale * fused / rms
 
 
 class ResidualDecomp(nn.Module):
     """upstream: LayerNorm(x - ReLU(y))
-    equinox: WeightNorm投影(x - Mish(y) * α), α可学习标量"""
+    equinox: DenseNorm(x, y) — DenseNet残差融合, α可学习标量初始化0.9"""
     def __init__(self, input_shape):
         super().__init__()
         dim = input_shape[-1]
-        # equinox: WeightNorm替代LayerNorm/RMSNorm
-        self.wn_proj = WeightNormLinear(dim, dim)
-        # equinox: Mish激活 = x * tanh(softplus(x))
-        self.act = nn.Mish()
+        self.norm = DenseNorm(dim)
+        self.act = nn.GELU()
         # equinox: 可学习残差缩放系数
         self.alpha = nn.Parameter(torch.tensor(0.9))
 
     def forward(self, x, y):
         alpha = torch.clamp(self.alpha, 0.0, 2.0)
-        u = x - self.act(y) * alpha
-        u = self.wn_proj(u)
-        _edbg("residual_wn", u)
+        residual = x - self.act(y) * alpha
+        u = self.norm(x, residual)
+        _edbg("residual_norm", u)
         _edbg("alpha", alpha)
         return u

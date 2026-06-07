@@ -9,13 +9,14 @@ def _edbg(tag, val):
 
 class Forecast(nn.Module):
     """upstream: 直接history padding
-    equinox: 反射padding + WeightNorm后置"""
+    equinox: 反射padding(reflect) + LayerNorm后置"""
     def __init__(self, hidden_dim, forecast_hidden_dim=None, **model_args):
         super().__init__()
         self.k_t = model_args['k_t']
         self.output_seq_len = model_args['seq_length']
-        # equinox: WeightNorm投影
-        self.forecast_fc = nn.utils.weight_norm(nn.Linear(hidden_dim, forecast_hidden_dim))
+        self.forecast_fc = nn.Linear(hidden_dim, forecast_hidden_dim)
+        # equinox: LayerNorm后置稳定forecast
+        self.post_ln = nn.LayerNorm(forecast_hidden_dim)
         self.model_args = model_args
 
     def forward(self, gated_history_data, hidden_states_dif,
@@ -27,7 +28,8 @@ class Forecast(nn.Module):
             recent = predict[-self.k_t:]
             if len(recent) < self.k_t:
                 deficit = self.k_t - len(recent)
-                # equinox: 反射padding
+                # upstream: 用history尾部padding
+                # equinox: 反射padding — 序列反转填充
                 avail = history[:, -deficit:, :, :]
                 pad = torch.flip(avail, dims=[1])
                 recent = [pad] + recent
@@ -35,5 +37,7 @@ class Forecast(nn.Module):
             predict.append(localized_st_conv(recent, dynamic_graph, static_graph))
         predict = torch.cat(predict, dim=1)
         predict = self.forecast_fc(predict)
+        # equinox: LayerNorm
+        predict = self.post_ln(predict)
         _edbg("dif_forecast", predict)
         return predict

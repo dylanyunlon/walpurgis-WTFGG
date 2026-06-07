@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torch.nn.utils as nnutils
 import sys, os
 
 from .diffusion_block import DifBlock
@@ -14,17 +15,6 @@ def _edbg(tag, val):
         print(f"[EQX:model:{tag}] shape={list(val.shape)} mean={val.mean().item():.6f} std={val.std().item():.6f}", file=sys.stderr)
     else:
         print(f"[EQX:model:{tag}] {val}", file=sys.stderr)
-
-
-class WeightNormLinear(nn.Module):
-    """equinox: WeightNorm替代BatchNorm/GroupNorm"""
-    def __init__(self, in_features, out_features, bias=True):
-        super().__init__()
-        self.linear = nn.utils.parametrizations.weight_norm(
-            nn.Linear(in_features, out_features, bias=bias))
-
-    def forward(self, x):
-        return self.linear(x)
 
 
 class DecoupleLayer(nn.Module):
@@ -48,6 +38,7 @@ class DecoupleLayer(nn.Module):
             history_data=history_data, gated_history_data=gated,
             dynamic_graph=dynamic_graph, static_graph=static_graph)
         inh_backcast, inh_fk = self.inh_layer(dif_backcast)
+        # equinox: 打印dif/inh分支能量比
         bal = torch.sigmoid(self._branch_balance)
         _edbg("dif_energy", torch.norm(dif_fk))
         _edbg("inh_energy", torch.norm(inh_fk))
@@ -56,11 +47,6 @@ class DecoupleLayer(nn.Module):
 
 
 class D2STGNN(nn.Module):
-    """equinox D2STGNN:
-    - WeightNorm替代GroupNorm/BatchNorm (embedding层)
-    - DenseNet式layer aggregation: 收集所有层的forecast, concat后gated projection
-    - Mish激活替代Swish/ReLU
-    """
     def __init__(self, **model_args):
         super().__init__()
         self._in_feat = model_args['num_feat']
@@ -78,8 +64,9 @@ class D2STGNN(nn.Module):
         model_args['sta_graph'] = True
         self._model_args = model_args
 
-        # equinox: WeightNorm embedding + Mish激活 (替代GroupNorm+Swish)
-        self.embedding = WeightNormLinear(self._in_feat, self._hidden_dim)
+        # upstream: nn.Linear embedding直接进layer
+        # equinox: WeightNorm Linear + Mish激活 (替代GroupNorm + Swish)
+        self.embedding = nnutils.weight_norm(nn.Linear(self._in_feat, self._hidden_dim))
 
         # time embedding
         self.T_i_D_emb = nn.Parameter(torch.empty(288, model_args['time_emb_dim']))
@@ -96,24 +83,14 @@ class D2STGNN(nn.Module):
         self.node_emb_u = nn.Parameter(torch.empty(self._num_nodes, self._node_dim))
         self.node_emb_d = nn.Parameter(torch.empty(self._num_nodes, self._node_dim))
 
-        # equinox: DenseNet式layer aggregation
-        # 收集所有层的dif_fk和inh_fk, concat后gated projection
-        # 每层产出forecast_dim, 共num_layers层, dif+inh各一组
-        self._dense_total_dim = self._forecast_dim * self._num_layers
-        self.dense_gate_dif = nn.Sequential(
-            WeightNormLinear(self._dense_total_dim, self._forecast_dim),
-            nn.Sigmoid()
-        )
-        self.dense_proj_dif = WeightNormLinear(self._dense_total_dim, self._forecast_dim)
-        self.dense_gate_inh = nn.Sequential(
-            WeightNormLinear(self._dense_total_dim, self._forecast_dim),
-            nn.Sigmoid()
-        )
-        self.dense_proj_inh = WeightNormLinear(self._dense_total_dim, self._forecast_dim)
-
-        # equinox: output head with WeightNorm + Mish
-        self.out_fc_1 = WeightNormLinear(self._forecast_dim, self._output_hidden)
-        self.out_fc_2 = WeightNormLinear(self._output_hidden, model_args['gap'])
+        # upstream: sum()聚合 + ReLU双层FC
+        # equinox: Mixture-of-Experts gate聚合 + Mish输出头 + WeightNorm
+        # MoE gate: 每层一个可学习权重, softmax后加权求和
+        self.layer_gate_logits = nn.Parameter(torch.zeros(self._num_layers))
+        self.out_fc_1 = nnutils.weight_norm(nn.Linear(self._forecast_dim, self._output_hidden))
+        self.out_fc_2 = nn.Linear(self._output_hidden, model_args['gap'])
+        # equinox: Mish激活
+        self.out_act = nn.Mish()
 
         self.reset_parameter()
 
@@ -172,26 +149,18 @@ class D2STGNN(nn.Module):
             inh_fk_list.append(inh_fk)
             _edbg(f"layer_{idx}_out", inh_backcast)
 
-        # equinox: DenseNet式聚合 — concat所有层 + gated projection
         # upstream: sum()聚合
-        # aurora:   MoE softmax-gate加权聚合
-        # equinox:  concat所有层forecast → gated linear projection
-        dif_concat = torch.cat(dif_fk_list, dim=-1)   # [B, L, N, forecast_dim*num_layers]
-        inh_concat = torch.cat(inh_fk_list, dim=-1)
-        _edbg("dense_dif_concat", dif_concat)
-
-        dif_gate = self.dense_gate_dif(dif_concat)
-        dif_fk_agg = dif_gate * self.dense_proj_dif(dif_concat)
-        inh_gate = self.dense_gate_inh(inh_concat)
-        inh_fk_agg = inh_gate * self.dense_proj_inh(inh_concat)
-        _edbg("dense_dif_agg", dif_fk_agg)
-        _edbg("dense_inh_agg", inh_fk_agg)
-
+        # equinox: MoE softmax-gate加权聚合
+        gate_weights = F.softmax(self.layer_gate_logits, dim=0)
+        _edbg("moe_gate_weights", gate_weights)
+        dif_fk_agg = sum(w * h for w, h in zip(gate_weights, dif_fk_list))
+        inh_fk_agg = sum(w * h for w, h in zip(gate_weights, inh_fk_list))
         forecast_hidden = dif_fk_agg + inh_fk_agg
 
-        # equinox: Mish(WeightNorm_FC) → FC
+        # upstream: ReLU(FC(ReLU(FC(x))))
+        # equinox: Mish(WeightNorm(FC(x))) -> FC
         h = self.out_fc_1(forecast_hidden)
-        h = F.mish(h)
+        h = self.out_act(h)
         forecast = self.out_fc_2(h)
         forecast = forecast.transpose(1, 2).contiguous().view(
             forecast.shape[0], forecast.shape[2], -1)
