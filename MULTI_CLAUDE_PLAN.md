@@ -74,3 +74,16 @@
 5. 先拉取 dylanyunlon/claude-hk-config 同步cookie
 6. 每个变体必须通过SYNTH smoke test才能push
 7. 参考 walpurgis_zenith 的文件结构和诊断工具模式
+
+## 对话链接 (claude.hk.cn)
+
+| Claude | 变体 | 对话链接 |
+|--------|------|----------|
+| #2 | aurora | https://claude.hk.cn/chat/9f55a2fc-f9e0-4e5b-8703-3caa01cc27a8 |
+| #3 | eclipse | https://claude.hk.cn/chat/69feb941-5eb7-458f-91a3-eb365e01dc73 |
+| #4 | equinox | https://claude.hk.cn/chat/2e987d0d-69f9-4910-b370-7a515d8a3f55 |
+| #5 | solstice | https://claude.hk.cn/chat/bd9cde7a-a626-4a9c-b249-e978ae5a131e |
+| #6 | nebula | https://claude.hk.cn/chat/c410f422-5548-472c-8369-88cac822618a |
+
+所有子Claude已于 2026-06-08 01:52-01:54 UTC dispatch。
+如果某个子Claude被截断，在对应对话中发送 "Continue" 即可。
