@@ -1,53 +1,80 @@
+"""
+D2STGNN — Aurora变体
+算法改写 (~20%):
+  1. DecoupleLayer: Gated Fusion — 用sigmoid门控替代简单残差加法
+     融合diffusion和inherent分支的输出, 让网络自适应学习两个分支的混合比例
+  2. D2STGNN: 将DynamicGraphConstructor的spectral_reg_loss传递给trainer
+  3. 输出层使用SiLU替代第一个ReLU
+"""
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import sys, os
-
 from .diffusion_block import DifBlock
 from .inherent_block import InhBlock
 from .dynamic_graph_conv import DynamicGraphConstructor
 from .decouple.estimation_gate import EstimationGate
-
-def _adbg(tag, val):
-    if os.environ.get('AURORA_DEBUG','0')!='1': return
-    if isinstance(val, torch.Tensor):
-        print(f"[AUR:model:{tag}] shape={list(val.shape)} mean={val.mean().item():.6f} std={val.std().item():.6f}", file=sys.stderr)
-    else:
-        print(f"[AUR:model:{tag}] {val}", file=sys.stderr)
+from .. import _dbg, dataflow_checkpoint
 
 
 class DecoupleLayer(nn.Module):
-    def __init__(self, hidden_dim, fk_dim=256, **model_args):
+    def __init__(self, hidden_dim, fk_dim=256, layer_idx=0, **model_args):
         super().__init__()
+        self.layer_idx = layer_idx
         self.estimation_gate = EstimationGate(
             node_emb_dim=model_args['node_hidden'],
             time_emb_dim=model_args['time_emb_dim'], hidden_dim=64)
-        self.dif_layer = DifBlock(hidden_dim, forecast_hidden_dim=fk_dim, **model_args)
-        self.inh_layer = InhBlock(hidden_dim, forecast_hidden_dim=fk_dim, **model_args)
-        # aurora: 门控能量监控 — 可学习分支平衡系数
-        self._branch_balance = nn.Parameter(torch.tensor(0.5))
+        self.dif_layer = DifBlock(
+            hidden_dim, forecast_hidden_dim=fk_dim, **model_args)
+        self.inh_layer = InhBlock(
+            hidden_dim, forecast_hidden_dim=fk_dim, **model_args)
+
+        # Aurora算法改动2: Gated Fusion
+        # 用sigmoid门控替代简单的串行残差传递
+        # dif_backcast和inh_backcast通过学习的gate加权融合
+        self.fusion_gate_linear = nn.Linear(hidden_dim * 2, hidden_dim)
+        self.fusion_proj = nn.Linear(hidden_dim, hidden_dim)
 
     def forward(self, history_data, dynamic_graph, static_graph,
                 node_embedding_u, node_embedding_d,
                 time_in_day_feat, day_in_week_feat):
-        gated = self.estimation_gate(node_embedding_u, node_embedding_d,
-                                     time_in_day_feat, day_in_week_feat, history_data)
-        _adbg("gate_ratio", torch.norm(gated) / (torch.norm(history_data) + 1e-8))
-        dif_backcast, dif_fk = self.dif_layer(
-            history_data=history_data, gated_history_data=gated,
-            dynamic_graph=dynamic_graph, static_graph=static_graph)
-        inh_backcast, inh_fk = self.inh_layer(dif_backcast)
-        # aurora: 打印dif/inh分支能量比
-        bal = torch.sigmoid(self._branch_balance)
-        _adbg("dif_energy", torch.norm(dif_fk))
-        _adbg("inh_energy", torch.norm(inh_fk))
-        _adbg("balance_coeff", bal)
-        return inh_backcast, dif_fk, inh_fk
+        dataflow_checkpoint(
+            f"decouple_L{self.layer_idx}.input", history_data)
+
+        gated_history_data = self.estimation_gate(
+            node_embedding_u, node_embedding_d,
+            time_in_day_feat, day_in_week_feat, history_data)
+
+        dif_backcast_seq_res, dif_forecast_hidden = self.dif_layer(
+            history_data=history_data,
+            gated_history_data=gated_history_data,
+            dynamic_graph=dynamic_graph,
+            static_graph=static_graph)
+
+        inh_backcast_seq_res, inh_forecast_hidden = self.inh_layer(
+            dif_backcast_seq_res)
+
+        # Aurora: Gated Fusion — 用sigmoid gate融合两个分支
+        # 而非原始的简单串行(dif→inh)
+        # gate ∈ (0,1) 控制保留多少inherent vs diffusion信息
+        gate_input = torch.cat([
+            dif_backcast_seq_res[:, -inh_backcast_seq_res.shape[1]:, :, :],
+            inh_backcast_seq_res
+        ], dim=-1)
+        fusion_gate = torch.sigmoid(self.fusion_gate_linear(gate_input))
+        fused_output = fusion_gate * inh_backcast_seq_res + \
+            (1 - fusion_gate) * dif_backcast_seq_res[:, -inh_backcast_seq_res.shape[1]:, :, :]
+        fused_output = self.fusion_proj(fused_output)
+
+        _dbg(f"decouple_L{self.layer_idx}.fusion_gate_mean",
+             fusion_gate.mean(), "model")
+
+        return fused_output, dif_forecast_hidden, inh_forecast_hidden
 
 
 class D2STGNN(nn.Module):
     def __init__(self, **model_args):
         super().__init__()
+        # attributes
         self._in_feat = model_args['num_feat']
         self._hidden_dim = model_args['num_hidden']
         self._node_dim = model_args['node_hidden']
@@ -58,39 +85,46 @@ class D2STGNN(nn.Module):
         self._k_s = model_args['k_s']
         self._k_t = model_args['k_t']
         self._num_layers = 5
+
         model_args['use_pre'] = False
         model_args['dy_graph'] = True
         model_args['sta_graph'] = True
         self._model_args = model_args
 
-        # upstream: nn.Linear embedding直接进layer
-        # aurora: Linear + GroupNorm + Swish激活 (替代裸Linear)
+        # start embedding layer
         self.embedding = nn.Linear(self._in_feat, self._hidden_dim)
-        self.embed_gn = nn.GroupNorm(min(4, self._hidden_dim), self._hidden_dim)
 
         # time embedding
-        self.T_i_D_emb = nn.Parameter(torch.empty(288, model_args['time_emb_dim']))
-        self.D_i_W_emb = nn.Parameter(torch.empty(7, model_args['time_emb_dim']))
+        self.T_i_D_emb = nn.Parameter(
+            torch.empty(288, model_args['time_emb_dim']))
+        self.D_i_W_emb = nn.Parameter(
+            torch.empty(7, model_args['time_emb_dim']))
 
+        # Decoupled Spatial Temporal Layers with layer index
         self.layers = nn.ModuleList([
-            DecoupleLayer(self._hidden_dim, fk_dim=self._forecast_dim, **model_args)
-            for _ in range(self._num_layers)
+            DecoupleLayer(
+                self._hidden_dim, fk_dim=self._forecast_dim,
+                layer_idx=i, **model_args)
+            for i in range(self._num_layers)
         ])
 
+        # dynamic and static graph constructor
         if model_args['dy_graph']:
-            self.dynamic_graph_constructor = DynamicGraphConstructor(**model_args)
+            self.dynamic_graph_constructor = DynamicGraphConstructor(
+                **model_args)
 
-        self.node_emb_u = nn.Parameter(torch.empty(self._num_nodes, self._node_dim))
-        self.node_emb_d = nn.Parameter(torch.empty(self._num_nodes, self._node_dim))
+        # node embeddings
+        self.node_emb_u = nn.Parameter(
+            torch.empty(self._num_nodes, self._node_dim))
+        self.node_emb_d = nn.Parameter(
+            torch.empty(self._num_nodes, self._node_dim))
 
-        # upstream: sum()聚合 + ReLU双层FC
-        # aurora: Mixture-of-Experts gate聚合 + Swish输出头
-        # MoE gate: 每层一个可学习权重, softmax后加权求和
-        self.layer_gate_logits = nn.Parameter(torch.zeros(self._num_layers))
+        # Aurora: 输出层用SiLU替代第一个ReLU
         self.out_fc_1 = nn.Linear(self._forecast_dim, self._output_hidden)
         self.out_fc_2 = nn.Linear(self._output_hidden, model_args['gap'])
-        # aurora: Swish替代ReLU
-        self.out_gn = nn.GroupNorm(min(4, self._output_hidden), self._output_hidden)
+
+        # 存储graph正则化损失
+        self.graph_reg_loss = torch.tensor(0.0)
 
         self.reset_parameter()
 
@@ -104,11 +138,14 @@ class D2STGNN(nn.Module):
         E_d = inputs['node_embedding_u']
         E_u = inputs['node_embedding_d']
         if self._model_args['sta_graph']:
-            static_graph = [F.softmax(F.relu(torch.mm(E_d, E_u.T)), dim=1)]
+            static_graph = [F.softmax(
+                F.relu(torch.mm(E_d, E_u.T)), dim=1)]
         else:
             static_graph = []
         if self._model_args['dy_graph']:
             dynamic_graph = self.dynamic_graph_constructor(**inputs)
+            # Aurora: 提取spectral正则化损失
+            self.graph_reg_loss = self.dynamic_graph_constructor.graph_reg_loss
         else:
             dynamic_graph = []
         return static_graph, dynamic_graph
@@ -117,56 +154,54 @@ class D2STGNN(nn.Module):
         num_feat = self._model_args['num_feat']
         node_emb_u = self.node_emb_u
         node_emb_d = self.node_emb_d
-        t_idx = (history_data[:, :, :, num_feat] * 288).type(torch.LongTensor)
-        t_idx = torch.clamp(t_idx, 0, 287)
-        time_in_day_feat = self.T_i_D_emb[t_idx]
-        d_idx = history_data[:, :, :, num_feat + 1].type(torch.LongTensor)
-        d_idx = torch.clamp(d_idx, 0, 6)
-        day_in_week_feat = self.D_i_W_emb[d_idx]
+        time_in_day_feat = self.T_i_D_emb[
+            (history_data[:, :, :, num_feat] * 288).type(torch.LongTensor)]
+        day_in_week_feat = self.D_i_W_emb[
+            (history_data[:, :, :, num_feat + 1]).type(torch.LongTensor)]
         history_data = history_data[:, :, :, :num_feat]
-        return history_data, node_emb_u, node_emb_d, time_in_day_feat, day_in_week_feat
+        return (history_data, node_emb_u, node_emb_d,
+                time_in_day_feat, day_in_week_feat)
 
     def forward(self, history_data):
-        _adbg("input", history_data)
-        history_data, node_eu, node_ed, t_feat, d_feat = self._prepare_inputs(history_data)
+        # Prepare inputs
+        history_data, node_embedding_u, node_embedding_d, \
+            time_in_day_feat, day_in_week_feat = \
+            self._prepare_inputs(history_data)
+
+        dataflow_checkpoint("model.raw_input", history_data)
+
+        # Construct graphs
         static_graph, dynamic_graph = self._graph_constructor(
-            node_embedding_u=node_eu, node_embedding_d=node_ed,
-            history_data=history_data, time_in_day_feat=t_feat, day_in_week_feat=d_feat)
+            node_embedding_u=node_embedding_u,
+            node_embedding_d=node_embedding_d,
+            history_data=history_data,
+            time_in_day_feat=time_in_day_feat,
+            day_in_week_feat=day_in_week_feat)
 
-        # aurora: embedding后加GroupNorm + Swish
+        # Start embedding
         history_data = self.embedding(history_data)
-        B, L, N, D = history_data.shape
-        history_data = self.embed_gn(history_data.permute(0, 3, 1, 2).reshape(B*1, D, L, N))
-        history_data = history_data.reshape(B, D, L, N).permute(0, 2, 3, 1)
-        history_data = history_data * torch.sigmoid(history_data)  # Swish
-        _adbg("post_embed", history_data)
 
-        dif_fk_list = []
-        inh_fk_list = []
-        inh_backcast = history_data
-        for idx, layer in enumerate(self.layers):
-            inh_backcast, dif_fk, inh_fk = layer(
-                inh_backcast, dynamic_graph, static_graph,
-                node_eu, node_ed, t_feat, d_feat)
-            dif_fk_list.append(dif_fk)
-            inh_fk_list.append(inh_fk)
-            _adbg(f"layer_{idx}_out", inh_backcast)
+        dif_forecast_hidden_list = []
+        inh_forecast_hidden_list = []
 
-        # upstream: sum()聚合
-        # aurora: MoE softmax-gate加权聚合
-        gate_weights = F.softmax(self.layer_gate_logits, dim=0)
-        _adbg("moe_gate_weights", gate_weights)
-        dif_fk_agg = sum(w * h for w, h in zip(gate_weights, dif_fk_list))
-        inh_fk_agg = sum(w * h for w, h in zip(gate_weights, inh_fk_list))
-        forecast_hidden = dif_fk_agg + inh_fk_agg
+        inh_backcast_seq_res = history_data
+        for _, layer in enumerate(self.layers):
+            inh_backcast_seq_res, dif_forecast_hidden, inh_forecast_hidden = layer(
+                inh_backcast_seq_res, dynamic_graph, static_graph,
+                node_embedding_u, node_embedding_d,
+                time_in_day_feat, day_in_week_feat)
+            dif_forecast_hidden_list.append(dif_forecast_hidden)
+            inh_forecast_hidden_list.append(inh_forecast_hidden)
 
-        # upstream: ReLU(FC(ReLU(FC(x))))
-        # aurora: Swish(GroupNorm(FC(x))) -> FC
-        h = self.out_fc_1(forecast_hidden)
-        h = self.out_gn(h.permute(0, 3, 1, 2)).permute(0, 2, 3, 1)
-        h = h * torch.sigmoid(h)  # Swish
-        forecast = self.out_fc_2(h)
+        # Output Layer
+        dif_forecast_hidden = sum(dif_forecast_hidden_list)
+        inh_forecast_hidden = sum(inh_forecast_hidden_list)
+        forecast_hidden = dif_forecast_hidden + inh_forecast_hidden
+
+        # Aurora: SiLU替代第一个ReLU, 保持第二个ReLU
+        forecast = self.out_fc_2(F.relu(self.out_fc_1(F.silu(forecast_hidden))))
         forecast = forecast.transpose(1, 2).contiguous().view(
             forecast.shape[0], forecast.shape[2], -1)
-        _adbg("output", forecast)
+
+        dataflow_checkpoint("model.output", forecast)
         return forecast

@@ -1,56 +1,65 @@
+"""train utils — Aurora变体"""
 import torch
-import os
-import json
-import yaml
-import sys
 import numpy as np
+import random
 
-def _adbg(tag, val):
-    if os.environ.get('AURORA_DEBUG','0')!='1': return
-    print(f"[AUR:utils:{tag}] {val}", file=sys.stderr)
+
+def set_config(seed=0):
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+
+def save_model(model, save_path):
+    torch.save(model.state_dict(), save_path)
+
+
+def load_model(model, save_path):
+    model.load_state_dict(torch.load(save_path))
+    return model
 
 
 class EarlyStopping:
-    """upstream: 无
-    aurora: 新增patience-based早停, 避免过拟合"""
-    def __init__(self, patience=15, min_delta=0.0):
+    def __init__(self, patience, save_path,
+                 verbose=False, delta=0):
         self.patience = patience
-        self.min_delta = min_delta
+        self.verbose = verbose
         self.counter = 0
         self.best_score = None
         self.early_stop = False
+        self.val_loss_min = np.inf
+        self.delta = delta
+        self.save_path = save_path
 
-    def __call__(self, val_loss):
+    def __call__(self, val_loss, model):
+        score = -val_loss
         if self.best_score is None:
-            self.best_score = val_loss
-        elif val_loss > self.best_score - self.min_delta:
+            self.best_score = score
+            self.save_checkpoint(val_loss, model)
+        elif score < self.best_score - self.delta:
             self.counter += 1
-            _adbg("early_stop", f"no improve: {self.counter}/{self.patience}")
+            print(f'EarlyStopping counter: '
+                  f'{self.counter} out of {self.patience}')
             if self.counter >= self.patience:
                 self.early_stop = True
         else:
-            self.best_score = val_loss
+            self.best_score = score
+            self.save_checkpoint(val_loss, model)
             self.counter = 0
 
-
-def set_config(config_path):
-    with open(config_path, 'r') as f:
-        cfg = yaml.safe_load(f)
-    _adbg("config", json.dumps(cfg, indent=2, default=str))
-    return cfg
+    def save_checkpoint(self, val_loss, model):
+        if self.verbose:
+            print(f'Validation loss decreased '
+                  f'({self.val_loss_min:.6f} --> '
+                  f'{val_loss:.6f}).  Saving model ...')
+        save_model(model, self.save_path)
+        self.val_loss_min = val_loss
 
 
 def data_reshaper(data, device):
     data = torch.Tensor(data).to(device)
     return data
-
-
-def save_model(model, path):
-    os.makedirs(os.path.dirname(path) if os.path.dirname(path) else '.', exist_ok=True)
-    torch.save(model.state_dict(), path)
-    _adbg("save_model", path)
-
-
-def get_num_params(model):
-    total = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    return total

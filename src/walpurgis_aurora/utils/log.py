@@ -1,60 +1,61 @@
-import os
-import sys
+"""log — Aurora变体"""
 import time
+import os
 import json
-import numpy as np
-
-def _adbg(tag, val):
-    if os.environ.get('AURORA_DEBUG','0')!='1': return
-    print(f"[AUR:log:{tag}] {val}", file=sys.stderr)
 
 
-class TrainLogger:
-    def __init__(self, model_name, dataset_name, log_dir='logs'):
-        self.model_name = model_name
-        self.dataset_name = dataset_name
-        self.log_dir = log_dir
-        os.makedirs(log_dir, exist_ok=True)
-        self.train_losses = []
-        self.val_losses = []
-        self.best_val_loss = float('inf')
-        self.best_epoch = -1
-        self.start_time = time.time()
-        _adbg("init", f"model={model_name} dataset={dataset_name}")
+class TrainLogger():
+    def __init__(self, model_name, dataset):
+        path = 'log/'
+        cur_time = time.strftime(
+            "%Y-%m-%d-%H:%M:%S", time.localtime())
+        self.log_dir = os.path.join(path, cur_time)
+        os.makedirs(self.log_dir, exist_ok=True)
+        self.events_file = os.path.join(
+            self.log_dir, 'events.jsonl')
+        self.metrics_file = os.path.join(
+            self.log_dir, 'metrics.csv')
+        with open(self.metrics_file, 'w') as f:
+            f.write("epoch,train_mae,train_mape,train_rmse,"
+                    "val_mae,val_mape,val_rmse,lr\n")
 
-    def log_epoch(self, epoch, train_loss, val_loss, val_mape=0, val_rmse=0, lr=0):
-        self.train_losses.append(train_loss)
-        self.val_losses.append(val_loss)
-        elapsed = time.time() - self.start_time
-        improved = ''
-        if val_loss < self.best_val_loss:
-            self.best_val_loss = val_loss
-            self.best_epoch = epoch
-            improved = ' *BEST*'
-        msg = (f"Epoch {epoch:03d} | Train: {train_loss:.4f} | Val: {val_loss:.4f} "
-               f"MAPE: {val_mape:.4f} RMSE: {val_rmse:.4f} | "
-               f"LR: {lr:.6f} | Time: {elapsed:.0f}s{improved}")
-        print(msg)
-        _adbg("epoch", msg)
-
-    def save_log(self):
-        log_data = {
-            'model': self.model_name,
-            'dataset': self.dataset_name,
-            'train_losses': [float(x) for x in self.train_losses],
-            'val_losses': [float(x) for x in self.val_losses],
-            'best_val_loss': float(self.best_val_loss),
-            'best_epoch': self.best_epoch,
-            'total_time': time.time() - self.start_time
+    def _write_event(self, event_type, data):
+        record = {
+            "ts": time.time(),
+            "type": event_type,
+            **data
         }
-        path = os.path.join(self.log_dir, f'{self.model_name}_{self.dataset_name}.json')
-        with open(path, 'w') as f:
-            json.dump(log_data, f, indent=2)
-        _adbg("saved", path)
+        with open(self.events_file, 'a') as f:
+            f.write(json.dumps(record) + "\n")
 
-    def summary(self):
-        print(f"\n{'='*60}")
-        print(f"Training Summary: {self.model_name} on {self.dataset_name}")
-        print(f"Best val loss: {self.best_val_loss:.4f} at epoch {self.best_epoch}")
-        print(f"Total time: {time.time()-self.start_time:.0f}s")
-        print(f"{'='*60}\n")
+    def __print(self, dic, note=None, ban=[]):
+        print("=" * 20 + f" {note} " + "=" * 20)
+        for key, value in dic.items():
+            if key in ban:
+                continue
+            print(f'|{key:>20s}:|{str(value):>20s}|')
+        print("-" * 44)
+
+    def print_model_args(self, model_args, ban=[]):
+        self.__print(model_args, note='model args', ban=ban)
+        self._write_event("model_args", {
+            k: str(v) for k, v in model_args.items()
+            if k not in ban})
+
+    def print_optim_args(self, optim_args, ban=[]):
+        self.__print(optim_args, note='optim args', ban=ban)
+        self._write_event("optim_args", {
+            k: str(v) for k, v in optim_args.items()
+            if k not in ban})
+
+    def log_epoch(self, epoch, metrics):
+        self._write_event("epoch", {
+            "epoch": epoch, **metrics})
+        with open(self.metrics_file, 'a') as f:
+            f.write(f"{epoch},{metrics.get('train_mae', 0):.4f},"
+                    f"{metrics.get('train_mape', 0):.4f},"
+                    f"{metrics.get('train_rmse', 0):.4f},"
+                    f"{metrics.get('val_mae', 0):.4f},"
+                    f"{metrics.get('val_mape', 0):.4f},"
+                    f"{metrics.get('val_rmse', 0):.4f},"
+                    f"{metrics.get('lr', 0):.6f}\n")

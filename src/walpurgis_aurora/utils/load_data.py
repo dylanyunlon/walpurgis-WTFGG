@@ -1,126 +1,139 @@
-import os
-import sys
-import numpy as np
-import torch
+"""load_data — Aurora变体"""
 import pickle
-
-from walpurgis_aurora.utils.cal_adj import get_adjacency_matrix, calc_adj_dtw, calc_adj_correlation
-
-def _adbg(tag, val):
-    if os.environ.get('AURORA_DEBUG','0')!='1': return
-    if isinstance(val, torch.Tensor):
-        print(f"[AUR:load:{tag}] shape={list(val.shape)} mean={val.mean().item():.4f}", file=sys.stderr)
-    elif isinstance(val, np.ndarray):
-        print(f"[AUR:load:{tag}] shape={list(val.shape)} mean={val.mean():.4f}", file=sys.stderr)
-    else:
-        print(f"[AUR:load:{tag}] {val}", file=sys.stderr)
+import os
+import numpy as np
+from ..dataloader import DataLoader
+from .cal_adj import *
 
 
-class StandardScaler:
+def re_normalization(x, mean, std):
+    return x * std + mean
+
+
+def max_min_normalization(x, _max, _min):
+    x = 1. * (x - _min) / (_max - _min)
+    x = x * 2. - 1.
+    return x
+
+
+def re_max_min_normalization(x, _max, _min):
+    x = (x + 1.) / 2.
+    x = 1. * x * (_max - _min) + _min
+    return x
+
+
+class StandardScaler():
     def __init__(self, mean, std):
         self.mean = mean
         self.std = std
-        _adbg("scaler_init", f"mean={mean:.4f} std={std:.4f}")
 
     def transform(self, data):
         return (data - self.mean) / self.std
 
     def inverse_transform(self, data):
-        if isinstance(data, torch.Tensor):
-            return data * self.std + self.mean
-        return data * self.std + self.mean
+        return (data * self.std) + self.mean
 
 
-class MinMaxScaler:
-    def __init__(self, _min, _max):
-        self._min = _min
-        self._max = _max
+def load_pickle(pickle_file):
+    try:
+        with open(pickle_file, 'rb') as f:
+            pickle_data = pickle.load(f)
+    except UnicodeDecodeError:
+        with open(pickle_file, 'rb') as f:
+            pickle_data = pickle.load(f, encoding='latin1')
+    except Exception as e:
+        print('Unable to load data ', pickle_file, ':', e)
+        raise
+    return pickle_data
 
-    def __call__(self, data, _max, _min):
-        return (data + 1.) / 2. * (_max - _min) + _min
 
-
-def load_dataset(dataset_dir, batch_size, valid_batch_size=None, test_batch_size=None,
-                 dataset_name='', seq_length_x=12, seq_length_y=12, **kwargs):
-    from walpurgis_aurora.dataloader import DataLoaderM
-
-    cat_dim = kwargs.get('normalizer', 'std')
-    _adbg("loading", f"dir={dataset_dir} batch={batch_size} dataset={dataset_name}")
-
-    data_files = {}
-    for cat in ['train', 'val', 'test']:
-        cat_path = os.path.join(dataset_dir, cat + '.npz')
-        if os.path.exists(cat_path):
-            data_files[cat] = np.load(cat_path)
-        else:
-            _adbg("warn", f"missing {cat_path}")
-            return None
-
-    x_train = data_files['train']['x']
-    y_train = data_files['train']['y']
-    x_val = data_files['val']['x']
-    y_val = data_files['val']['y']
-    x_test = data_files['test']['x']
-    y_test = data_files['test']['y']
-
-    _adbg("x_train", x_train)
-    _adbg("y_train", y_train)
-
-    if cat_dim == 'minmax':
-        _max = np.max(x_train[..., 0])
-        _min = np.min(x_train[..., 0])
-        scaler = MinMaxScaler(_min, _max)
-        x_train[..., 0] = (x_train[..., 0] - _min) / (_max - _min) * 2. - 1.
-        x_val[..., 0] = (x_val[..., 0] - _min) / (_max - _min) * 2. - 1.
-        x_test[..., 0] = (x_test[..., 0] - _min) / (_max - _min) * 2. - 1.
-        y_train[..., 0] = (y_train[..., 0] - _min) / (_max - _min) * 2. - 1.
-        y_val[..., 0] = (y_val[..., 0] - _min) / (_max - _min) * 2. - 1.
-        y_test[..., 0] = (y_test[..., 0] - _min) / (_max - _min) * 2. - 1.
+def load_dataset(data_dir, batch_size, valid_batch_size,
+                 test_batch_size, dataset_name):
+    data_dict = {}
+    for mode in ['train', 'val', 'test']:
+        _ = np.load(os.path.join(data_dir, mode + '.npz'))
+        data_dict['x_' + mode] = _['x']
+        data_dict['y_' + mode] = _['y']
+    if dataset_name in ('PEMS04', 'PEMS08'):
+        _min = pickle.load(
+            open("datasets/" + dataset_name + "/min.pkl", 'rb'))
+        _max = pickle.load(
+            open("datasets/" + dataset_name + "/max.pkl", 'rb'))
+        y_train = np.squeeze(np.transpose(
+            data_dict['y_train'], axes=[0, 2, 1, 3]), axis=-1)
+        y_val = np.squeeze(np.transpose(
+            data_dict['y_val'], axes=[0, 2, 1, 3]), axis=-1)
+        y_test = np.squeeze(np.transpose(
+            data_dict['y_test'], axes=[0, 2, 1, 3]), axis=-1)
+        data_dict['y_train'] = np.transpose(
+            max_min_normalization(
+                y_train, _max[:, :, 0, :], _min[:, :, 0, :]),
+            axes=[0, 2, 1])
+        data_dict['y_val'] = np.transpose(
+            max_min_normalization(
+                y_val, _max[:, :, 0, :], _min[:, :, 0, :]),
+            axes=[0, 2, 1])
+        data_dict['y_test'] = np.transpose(
+            max_min_normalization(
+                y_test, _max[:, :, 0, :], _min[:, :, 0, :]),
+            axes=[0, 2, 1])
+        data_dict['train_loader'] = DataLoader(
+            data_dict['x_train'], data_dict['y_train'],
+            batch_size, shuffle=True)
+        data_dict['val_loader'] = DataLoader(
+            data_dict['x_val'], data_dict['y_val'],
+            valid_batch_size)
+        data_dict['test_loader'] = DataLoader(
+            data_dict['x_test'], data_dict['y_test'],
+            test_batch_size)
+        data_dict['scaler'] = re_max_min_normalization
     else:
-        mean = x_train[..., 0].mean()
-        std = x_train[..., 0].std()
-        scaler = StandardScaler(mean=mean, std=std)
-        x_train[..., 0] = scaler.transform(x_train[..., 0])
-        y_train[..., 0] = scaler.transform(y_train[..., 0])
-        x_val[..., 0] = scaler.transform(x_val[..., 0])
-        y_val[..., 0] = scaler.transform(y_val[..., 0])
-        x_test[..., 0] = scaler.transform(x_test[..., 0])
-        y_test[..., 0] = scaler.transform(y_test[..., 0])
-
-    data = {}
-    data['x_train'] = x_train
-    data['y_train'] = y_train
-    data['x_val'] = x_val
-    data['y_val'] = y_val
-    data['x_test'] = x_test
-    data['y_test'] = y_test
-    data['train_loader'] = DataLoaderM(x_train, y_train, batch_size, shuffle=True)
-    data['val_loader'] = DataLoaderM(x_val, y_val, valid_batch_size or batch_size, shuffle=False)
-    data['test_loader'] = DataLoaderM(x_test, y_test, test_batch_size or batch_size, shuffle=False)
-    data['scaler'] = scaler
-
-    if cat_dim == 'minmax':
-        data['_max'] = torch.FloatTensor([_max]).unsqueeze(0).unsqueeze(0).unsqueeze(0)
-        data['_min'] = torch.FloatTensor([_min]).unsqueeze(0).unsqueeze(0).unsqueeze(0)
-
-    _adbg("loaded", f"train={x_train.shape} val={x_val.shape} test={x_test.shape}")
-    return data
+        scaler = StandardScaler(
+            mean=data_dict['x_train'][..., 0].mean(),
+            std=data_dict['x_train'][..., 0].std())
+        for mode in ['train', 'val', 'test']:
+            data_dict['x_' + mode][..., 0] = scaler.transform(
+                data_dict['x_' + mode][..., 0])
+            data_dict['y_' + mode][..., 0] = scaler.transform(
+                data_dict['y_' + mode][..., 0])
+        data_dict['train_loader'] = DataLoader(
+            data_dict['x_train'], data_dict['y_train'],
+            batch_size, shuffle=True)
+        data_dict['val_loader'] = DataLoader(
+            data_dict['x_val'], data_dict['y_val'],
+            valid_batch_size)
+        data_dict['test_loader'] = DataLoader(
+            data_dict['x_test'], data_dict['y_test'],
+            test_batch_size)
+        data_dict['scaler'] = scaler
+    return data_dict
 
 
-def load_adj(adj_path, adj_type='doubletransition', num_nodes=None):
-    if adj_path.endswith('.pkl'):
-        with open(adj_path, 'rb') as f:
-            sensor_ids, sensor_id_to_ind, adj_mx = pickle.load(f, encoding='latin1')
-        if isinstance(adj_mx, np.ndarray):
-            adj = [torch.FloatTensor(adj_mx)]
-        else:
-            adj = [torch.FloatTensor(adj_mx.toarray())]
-    elif adj_path.endswith('.npy'):
-        adj_mx = np.load(adj_path)
-        adj = [torch.FloatTensor(adj_mx)]
-    elif adj_path.endswith('.csv'):
-        adj = [get_adjacency_matrix(adj_path, num_nodes)]
+def load_adj(file_path, adj_type):
+    try:
+        sensor_ids, sensor_id_to_ind, adj_mx = \
+            load_pickle(file_path)
+    except:
+        adj_mx = load_pickle(file_path)
+    if adj_type == "scalap":
+        adj = [calculate_scaled_laplacian(adj_mx)
+               .astype(np.float32).todense()]
+    elif adj_type == "normlap":
+        adj = [calculate_symmetric_normalized_laplacian(adj_mx)
+               .astype(np.float32).todense()]
+    elif adj_type == "symnadj":
+        adj = [symmetric_message_passing_adj(adj_mx)
+               .astype(np.float32).todense()]
+    elif adj_type == "transition":
+        adj = [transition_matrix(adj_mx).T]
+    elif adj_type == "doubletransition":
+        adj = [transition_matrix(adj_mx).T,
+               transition_matrix(adj_mx.T).T]
+    elif adj_type == "identity":
+        adj = [np.diag(np.ones(adj_mx.shape[0]))
+               .astype(np.float32).todense()]
+    elif adj_type == 'original':
+        adj = adj_mx
     else:
-        adj = [torch.eye(num_nodes)]
-    _adbg("adj_loaded", adj[0])
-    return adj
+        assert False, "adj type not defined"
+    return adj, adj_mx

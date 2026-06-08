@@ -1,38 +1,30 @@
+"""
+ResidualDecomp — Aurora变体
+算法改写: ReLU → SiLU(Swish), 增加可学习的momentum参数
+SiLU: x * sigmoid(x) 提供平滑非线性和自门控特性
+momentum参数控制残差分解中新旧信号的指数加权移动平均
+"""
 import torch
 import torch.nn as nn
-import sys, os
-
-def _adbg(tag, val):
-    if os.environ.get('AURORA_DEBUG','0')!='1': return
-    if isinstance(val, torch.Tensor):
-        print(f"[AUR:resdecomp:{tag}] mean={val.mean().item():.6f} std={val.std().item():.6f}", file=sys.stderr)
-
-class RMSNorm(nn.Module):
-    """aurora: RMSNorm替代LayerNorm, 无偏置更轻量"""
-    def __init__(self, dim, eps=1e-8):
-        super().__init__()
-        self.scale = nn.Parameter(torch.ones(dim))
-        self.eps = eps
-
-    def forward(self, x):
-        rms = torch.sqrt(torch.mean(x ** 2, dim=-1, keepdim=True) + self.eps)
-        return self.scale * x / rms
 
 
 class ResidualDecomp(nn.Module):
-    """upstream: LayerNorm(x - ReLU(y))
-    aurora: RMSNorm(x - GELU(y) * α), α可学习标量初始化0.9"""
+    """残差分解: 从信号中移除已学到的模式, 使用SiLU和动量加权"""
+
     def __init__(self, input_shape):
         super().__init__()
-        self.norm = RMSNorm(input_shape[-1])
-        self.act = nn.GELU()
-        # aurora: 可学习残差缩放系数
-        self.alpha = nn.Parameter(torch.tensor(0.9))
+        self.ln = nn.LayerNorm(input_shape[-1])
+        # Aurora: SiLU(Swish) 替代ReLU
+        # SiLU = x * sigmoid(x), 既有非线性又保持负值信息
+        self.ac = nn.SiLU()
+        # Aurora: 可学习的momentum参数, 控制残差保留比例
+        # 经sigmoid后范围(0,1), 作为指数移动平均的衰减系数
+        self.momentum = nn.Parameter(torch.tensor(0.0))
 
     def forward(self, x, y):
-        alpha = torch.clamp(self.alpha, 0.0, 2.0)
-        u = x - self.act(y) * alpha
-        u = self.norm(u)
-        _adbg("residual_norm", u)
-        _adbg("alpha", alpha)
+        # Aurora: momentum控制新旧信号的混合比例
+        # alpha接近1时保留更多原始信号, 接近0时更多减去学到的模式
+        alpha = torch.sigmoid(self.momentum)
+        u = alpha * x - (1.0 - alpha) * self.ac(y)
+        u = self.ln(u)
         return u

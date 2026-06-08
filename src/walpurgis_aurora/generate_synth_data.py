@@ -1,69 +1,87 @@
-import numpy as np
+"""
+generate_synth_data.py — Aurora合成数据生成
+"""
 import os
 import sys
+import numpy as np
+import pickle
 
-def _adbg(tag, val):
-    if os.environ.get('AURORA_DEBUG','0')!='1': return
-    print(f"[AUR:synth:{tag}] {val}", file=sys.stderr)
-
-
-def generate_spatiotemporal_data(num_nodes=20, seq_len=2000, num_features=3, seed=42):
-    np.random.seed(seed)
-    t = np.arange(seq_len).astype(float)
-    data = np.zeros((seq_len, num_nodes, num_features), dtype=np.float32)
-    for n in range(num_nodes):
-        freq = 0.01 + 0.005 * n
-        phase = np.random.uniform(0, 2 * np.pi)
-        base = 50.0 + 10 * np.sin(2 * np.pi * freq * t + phase)
-        base += 5 * np.sin(2 * np.pi * (freq * 3) * t + phase / 2)
-        noise = np.random.randn(seq_len) * 2.0
-        data[:, n, 0] = base + noise
-        data[:, n, 1] = (t % 288) / 288.0
-        data[:, n, 2] = (t % (288 * 7)) / (288 * 7)
-    _adbg("generated", f"shape={data.shape} mean={data[:,:,0].mean():.2f} std={data[:,:,0].std():.2f}")
-    return data
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 
-def create_sequences(data, seq_x=12, seq_y=12):
-    x_list, y_list = [], []
-    total = len(data) - seq_x - seq_y + 1
-    for i in range(total):
-        x_list.append(data[i:i + seq_x])
-        y_list.append(data[i + seq_x:i + seq_x + seq_y])
-    return np.array(x_list), np.array(y_list)
-
-
-def main():
-    output_dir = os.path.join(os.path.dirname(__file__), 'datasets', 'raw_data', 'SYNTH')
+def generate_synth_traffic(num_nodes=10, num_timesteps=500,
+                           num_feat=1, seq_x=12, seq_y=12,
+                           output_dir=None):
+    if output_dir is None:
+        output_dir = os.path.join(
+            os.path.dirname(__file__), '..', '..',
+            'datasets', 'SYNTH')
     os.makedirs(output_dir, exist_ok=True)
-
-    data = generate_spatiotemporal_data(num_nodes=20, seq_len=2000, num_features=3)
-    x_all, y_all = create_sequences(data, seq_x=12, seq_y=12)
-
-    n = len(x_all)
+    print(f"[AR-SYNTH] Generating: {num_nodes} nodes, "
+          f"{num_timesteps} steps")
+    t = np.arange(num_timesteps)
+    daily = 30 * np.sin(2 * np.pi * t / 288)
+    weekly = 10 * np.sin(2 * np.pi * t / (288 * 7))
+    np.random.seed(42)
+    node_offsets = np.random.randn(num_nodes) * 5
+    node_scales = 1 + np.random.randn(num_nodes) * 0.1
+    data = np.zeros(
+        (num_timesteps, num_nodes, num_feat + 2))
+    for n in range(num_nodes):
+        base = ((daily + weekly) * node_scales[n]
+                + node_offsets[n] + 60)
+        noise = np.random.randn(num_timesteps) * 3
+        data[:, n, 0] = base + noise
+    data[:, :, 1] = np.tile(
+        (t % 288 / 288).reshape(-1, 1), (1, num_nodes))
+    data[:, :, 2] = np.tile(
+        (t // 288 % 7).reshape(-1, 1), (1, num_nodes))
+    x_offsets = np.arange(-(seq_x - 1), 1, 1)
+    y_offsets = np.arange(1, seq_y + 1, 1)
+    xs, ys = [], []
+    for t_idx in range(seq_x - 1, num_timesteps - seq_y):
+        xs.append(data[t_idx + x_offsets, ...])
+        ys.append(data[t_idx + y_offsets, ..., :1])
+    x = np.stack(xs, axis=0)
+    y = np.stack(ys, axis=0)
+    n = x.shape[0]
     n_train = int(n * 0.7)
-    n_val = int(n * 0.15)
-
+    n_test = int(n * 0.2)
+    n_val = n - n_train - n_test
     splits = {
-        'train': (x_all[:n_train], y_all[:n_train]),
-        'val': (x_all[n_train:n_train + n_val], y_all[n_train:n_train + n_val]),
-        'test': (x_all[n_train + n_val:], y_all[n_train + n_val:])
+        'train': (x[:n_train], y[:n_train]),
+        'val': (x[n_train:n_train + n_val],
+                y[n_train:n_train + n_val]),
+        'test': (x[-n_test:], y[-n_test:]),
     }
-
-    for name, (x, y) in splits.items():
-        path = os.path.join(output_dir, f'{name}.npz')
-        np.savez(path, x=x, y=y)
-        _adbg(name, f"x={x.shape} y={y.shape}")
-        print(f"Saved {name}: x={x.shape} y={y.shape} -> {path}")
-
-    adj = np.random.rand(20, 20).astype(np.float32)
+    for name, (_x, _y) in splits.items():
+        np.savez_compressed(
+            os.path.join(output_dir, f"{name}.npz"),
+            x=_x, y=_y,
+            x_offsets=x_offsets.reshape(-1, 1),
+            y_offsets=y_offsets.reshape(-1, 1))
+        print(f"  {name}: x={_x.shape} y={_y.shape}")
+    adj = np.random.rand(
+        num_nodes, num_nodes).astype(np.float32)
     adj = (adj + adj.T) / 2
+    adj[adj < 0.7] = 0
     np.fill_diagonal(adj, 0)
-    adj = (adj > 0.7).astype(np.float32)
-    adj_path = os.path.join(os.path.dirname(__file__), 'datasets', 'sensor_graph', 'adj_synth.npy')
-    np.save(adj_path, adj)
-    print(f"Saved adj: {adj.shape} nnz={int(adj.sum())} -> {adj_path}")
+    sensor_dir = os.path.join(
+        os.path.dirname(output_dir), 'sensor_graph')
+    os.makedirs(sensor_dir, exist_ok=True)
+    pickle.dump(adj, open(
+        os.path.join(sensor_dir, 'adj_mx_synth.pkl'), 'wb'))
+    print(f"  adj: {adj.shape}, "
+          f"density={adj[adj>0].size / adj.size:.2%}")
+    mean = splits['train'][0][..., 0].mean()
+    std = splits['train'][0][..., 0].std()
+    scaler = {'mean': mean, 'std': std}
+    pickle.dump(scaler, open(
+        os.path.join(output_dir, 'scaler.pkl'), 'wb'))
+    print(f"  scaler: mean={mean:.2f}, std={std:.2f}")
+    print(f"[AR-SYNTH] Done. Output: {output_dir}")
+    return output_dir
 
 
 if __name__ == '__main__':
-    main()
+    generate_synth_traffic()

@@ -1,27 +1,16 @@
-#!/bin/bash
-set -e
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-cd "$SCRIPT_DIR"
+#!/usr/bin/env bash
+# run_aurora.sh — Aurora变体训练启动脚本
+set -euo pipefail
+cd "$(dirname "$0")"
 
-export PYTHONPATH="${SCRIPT_DIR}/src:${PYTHONPATH}"
-export AURORA_DEBUG="${AURORA_DEBUG:-1}"
-EPOCHS="${EPOCHS:-2}"
-DEVICE="${DEVICE:-cpu}"
+DATASET="${1:-SYNTH}"
+DEVICE="${2:-cpu}"
+EPOCHS="${3:-}"
+DEBUG="${4:---debug}"
 
-echo "============================================"
-echo "  walpurgis_aurora D2STGNN Training"
-echo "  Epochs: $EPOCHS  Device: $DEVICE"
-echo "  Debug: $AURORA_DEBUG"
-echo "============================================"
+CMD="python train_aurora.py --dataset $DATASET --device $DEVICE"
+[ -n "$EPOCHS" ] && CMD="$CMD --epochs $EPOCHS"
+[ "$DEBUG" = "--debug" ] && CMD="$CMD --debug"
 
-# Step 1: Generate synthetic data
-echo "[1/2] Generating synthetic data..."
-python -m walpurgis_aurora.generate_synth_data
-
-# Step 2: Train
-echo "[2/2] Training Aurora model..."
-python train_aurora.py --config configs/SYNTH.yaml --device "$DEVICE" --epochs "$EPOCHS"
-
-echo "============================================"
-echo "  Aurora training complete!"
-echo "============================================"
+echo "[Aurora] $CMD"
+exec $CMD
