@@ -298,3 +298,48 @@
 第五位Claude: M053 aphelion → /tmp/subclaude_prompt_aphelion.txt
 第六位Claude: M054 parallax → /tmp/subclaude_prompt_parallax.txt
 第七位Claude: M055 transit → /tmp/subclaude_prompt_transit.txt
+
+## ============================================
+## 新一轮调度 (2026-06-08, Claude #1 第二批)
+## ============================================
+
+### 第一位Claude (我, 本轮): M056-M058 ✅ COMPLETE
+- M056: ✅ 创建 walpurgis_corona 完整变体 (38个文件, 10处算法改写)
+  - Gated Attention Pooling + SiLU gate
+  - EMA-based residual decomposition
+  - Attention-weighted graph conv
+  - Learned metric embedding + cosine similarity + temperature
+  - Top-k sparse mask
+  - Alternating row-col normalizer
+  - LSTMCell + RoPE rotary position encoding
+  - Gated residual aggregation (sigmoid gates per layer)
+  - Quantile loss (multi-quantile regression)
+  - RAdam + CosineAnnealingWarmRestarts
+- M057: ✅ SYNTH smoke test通过 (MAE 21.99→10.34, 3 epochs)
+- M058: ✅ Push到main + 清理根目录clutter (21 files removed)
+
+### 第二位Claude (Opus 4.6): M059-M061 — walpurgis_aphelion (远日点)
+- M059: clone repo + 拉取 claude-hk-config 同步cookie
+- M060: 创建 walpurgis_aphelion 变体, 10处算法改写 (参考corona模式)
+  - hypernetwork gate, VMD decomp, GAT v2, SimCLR contrastive adj,
+    entropy-regularized mask, wavelet normalizer, Retention network,
+    FPN output, tilted ERM loss, Sophia optimizer
+- M061: SYNTH smoke test通过 + push到main
+
+### 第三位Claude (Opus 4.6): M062-M064 — walpurgis_perihelion 算法补强
+- 需要检查现有perihelion是否有真正的算法改写, 如果没有则重建
+
+### 第四位Claude (Opus 4.6): M065-M067 — walpurgis_umbra 算法补强
+- 同上
+
+### 第五位Claude (Opus 4.6): M068-M070 — walpurgis_parallax 算法补强
+- 同上
+
+### 第六位Claude (Opus 4.6): M071-M073 — walpurgis_transit 算法补强
+- 同上
+
+## ⚠️ Cookie状态检查
+- cookie来源: dylanyunlon/claude-hk-config (raw_curl.txt)
+- ORG: b3012e8c-5f6b-49b1-a0f5-824ba5bac509
+- 注意: 同一个cookie同时只能有一个对话活跃, 多个Claude同时用会冲突!
+- 建议: 串行调度, 一个Claude完成后再派下一个
