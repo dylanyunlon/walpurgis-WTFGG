@@ -87,3 +87,66 @@
 
 所有子Claude已于 2026-06-08 01:52-01:54 UTC dispatch。
 如果某个子Claude被截断，在对应对话中发送 "Continue" 即可。
+
+### 第七位Claude (当前, Opus 4.6): M024-M027 ✅
+- M024: ✅ Clone仓库, 分析upstream全部47个文件
+- M025: ✅ 创建 walpurgis_vortex 完整变体 (33文件, 2286行)
+  - EMA动量融合门控 (dif/inh分支指数移动平均混合)
+  - 随机深度 (stochastic depth, 线性增长跳过概率)
+  - 温度缩放聚合 (可学习temperature softmax加权)
+  - Mish+GroupNorm输出头 + 双路输出(主+辅助gradient-detach)
+  - CosineAnnealingWarmRestarts调度器
+  - 梯度噪声注入 + Huber-MAE自适应混合损失
+  - 完整诊断: struct dump / activation probe / grad histogram / LR tracker
+- M026: ✅ SYNTH smoke test通过 (MAE 14.2→11.5, 3 epochs)
+- M027: ✅ Push到main, 调度子Claude
+
+### 第八位Claude (sub-Claude, Opus 4.6): M028-M031
+- M028: Clone仓库, 拉取claude-hk-config
+- M029: 创建 walpurgis_cascade 变体
+  - 改动方向: 级联残差学习 + 动态深度选择
+  - Cascade residual: 每层输出不仅传下一层,也直接跳连到输出
+  - Dynamic depth: 可学习的门控决定推理时用几层
+  - Squeeze-and-Excitation通道注意力
+- M030: cascade变体SYNTH test通过
+- M031: Push到main
+
+### 第九位Claude (sub-Claude, Opus 4.6): M032-M035
+- M032: Clone仓库, 拉取claude-hk-config
+- M033: 创建 walpurgis_rift 变体
+  - 改动方向: 分裂重组注意力 + 频域增强
+  - Split-Recombine: 将hidden分成K组独立处理后重组
+  - Frequency-enhanced: FFT域特征与时域特征concat
+  - Polynomial decay learning rate
+- M034: rift变体SYNTH test通过
+- M035: Push到main
+
+### 第十位Claude (sub-Claude, Opus 4.6): M036-M039
+- M036: Clone仓库, 拉取claude-hk-config
+- M037: 创建 walpurgis_prism 变体
+  - 改动方向: 多视角融合 + 对比学习
+  - Multi-view: 空间/时间/频率三视角独立编码后融合
+  - Contrastive loss: 相邻节点embedding对比正则
+  - Mixup数据增强
+- M038: prism变体SYNTH test通过
+- M039: Push到main
+
+### 第十一位Claude (sub-Claude, Opus 4.6): M040-M043
+- M040: Clone仓库, 拉取claude-hk-config
+- M041: 创建 walpurgis_helix 变体
+  - 改动方向: 螺旋卷积 + 自适应图稀疏化
+  - Helix conv: 交替的升维-降维螺旋结构
+  - Adaptive sparsification: top-k图过滤
+  - Label smoothing loss
+- M042: helix变体SYNTH test通过
+- M043: Push到main
+
+### 第十二位Claude (sub-Claude, Opus 4.6): M044-M047
+- M044: Clone仓库, 拉取claude-hk-config
+- M045: 创建 walpurgis_flux 变体
+  - 改动方向: 流式推理 + 渐进式解码
+  - Streaming inference: 滑动窗口无需全序列
+  - Progressive decode: 粗→细多步预测
+  - Focal loss for hard samples
+- M046: flux变体SYNTH test通过
+- M047: Push到main, 全系列集成bench
