@@ -150,3 +150,14 @@
   - Focal loss for hard samples
 - M046: flux变体SYNTH test通过
 - M047: Push到main, 全系列集成bench
+
+## 第七位Claude (vortex) 调度的对话链接
+
+| Claude | 变体 | 对话链接 |
+|--------|------|----------|
+| #8 | cascade | https://claude.hk.cn/chat/9664099f-e46d-4f58-9d1e-564eb763c103 |
+| #9 | rift | https://claude.hk.cn/chat/0e821113-11d2-4154-83e1-6ee39bf738c0 |
+| #10 | prism | https://claude.hk.cn/chat/ff934f03-c0ae-4020-9d13-63749f2de0ac |
+
+所有子Claude于 2026-06-08 03:18-03:22 UTC dispatch。
+如果某个子Claude被截断，在对应对话中发送 "Continue" 即可。
