@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # server_run_all.sh — 在GPU服务器上运行唯一变体walpurgis的METR-LA实验
 # Usage: bash server_run_all.sh
-set -euo pipefail
+set -eo pipefail
 
-REPO_DIR="/data/jiacheng/walpurgis-WTFGG"
+REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 CONDA_ENV="walpurgis"
 GH_TOKEN="${GH_TOKEN:-}"
 
@@ -12,23 +12,14 @@ echo "  Walpurgis SOTA Experiment Runner"
 echo "  $(date)"
 echo "============================================"
 
-# 1. Clone或pull
-if [ -d "$REPO_DIR/.git" ]; then
-    cd "$REPO_DIR" && git pull origin main
-else
-    if [ -n "$GH_TOKEN" ]; then
-        git clone "https://${GH_TOKEN}@github.com/dylanyunlon/walpurgis-WTFGG.git" "$REPO_DIR"
-    else
-        git clone https://github.com/dylanyunlon/walpurgis-WTFGG.git "$REPO_DIR"
-    fi
-    cd "$REPO_DIR"
-fi
+cd "$REPO_DIR"
 git config user.name "dylanyunlon"
 git config user.email "dogechat@163.com"
 
 # 2. Conda
-eval "$(conda shell.bash hook)"
-if conda env list | grep -qw "$CONDA_ENV"; then
+export PS1="${PS1:-}"
+eval "$(conda shell.bash hook)" 2>/dev/null || true
+if conda env list 2>/dev/null | grep -qw "$CONDA_ENV"; then
     conda activate "$CONDA_ENV"
 else
     conda create -y -n "$CONDA_ENV" python=3.10
