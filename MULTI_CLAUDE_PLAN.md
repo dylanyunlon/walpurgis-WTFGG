@@ -465,3 +465,23 @@
 - 结果存储在 output/results_<variant>_<dataset>/summary.json
 - 子Claude通过 GH_TOKEN env var 访问仓库
 - conda环境: walpurgis (如已存在则复用)
+
+## Phase 3 子Claude对话链接
+
+| Task | 里程碑 | 任务内容 | 对话链接 |
+|------|--------|----------|----------|
+| 1 | M110-M115 | cascade METR-LA | https://claude.hk.cn/chat/74057259-21a0-4bfe-9cc7-6010df444ddd |
+| 2 | M116-M121 | nebula+prism METR-LA | https://claude.hk.cn/chat/cd24cc43-1400-4d8e-ac4c-257b344d9662 |
+| 3 | M122-M127 | flux+reverie+baseline | https://claude.hk.cn/chat/40d0a013-b59f-4b0c-80e3-9c05ced3dd31 |
+| 4 | M128-M133 | 结果汇总+tex表格 | https://claude.hk.cn/chat/f4d530ef-feda-46eb-9fff-8d965efc9726 |
+| 5 | M134-M139 | 论文集成+清理 | https://claude.hk.cn/chat/8f9d819e-298f-4459-9c45-74400fb12e45 |
+
+所有子Claude于 $(date -u +"%Y-%m-%d %H:%M UTC") dispatch完成。
+模型: claude-opus-4-6 | Effort: medium
+如被截断, 在对应对话中发送Continue。
+
+### 执行顺序 (串行, 避免cookie冲突):
+1. 先在服务器执行 server_run_all.sh 跑完所有实验
+2. 或按Task 1→2→3顺序, 每个Claude生成的脚本在服务器上执行
+3. Task 4 (汇总) 在所有实验完成后执行
+4. Task 5 (论文集成) 最后执行
