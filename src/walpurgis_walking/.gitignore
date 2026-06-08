@@ -1,8 +1,0 @@
-datasets/METR-LA/*.npz
-datasets/PEMS-BAY/*.npz
-datasets/PEMS04/*.npz
-datasets/PEMS08/*.npz
-datasets/sensor_graph/*.pkl
-output/
-__pycache__/
-*.pyc
