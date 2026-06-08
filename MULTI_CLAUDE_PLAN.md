@@ -257,3 +257,30 @@
 - ORG1: 6bbaaedb... (59/60已用, 恢复时间: 2026-06-08 15:08:01 CST)
 - ORG2: 9b279708... (共享配额, 同上)
 - 计划: 配额恢复后依次调度M049→M050→M051
+
+## 第四轮计划 (M052-M055)
+
+### 第十七位Claude (Opus 4.6): M052 ⏳ QUEUED
+- 变体: walpurgis_perihelion (近日点)
+- 算法: cross-attention gate, FFT band-pass decomp, GraphSAGE+JK conv,
+  MINE mutual information distance, Gumbel-softmax mask, attention normalizer,
+  Flash-chunk Transformer+SwiGLU, stochastic depth, Linex loss, AdaFactor+inverse sqrt
+- Prompt: /tmp/subclaude_prompt_perihelion.txt
+
+### 第十八位Claude (Opus 4.6): M053 ⏳ QUEUED
+- 变体: walpurgis_aphelion (远日点)
+- 算法: hypernetwork gate, VMD decomp, GAT v2+edge features,
+  SimCLR contrastive adjacency, entropy-regularized mask, wavelet normalizer,
+  Retention network+cross-scale fusion, FPN multi-scale output, tilted ERM loss, Sophia+exp decay
+
+### 第十九位Claude (Opus 4.6): M054 ⏳ QUEUED
+- 变体: walpurgis_parallax (视差)
+- 算法: Bayesian MC-dropout gate, STL LOESS decomp, MixHop multi-res GCN,
+  kernel density distance, REINFORCE importance mask, spectral clustering normalizer,
+  xLSTM+positional interpolation, mixture output router, Cauchy loss, Prodigy optimizer
+
+### 第二十位Claude (Opus 4.6): M055 ⏳ QUEUED
+- 变体: walpurgis_transit (凌日)
+- 算法: neural ODE gate, Hilbert-Huang decomp, APPNP propagation,
+  Wasserstein distance, attention sparsification mask, heat kernel normalizer,
+  Griffin RG-LRU+ConvNeXt, iterative refinement output, Huberized quantile loss, Shampoo optimizer
