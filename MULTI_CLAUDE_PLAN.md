@@ -163,3 +163,16 @@
 如果某个子Claude被截断，在对应对话中发送 "Continue" 即可。
 | #11 | helix | https://claude.hk.cn/chat/0ed1b3b0-5985-4b5f-a121-ebd09ba1088f |
 | #12 | flux | https://claude.hk.cn/chat/8a2b9fc1-0554-41f6-83bf-e9d945dc10a7 |
+
+## 第七位Claude (vortex) 重新调度 — 2026-06-08 03:40 UTC
+(旧session的对话因cookie轮换失效, 以下为当前有效对话)
+
+| Claude | 变体 | 对话链接 |
+|--------|------|----------|
+| #8 | cascade | https://claude.hk.cn/chat/3e7f3c83-a61e-48ac-81de-76a6bf6c06a0 |
+| #9 | rift | https://claude.hk.cn/chat/11118eb2-2f1c-44be-8184-223fe8af2534 |
+| #10 | prism | https://claude.hk.cn/chat/3cb06f90-6d7f-451f-9855-aa402e876956 |
+| #11 | helix | https://claude.hk.cn/chat/59ac7332-89de-4a37-ac1c-92ced2047059 |
+| #12 | flux | https://claude.hk.cn/chat/7476c3a5-c876-4f23-b3ea-778828bab755 |
+
+如果被截断, 在对应对话中发送 "Continue" 即可。
