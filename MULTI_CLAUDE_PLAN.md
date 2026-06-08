@@ -143,14 +143,24 @@
 - M043: Push到main ✅
 
 ### 第十二位Claude (sub-Claude, Opus 4.6): M044-M047
-- M044: Clone仓库, 拉取claude-hk-config
-- M045: 创建 walpurgis_flux 变体
+- M044: ✅ Clone仓库, 安装依赖
+- M045: ✅ 创建 walpurgis_flux 变体 (33个文件)
   - 改动方向: 流式推理 + 渐进式解码
-  - Streaming inference: 滑动窗口无需全序列
-  - Progressive decode: 粗→细多步预测
-  - Focal loss for hard samples
-- M046: flux变体SYNTH test通过
-- M047: Push到main, 全系列集成bench
+  - Streaming inference: 滑动窗口因果截取 + 可学习衰减权重
+  - Progressive decode: 粗→细两阶段预测头(SiLU+LayerNorm)
+  - Focal MAE loss: 对hard samples加权(gamma=2.0, alpha=0.75)
+  - CausalConvEmbedding: 因果Conv1d替代线性嵌入
+  - ExponentialDecayPE: 指数衰减位置编码
+  - ChunkedCausalAttention: 分块因果注意力(chunk_size=4)
+  - StreamGRU: GRU with forget bias=1.5
+  - 对称图归一化 D^{-1/2}AD^{-1/2}
+  - 温度调控软门控掩码(可学习temperature)
+  - ExponentialLR(gamma=0.95) + 线性warmup ramp
+  - PCG32种子生成 + EMA梯度方向EarlyStopping
+  - 渐进式shuffle(粗→细粒度)
+  - 完整诊断: StreamWindowTracker / ProgressiveDecodeTracker / struct dump
+- M046: ✅ SYNTH smoke test通过 (MAE 36→13.9, 3 epochs, 17s)
+- M047: ✅ Push到main
 
 ## 第七位Claude (vortex) 调度的对话链接
 
