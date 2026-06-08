@@ -161,3 +161,5 @@
 
 所有子Claude于 2026-06-08 03:18-03:22 UTC dispatch。
 如果某个子Claude被截断，在对应对话中发送 "Continue" 即可。
+| #11 | helix | https://claude.hk.cn/chat/0ed1b3b0-5985-4b5f-a121-ebd09ba1088f |
+| #12 | flux | https://claude.hk.cn/chat/8a2b9fc1-0554-41f6-83bf-e9d945dc10a7 |
