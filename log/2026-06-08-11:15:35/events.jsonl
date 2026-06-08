@@ -1,0 +1,3 @@
+{"epoch": 1, "ts": 1780917344.3179598, "train_mae": 4.211537134079706, "val_mae": 0.0, "lr": 0.002, "train_mape": 0.08548246395020258, "train_rmse": 5.6394940330868675, "val_mape": 0.0, "val_rmse": 0.0}
+{"epoch": 2, "ts": 1780917352.8444533, "train_mae": 0.0, "val_mae": 0.0, "lr": 0.0006666666666666666, "train_mape": 0.0, "train_rmse": 0.0, "val_mape": 0.0, "val_rmse": 0.0}
+{"epoch": 3, "ts": 1780917360.8297343, "train_mae": 0.0, "val_mae": 0.0, "lr": 0.0013333333333333333, "train_mape": 0.0, "train_rmse": 0.0, "val_mape": 0.0, "val_rmse": 0.0}
