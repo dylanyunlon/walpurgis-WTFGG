@@ -1,0 +1,509 @@
+{
+  "meta": {
+    "analyst": "Claude M079-M083",
+    "target": "METR-LA SOTA (STAEFormer MAE=2.90)",
+    "base_model": "D2STGNN with Huber+LogCosh loss, highway gate, learnable layer weights, Mish output, temperature-scaled static graph",
+    "date": "2026-06-08",
+    "methodology": "Static code analysis of model.py + losses.py + submodule diffs. Ranked by: (1) novelty of computational graph changes, (2) theoretical soundness for traffic forecasting, (3) depth of submodule rewrites vs cosmetic changes, (4) risk of instability."
+  },
+
+  "variants": {
+    "walpurgis_cascade": {
+      "rank": 1,
+      "potential": "very_high",
+      "model_changes": [
+        "Squeeze-and-Excitation channel attention on dif/inh fusion (new SqueezeExcitation module)",
+        "Dense cascade residual: each layer's backcast skip-connects to final aggregation",
+        "Dynamic depth gating: learned sigmoid gate per layer decides forecast contribution",
+        "GELU + LayerNorm + residual shortcut output head",
+        "SE attention on post-embedding features"
+      ],
+      "loss_changes": [
+        "Cascade-aware loss: horizon-weighted MAE (increasing weight for farther horizons)",
+        "Gradient-scaled penalty on hard samples"
+      ],
+      "submodule_change_lines": 1191,
+      "why_promising": "SE attention is proven in vision (SENet) and adapts well to graph-temporal settings. Dense cascade connections (DenseNet-style) let shallow features survive deep stacking — critical for D2STGNN's 5-layer architecture where early spatial patterns get diluted. Dynamic depth gating acts like stochastic depth at inference, reducing overfitting. Horizon-weighted loss directly addresses METR-LA's 12-step forecast challenge where distant horizons dominate error.",
+      "risk": "SE adds modest parameter overhead; gradient-scaled penalty may destabilize early training. Dense connections increase memory."
+    },
+
+    "walpurgis_nebula": {
+      "rank": 2,
+      "potential": "very_high",
+      "model_changes": [
+        "DenseNet-style concat layer aggregation (all prior forecasts concatenated then projected)",
+        "Maxout output network (piecewise linear, replaces ReLU with max-over-k-pieces)",
+        "Fourier feature positional encoding",
+        "Gaussian noise embedding injection (training regularization)",
+        "Spectral norm on output layers"
+      ],
+      "loss_changes": [
+        "Log-Cosh + quantile regression composite loss",
+        "Multi-quantile output for uncertainty estimation"
+      ],
+      "submodule_change_lines": 1343,
+      "why_promising": "Maxout networks have strictly more expressive power than ReLU (universal approximation with fewer units). DenseNet concat aggregation preserves all layer information without lossy sum/weighted-avg. Fourier PE captures periodic traffic patterns (rush hours, weekly cycles) that linear embeddings miss. Log-Cosh+quantile composite is theoretically motivated for heteroscedastic traffic data. Spectral norm prevents mode collapse in graph attention.",
+      "risk": "Maxout increases parameters proportionally to num_pieces. DenseNet concat may cause memory issues with large hidden_dim * 5 layers."
+    },
+
+    "walpurgis_prism": {
+      "rank": 3,
+      "potential": "very_high",
+      "model_changes": [
+        "Multi-view fusion: Spatial (node attention pooling), Temporal (causal gated conv), Frequency (FFT-based) encoders",
+        "Learnable view-attention weighted fusion of 3 perspectives",
+        "FFT frequency domain feature injection into embedding",
+        "Contrastive regularization auxiliary path",
+        "Mixup-ready forward returning intermediate embeddings"
+      ],
+      "loss_changes": [
+        "Contrastive node loss: InfoNCE-style on adjacent node embeddings",
+        "Mixup-compatible masked MAE",
+        "Temperature annealing on contrastive loss"
+      ],
+      "submodule_change_lines": 1315,
+      "why_promising": "Traffic data is inherently multi-scale: spatial (road network topology), temporal (rush hour patterns), and frequency (daily/weekly periodicity). Prism explicitly models all three views with dedicated encoders then learns to fuse them. The FFT frequency view is particularly relevant for METR-LA where periodicity is strong. Contrastive regularization prevents node embedding collapse (a known problem in spatial-temporal GNNs). Mixup augmentation addresses limited training data.",
+      "risk": "Three parallel view encoders significantly increase computation. Contrastive loss hyperparameters (temperature, weight) need careful tuning."
+    },
+
+    "walpurgis_flux": {
+      "rank": 4,
+      "potential": "high",
+      "model_changes": [
+        "Causal convolution embedding (Conv1d with left-only padding replaces Linear)",
+        "Streaming window buffer for incremental feature computation",
+        "Progressive decode: coarse-to-fine two-stage forecasting",
+        "SiLU + LayerNorm + dual-path output (coarse + refined)",
+        "Sliding window causal truncation in DecoupleLayer"
+      ],
+      "loss_changes": [
+        "Focal MAE: (1-exp(-|r|/beta))^gamma * |r| — upweights hard samples",
+        "Hard-sample fraction EMA tracking"
+      ],
+      "submodule_change_lines": 1448,
+      "why_promising": "Causal conv embedding captures local temporal patterns that a Linear layer fundamentally cannot (receptive field > 1). Progressive coarse-to-fine decoding is well-motivated: predict rough trend first, then refine details, similar to what works in video prediction. Focal MAE addresses the long-tail error distribution common in traffic data (most samples are easy rush-hour/off-peak; a few congestion events are hard). Has the highest submodule change count, indicating deep algorithmic rewrites throughout.",
+      "risk": "Progressive decode adds architectural complexity and potential gradient flow issues. Streaming buffer may introduce subtle bugs with gradient checkpointing."
+    },
+
+    "walpurgis_umbra": {
+      "rank": 5,
+      "potential": "high",
+      "model_changes": [
+        "DenseNet-style all-to-all skip connections (concat all prior layers then 1x1 proj back)",
+        "GELU + learnable affine on embedding",
+        "FC + LayerNorm + residual output head",
+        "MoE Gating in EstimationGate",
+        "Haar wavelet decomposition in ResidualDecomp",
+        "Random Walk with Restart GCN",
+        "Poincare distance + Gumbel-Sinkhorn masking in dynamic graph",
+        "PageRank normalization",
+        "Mamba SSM + ALiBi attention in inherent block"
+      ],
+      "loss_changes": [
+        "Adaptive Huber: learnable delta (sigmoid-mapped) that auto-adjusts MSE-MAE tradeoff",
+        "LAMB optimizer + Polynomial Decay LR (in trainer)"
+      ],
+      "submodule_change_lines": 1613,
+      "why_promising": "The most comprehensive rewrite: touches every submodule with theoretically motivated changes. Haar wavelet decomposition in residual is novel for traffic — separates trend/detail components. Mamba SSM replaces self-attention with O(n) sequence modeling, potentially better for long sequences. Poincare distance captures hierarchical structure in road networks. Adaptive Huber auto-tunes the outlier threshold. LAMB optimizer works better than Adam for large-batch training.",
+      "risk": "HIGHEST complexity and parameter count. So many simultaneous changes make debugging hard if something goes wrong. Mamba SSM + ALiBi may conflict with existing attention patterns."
+    },
+
+    "walpurgis_cardgame": {
+      "rank": 6,
+      "potential": "high",
+      "model_changes": [
+        "Attention-weighted aggregation over layer forecasts (AttentionAggregator module)",
+        "SiLU activation in output head",
+        "Spatial dropout on embedding (drop entire feature channels)"
+      ],
+      "loss_changes": [
+        "Welsch robust loss: rho(r)=(c^2/2)(1-exp(-r^2/c^2)) — exponentially downweights outliers",
+        "Temporal smoothness penalty",
+        "Gradient-aware re-weighting"
+      ],
+      "submodule_change_lines": 1444,
+      "why_promising": "AttentionAggregator with per-layer score is a clean, well-motivated replacement for sum aggregation. Welsch loss has strong theoretical backing in robust statistics — it's redescending (large errors contribute zero gradient), making it more aggressive than Huber at outlier suppression. Spatial dropout is the right regularization for graph data (drops node features coherently). Deep submodule rewrites.",
+      "risk": "Welsch loss's redescending nature can cause non-convexity issues — if c is too small, large errors are completely ignored, causing training instability."
+    },
+
+    "walpurgis_transit": {
+      "rank": 7,
+      "potential": "high",
+      "model_changes": [
+        "LayerAttentionAggregator: learnable query token + multi-head cross-attention over layer outputs",
+        "RMSNorm preprocessing on embeddings",
+        "GLU-gated output head with residual shortcut",
+        "Capsule/EMD/APPNP/Wasserstein/S4 in submodules"
+      ],
+      "loss_changes": [
+        "Tweedie loss: compound Poisson-Gamma distribution — learnable power parameter p",
+        "Handles zero-inflated right-skewed data naturally"
+      ],
+      "submodule_change_lines": 1517,
+      "why_promising": "Multi-head cross-attention for layer aggregation is the most principled approach — different heads can attend to different layers for different aspects. RMSNorm is more stable than LayerNorm for this type of model. Tweedie loss is theoretically ideal for traffic flow (zero-inflated: no-flow periods; right-skewed: congestion bursts). S4 in submodules brings state-space sequence modeling.",
+      "risk": "Tweedie requires traffic data to be non-negative (it is, after preprocessing). Power parameter p needs careful initialization. Multi-head attention adds O(L^2) cost per aggregation."
+    },
+
+    "walpurgis_parallax": {
+      "rank": 8,
+      "potential": "high",
+      "model_changes": [
+        "MixtureRouter: input-dependent gating network selects layer weights per sample",
+        "Router uses per-layer statistics (mean+std) for routing decisions",
+        "Learnable temperature on router softmax",
+        "GELU + learnable bias scaling on embedding",
+        "FC + LayerNorm + residual output head"
+      ],
+      "loss_changes": [
+        "Cauchy loss: log(1+(x/scale)^2) — heavy-tailed, logarithmic growth for large errors",
+        "Learnable scale parameter"
+      ],
+      "submodule_change_lines": 1717,
+      "why_promising": "Sample-dependent routing (MoE-style) lets different traffic patterns activate different layer combinations — rush hour samples might weight deeper layers, while stable patterns use shallow ones. Cauchy loss's logarithmic tail is theoretically the most robust among all variant losses (slower than MAE's linear growth). Highest submodule change count among all variants.",
+      "risk": "Router collapse: all samples may converge to same routing weights, negating the per-sample benefit. Cauchy loss can be too permissive of large errors."
+    },
+
+    "walpurgis_helix": {
+      "rank": 9,
+      "potential": "medium_high",
+      "model_changes": [
+        "HelixConv: expand-rotate-contract spiral structure with learnable phase parameters",
+        "Spiral phase gate: cos/sin modulation with channel rolling",
+        "Top-k adaptive graph sparsification on static graph",
+        "Spiral positional encoding injection",
+        "GELU + LayerNorm + helix channel rotation output"
+      ],
+      "loss_changes": [
+        "Label smoothing MAE: mix targets with global mean (EMA-tracked)",
+        "Smoothing factor controls regularization strength"
+      ],
+      "submodule_change_lines": 1122,
+      "why_promising": "Phase-based channel rotation is novel and could capture cyclical traffic patterns through explicit periodic parameterization. Top-k graph sparsification addresses the over-smoothing problem in GNNs (too many neighbors dilute information). Label smoothing for regression is underexplored but theoretically prevents overconfident predictions.",
+      "risk": "Helix rotation is creative but untested — the cos/sin gate may not align with traffic data's structure. Graph sparsification k needs tuning."
+    },
+
+    "walpurgis_eclipse": {
+      "rank": 10,
+      "potential": "medium_high",
+      "model_changes": [
+        "EMA layer aggregation (exponential moving average weights, later layers weighted more)",
+        "GELU + SpectralNorm output head",
+        "Gaussian noise injection into embeddings (training only)",
+        "Fourier feature PE"
+      ],
+      "loss_changes": [
+        "Tukey biweight loss: rho(r)=(c^2/6)[1-(1-(r/c)^2)^3] — completely ignores outliers beyond c",
+        "Gradient penalty for output smoothness"
+      ],
+      "submodule_change_lines": 1147,
+      "why_promising": "EMA aggregation is a principled default that requires no learning — later (deeper) layers get exponentially more weight. SpectralNorm on output prevents collapse. Tukey biweight is the gold standard in robust statistics — it's the strongest outlier-rejecting loss function here. Gaussian noise acts as data augmentation.",
+      "risk": "Tukey biweight is redescending (like Welsch) — outliers produce ZERO gradient. This can cause training to ignore entire congestion events that are actually informative."
+    },
+
+    "walpurgis_tempest": {
+      "rank": 11,
+      "potential": "medium_high",
+      "model_changes": [
+        "DARTS-style NAS weighted sum: learnable logits to softmax to weighted layer aggregation",
+        "Swish + LayerNorm + additive residual from input embedding in output head",
+        "Conditional positional encoding on time-of-day"
+      ],
+      "loss_changes": [
+        "Focal regression loss: (1-exp(-|r|/beta))^gamma * |r| — upweights hard samples",
+        "L2 temporal smoothness penalty (2nd-order differences)"
+      ],
+      "submodule_change_lines": 1486,
+      "why_promising": "DARTS-style architecture search is elegant — the network discovers optimal layer contributions. Conditional PE on time-of-day is very relevant for METR-LA where traffic patterns are strongly time-dependent. Focal regression is well-tested in detection and works for regression. L2 2nd-order smoothness is better than 1st-order.",
+      "risk": "DARTS weights can be unstable in early training. Focal loss gamma/beta need tuning."
+    },
+
+    "walpurgis_rift": {
+      "rank": 12,
+      "potential": "medium_high",
+      "model_changes": [
+        "Split-Recombine attention: hidden split into K groups, processed independently, cross-interleaved",
+        "FFT domain feature extraction (top-K frequencies)",
+        "Frequency domain residual bypass on forecast hidden",
+        "SiLU + RMSNorm + spectral gating output head",
+        "Learnable channel shuffle (1x1 conv) post-embedding"
+      ],
+      "loss_changes": [
+        "LogCosh-MAE adaptive hybrid with step-dependent alpha annealing"
+      ],
+      "submodule_change_lines": 1042,
+      "why_promising": "Split-Recombine encourages feature diversity (like multi-head attention but at the channel level). FFT top-K frequency selection is a smart inductive bias for periodic traffic. Channel shuffle enables cross-group information flow.",
+      "risk": "Group-based processing may not align with traffic feature semantics. FFT top-K requires knowing the right K."
+    },
+
+    "walpurgis_aphelion": {
+      "rank": 13,
+      "potential": "medium_high",
+      "model_changes": [
+        "FPN (Feature Pyramid Network) multi-scale output fusion",
+        "Top-down pathway with lateral connections between layers",
+        "Smoothing convs after fusion",
+        "Adaptive level weights (softmax over learnable weights)"
+      ],
+      "loss_changes": [
+        "TERM (Tilted Empirical Risk Minimization): (1/t)*log(E[exp(t*loss_i)])",
+        "Learnable tilt parameter controls risk focus",
+        "TERMLossTracker for monitoring"
+      ],
+      "submodule_change_lines": 1308,
+      "why_promising": "FPN is proven in detection for multi-scale feature fusion. Here the scales are abstraction levels across D2STGNN layers — shallow=local spatial, deep=global temporal. TERM loss is theoretically elegant: t>0 focuses on worst-case samples (robustness), t<0 on best-case (efficiency). Auto-learns the risk tradeoff.",
+      "risk": "FPN was designed for CNN pyramids with genuine spatial scale changes; D2STGNN layers don't have that hierarchy naturally. TERM's exp() can cause numerical instability for large t."
+    },
+
+    "walpurgis_vortex": {
+      "rank": 14,
+      "potential": "medium",
+      "model_changes": [
+        "EMA momentum fusion gate on dif/inh branches",
+        "Stochastic depth: layer skip probability increases linearly with depth",
+        "Temperature-scaled softmax layer aggregation",
+        "Mish + GroupNorm + dual-path output (main + aux gradient-detach)",
+        "Learnable channel-wise scaling post-embedding"
+      ],
+      "loss_changes": [
+        "Adaptive Huber-MAE hybrid: delta auto-tunes via running EMA of error statistics"
+      ],
+      "submodule_change_lines": 1386,
+      "why_promising": "Stochastic depth is well-proven for regularization in deep networks. EMA momentum fusion is simple and stable. Dual-path output with gradient-detached auxiliary provides implicit regularization. Adaptive delta Huber self-tunes without manual hyperparameter search.",
+      "risk": "Stochastic depth + temperature aggregation may conflict — dropped layers still get weight. GroupNorm with small groups can be noisy."
+    },
+
+    "walpurgis_perihelion": {
+      "rank": 15,
+      "potential": "medium",
+      "model_changes": [
+        "Stochastic Depth: p_drop(l) = l/L * drop_rate (deeper layers dropped more)",
+        "GELU + learnable bias scaling on embedding",
+        "FC + LayerNorm + residual output head"
+      ],
+      "loss_changes": [
+        "Linex asymmetric loss: b*(exp(a*e)-a*e-1)",
+        "a>0 penalizes over-prediction; a<0 penalizes under-prediction",
+        "Differentiable everywhere, degrades to MSE/2 as a approaches 0"
+      ],
+      "submodule_change_lines": 1621,
+      "why_promising": "Stochastic depth is a clean regularizer. Linex loss captures the fact that in traffic, under-prediction (not warning of congestion) may be worse than over-prediction. Very high submodule change count. Deep rewrites in estimation gate (151 lines) and inherent block (237 lines).",
+      "risk": "Linex a parameter is critical: wrong sign means penalizing the wrong direction. Stochastic depth alone may not be enough of a structural change."
+    },
+
+    "walpurgis_zenith": {
+      "rank": 16,
+      "potential": "medium",
+      "model_changes": [
+        "SpectralDecayGate: learnable frequency-domain filtering before estimation gate",
+        "Layer-wise attention aggregation (global avg pool then attention scoring)",
+        "GELU + LayerNorm + residual output head",
+        "Per-layer learnable residual_scale"
+      ],
+      "loss_changes": [
+        "Temporal smoothness L2 penalty on adjacent timestep predictions"
+      ],
+      "submodule_change_lines": 1079,
+      "why_promising": "Spectral decay gate is a novel pre-filter that can suppress high-frequency noise in input sequences before the estimation gate sees them. Layer attention aggregation is principled. Residual scaling prevents gradient explosion across layers.",
+      "risk": "Temporal smoothness penalty can over-smooth predictions, missing genuine traffic spikes. Spectral gate's FFT adds computation."
+    },
+
+    "walpurgis_cathexis": {
+      "rank": 17,
+      "potential": "medium",
+      "model_changes": [
+        "Exponential recency weighting: later layers contribute exponentially more",
+        "SiLU output head with LayerNorm"
+      ],
+      "loss_changes": [
+        "Asymmetric Winsorized MAE: clips extreme errors + penalizes under-prediction more",
+        "Dynamic quantile-based Winsorization bounds"
+      ],
+      "submodule_change_lines": 1070,
+      "why_promising": "Winsorized loss is a practical robust estimator from statistics — clips extreme errors rather than reweighting them. Asymmetric penalty for under-prediction is domain-appropriate for traffic. Recency weighting is simple and effective.",
+      "risk": "Winsorization clips information — if congestion events are systematically extreme, they get clipped. Fixed asymmetry ratio may not be optimal."
+    },
+
+    "walpurgis_aurora": {
+      "rank": 18,
+      "potential": "medium",
+      "model_changes": [
+        "Gated Fusion: sigmoid gate blends dif/inh backcast outputs (replaces serial pass-through)",
+        "Spectral reg loss from DynamicGraphConstructor propagated to trainer",
+        "SiLU in output head"
+      ],
+      "loss_changes": [
+        "Huber loss as primary training loss (pure, no hybrid)",
+        "Standard delta=1.0 default"
+      ],
+      "submodule_change_lines": 1172,
+      "why_promising": "Gated fusion is a clean architectural improvement — learning how to blend dif/inh branches adaptively rather than fixed serial composition. Spectral regularization on graphs prevents degenerate adjacency matrices. Huber loss is well-proven.",
+      "risk": "Relatively conservative changes. Huber alone (without log-cosh or adaptive delta) may not be enough of a loss improvement."
+    },
+
+    "walpurgis_corona": {
+      "rank": 19,
+      "potential": "medium",
+      "model_changes": [
+        "Learnable residual scaling per DecoupleLayer",
+        "Gated residual aggregation with sigmoid-gated per-layer weights",
+        "SiLU output head"
+      ],
+      "loss_changes": [
+        "Quantile loss: multi-quantile regression",
+        "Can output prediction intervals"
+      ],
+      "submodule_change_lines": 1048,
+      "why_promising": "Quantile regression provides uncertainty estimates which can improve point predictions when aggregated. Residual scaling is a simple but important stabilizer for 5-layer stacks.",
+      "risk": "Quantile loss at tau=0.5 is just scaled MAE — need to actually use multiple quantiles and aggregate for benefit."
+    },
+
+    "walpurgis_meridian": {
+      "rank": 20,
+      "potential": "medium",
+      "model_changes": [
+        "Geometric mean aggregation of layer forecasts (instead of sum/softmax)",
+        "GEGLU (Gated Exponential GLU) output projection",
+        "Per-layer learnable kernel scaling for k_t"
+      ],
+      "loss_changes": [
+        "Annealed focal regression: gamma decreases over training (hard to easy focus shift)",
+        "Step-dependent gamma schedule"
+      ],
+      "submodule_change_lines": 1161,
+      "why_promising": "GEGLU is state-of-art in transformers (used in PaLM, LLaMA). Geometric mean aggregation naturally requires all layers to be non-degenerate (multiplicative). Annealed focal is curriculum learning by loss.",
+      "risk": "Geometric mean is sensitive to any near-zero layer output — one bad layer kills the product. Requires careful initialization and clamping."
+    },
+
+    "walpurgis_penumbra": {
+      "rank": 21,
+      "potential": "medium_low",
+      "model_changes": [
+        "EMA decay aggregation: learnable decay rate weights later layers more",
+        "Swish + learnable bias scaling on embedding",
+        "FC + LayerNorm + residual output head"
+      ],
+      "loss_changes": [
+        "Log-Cosh loss with learnable scale parameter"
+      ],
+      "submodule_change_lines": 1349,
+      "why_promising": "Clean, conservative changes. Log-Cosh is well-understood. EMA aggregation is stable. Good submodule depth.",
+      "risk": "Too conservative — essentially a smoothed-loss variant of the base model without structural innovation."
+    },
+
+    "walpurgis_nightfall": {
+      "rank": 22,
+      "potential": "medium_low",
+      "model_changes": [
+        "Sigmoid-gated alpha blending of dif/inh forecasts (learnable blend_logit)",
+        "Softmax weighted layer aggregation",
+        "SiLU + deeper 3-layer projection output head",
+        "Dropout on embedding"
+      ],
+      "loss_changes": [
+        "Charbonnier loss: sqrt(|pred-label|^2 + eps) — smooth L1 approximation",
+        "Temporal consistency penalty",
+        "Horizon-weighted MSE (farther horizons weighted more)"
+      ],
+      "submodule_change_lines": 1097,
+      "why_promising": "Charbonnier loss is well-proven in image restoration. 3-layer output head adds capacity. Horizon weighting is domain-appropriate.",
+      "risk": "Blend_logit is defined but not actually used in the forecast aggregation. Charbonnier is approximately equal to Huber for practical purposes."
+    },
+
+    "walpurgis_equinox": {
+      "rank": 23,
+      "potential": "medium_low",
+      "model_changes": [
+        "Learnable branch balance parameter (sigmoid gate between dif/inh energy)",
+        "Removed highway gate (simplified architecture)"
+      ],
+      "loss_changes": [
+        "LogCosh loss with learnable scale parameter",
+        "Gradient clipping integration"
+      ],
+      "submodule_change_lines": 1126,
+      "why_promising": "Simplification by removing highway gate could reduce overfitting. LogCosh is solid. Branch balance provides explicit dif/inh control.",
+      "risk": "Branch balance parameter is monitored but not actually applied to the output computation. Removing highway gate loses a useful regularization mechanism."
+    },
+
+    "walpurgis_solstice": {
+      "rank": 24,
+      "potential": "medium_low",
+      "model_changes": [
+        "ScaleNorm (RMSNorm variant: normalize to unit norm * learnable scalar g)",
+        "Linear + ScaleNorm + Mish on embedding",
+        "Removed highway gate"
+      ],
+      "loss_changes": [
+        "Huber loss with delta=1.345 (95% asymptotic efficiency under Gaussian)",
+        "Standard robust statistics delta choice"
+      ],
+      "submodule_change_lines": 1242,
+      "why_promising": "ScaleNorm is lighter than LayerNorm and can work well. Huber with delta=1.345 is the statistically optimal choice under Gaussian errors. Clean implementation.",
+      "risk": "Very conservative changes. ScaleNorm + Huber alone unlikely to beat SOTA."
+    },
+
+    "walpurgis_walking": {
+      "rank": 25,
+      "potential": "low",
+      "model_changes": [
+        "Import path change only (walpurgis to walpurgis_walking)",
+        "No model architecture changes"
+      ],
+      "loss_changes": [
+        "Variable renaming only (_LOGCOSH_WEIGHT to _LC_W, _build_mask to _mask)",
+        "No algorithmic changes"
+      ],
+      "submodule_change_lines": 268,
+      "why_promising": "None — this is essentially a copy of the base with cosmetic renaming.",
+      "risk": "No upside. Only 268 lines changed across all submodules, all of which appear to be import path changes (2 lines per file)."
+    }
+  },
+
+  "top5_recommended_for_metrla": [
+    {
+      "rank": 1,
+      "variant": "walpurgis_cascade",
+      "rationale": "SE channel attention + dense cascade connections + dynamic depth gating = three orthogonal improvements targeting different failure modes. SE addresses channel importance, dense connections fix gradient flow, dynamic depth prevents overfitting. Horizon-weighted loss directly targets METR-LA's multi-step challenge. Most balanced risk/reward ratio.",
+      "expected_impact_on_mae": "Could reduce by 0.05-0.15 (SE+dense skip proven in other domains)"
+    },
+    {
+      "rank": 2,
+      "variant": "walpurgis_nebula",
+      "rationale": "Maxout output network has provably higher expressiveness than ReLU. DenseNet concat preserves all layer info. Fourier PE captures traffic periodicity. Log-Cosh+quantile is the best composite loss for heteroscedastic data. Well-rounded deep changes.",
+      "expected_impact_on_mae": "Could reduce by 0.05-0.20 (Maxout + periodic encoding)"
+    },
+    {
+      "rank": 3,
+      "variant": "walpurgis_prism",
+      "rationale": "Explicitly models spatial/temporal/frequency views — perfectly aligned with traffic data's multi-scale nature. FFT frequency view captures METR-LA's strong daily/weekly periodicity. Contrastive loss prevents embedding collapse. Most theoretically motivated for this specific domain.",
+      "expected_impact_on_mae": "Could reduce by 0.05-0.15 (multi-view + contrastive proven in ST-GNNs)"
+    },
+    {
+      "rank": 4,
+      "variant": "walpurgis_flux",
+      "rationale": "Causal conv embedding is a direct upgrade over linear (captures local patterns). Progressive coarse-to-fine decoding is well-suited for multi-horizon forecasting. Focal MAE addresses METR-LA's long-tail error distribution. Highest total submodule change depth (1448 lines). Most deeply rewritten variant.",
+      "expected_impact_on_mae": "Could reduce by 0.03-0.12 (causal conv + progressive decode)"
+    },
+    {
+      "rank": 5,
+      "variant": "walpurgis_umbra",
+      "rationale": "Most comprehensive rewrite (1613 lines). Haar wavelet decomposition separates trend/detail. Mamba SSM could outperform self-attention on long sequences. Adaptive Huber self-tunes. LAMB optimizer better for convergence. High risk but highest ceiling if it works.",
+      "expected_impact_on_mae": "Could reduce by 0.05-0.25 (very high variance — either best or worst)"
+    }
+  ],
+
+  "analysis_summary": {
+    "total_variants_analyzed": 25,
+    "genuine_algorithm_rewrites": 24,
+    "cosmetic_only": ["walpurgis_walking"],
+    "tiers": {
+      "tier1_very_high_potential": ["cascade", "nebula", "prism"],
+      "tier2_high_potential": ["flux", "umbra", "cardgame", "transit", "parallax"],
+      "tier3_medium_high": ["helix", "eclipse", "tempest", "rift", "aphelion"],
+      "tier4_medium": ["vortex", "perihelion", "zenith", "cathexis", "aurora", "corona", "meridian"],
+      "tier5_conservative": ["penumbra", "nightfall", "equinox", "solstice"],
+      "tier6_no_change": ["walking"]
+    },
+    "key_insight": "The variants with the highest SOTA potential combine THREE types of changes: (1) structural model changes (new modules like SE/FPN/Maxout/HelixConv), (2) principled loss function redesign (domain-appropriate like focal/TERM/Tweedie), and (3) deep submodule rewrites (estimation gate, graph conv, inherent block). Variants that only change one dimension (e.g., just loss, or just aggregation) are less likely to beat SOTA. The base model already has Huber+LogCosh and learnable layer weights, so marginal improvements there won't move the needle — structural innovations in how the model processes graph-temporal features will."
+  }
+}
