@@ -343,3 +343,60 @@
 - ORG: b3012e8c-5f6b-49b1-a0f5-824ba5bac509
 - 注意: 同一个cookie同时只能有一个对话活跃, 多个Claude同时用会冲突!
 - 建议: 串行调度, 一个Claude完成后再派下一个
+
+---
+## Phase 2: SOTA实验运行 (M074-M103)
+> 第一位Claude (当前): 创建cathexis + 调度pipeline
+> 目标: 在METR-LA/PEMS-BAY上超越STAEFormer MAE=2.90
+
+### 第一位Claude: M074-M078 — cathexis变体 + 实验pipeline (✅ 已完成)
+- M074: ✅ 创建walpurgis_cathexis — 10项算法改写
+  1. Bilinear + SiLU estimation gate
+  2. AdaIN residual decomposition
+  3. GATv2-style per-hop attention graph conv
+  4. Exponential kernel distance (learned bandwidth)
+  5. Bernoulli soft gating mask
+  6. Doubly-stochastic Sinkhorn normalizer
+  7. Mamba-SSM + SwishGLU inherent
+  8. Exponential recency weighted aggregation
+  9. Asymmetric Winsorized loss
+  10. GradCentralized AdamW + WarmupCosineAnnealing
+- M075: ✅ SYNTH smoke test通过 (CPU, 3 epochs)
+- M076: ✅ 创建server_setup.sh + run_experiment.sh (自动训练+评估+push)
+- M077: ✅ 创建MULTI_CLAUDE_DISPATCH.md + subclaude_gpu_experiment.md
+- M078: ✅ Push到main
+
+### 第二位Claude (Opus 4.6 medium): M079-M083 — METR-LA实验
+- M079: 拉取dylanyunlon/claude-hk-config同步cookie
+- M080: GPU服务器conda环境配置 (复用walpurgis env)
+- M081: 下载METR-LA数据集 (207 nodes, DCRNN格式)
+- M082: ./run_experiment.sh cathexis METR-LA cuda:0 80 (3 seeds)
+- M083: push结果, 更新comparison_table.tex
+
+### 第三位Claude (Opus 4.6 medium): M084-M088 — PEMS-BAY + 多变体对比
+- M084: 下载PEMS-BAY数据集 (325 nodes)
+- M085: ./run_experiment.sh cathexis PEMS-BAY cuda:0 80
+- M086: ./run_experiment.sh corona METR-LA cuda:0 80
+- M087: ./run_experiment.sh zenith METR-LA cuda:0 80
+- M088: 汇总三变体结果
+
+### 第四位Claude (Opus 4.6 medium): M089-M093 — 超参数调优
+- M089: 分析初始METR-LA结果
+- M090: 调lr/batch_size/hidden_dim/dropout
+- M091: 最优配置重训 (3 seeds)
+- M092: 运行10维评估 (bench/walpurgis_eval.py)
+- M093: push最终结果
+
+### 第五位Claude (Opus 4.6 medium): M094-M098 — upstream baseline + tex表格
+- M094: 运行upstream D2STGNN在METR-LA (验证baseline)
+- M095: 运行upstream D2STGNN在PEMS-BAY
+- M096: 生成完整comparison_table.tex
+- M097: 更新tex Section 5 (Evaluation)
+- M098: push论文就绪tex
+
+### 第六位Claude (Opus 4.6 medium): M099-M103 — 消融实验 + 最终验证
+- M099: cathexis消融实验 (逐一禁用10个改写)
+- M100: 生成ablation_table.tex
+- M101: D7 (Graph Sensitivity) + D10 (Stability) 评估
+- M102: 仓库最终清理
+- M103: 论文数据验证 + push
