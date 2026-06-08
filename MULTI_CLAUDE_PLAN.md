@@ -400,3 +400,68 @@
 - M101: D7 (Graph Sensitivity) + D10 (Stability) 评估
 - M102: 仓库最终清理
 - M103: 论文数据验证 + push
+
+---
+## Phase 3: 真实SOTA对比实验 (M104-M139)
+> 目标: 在GPU服务器上运行所有高潜力变体(cascade/nebula/prism/flux/reverie)
+> 对METR-LA/PEMS-BAY跑完整实验, 超越STAEFormer MAE=2.90
+> 实验结果自动push到git, 子Claude拉取后填入tex表格
+
+### SOTA目标:
+- METR-LA: STAEFormer MAE=2.90, RMSE=5.91, MAPE=8.12%
+- 我们的目标: MAE < 2.85, RMSE < 5.80
+
+### 第一位Claude (当前, Opus 4.6): M104-M109 — reverie变体 + 实验架构 ✅
+- M104: ✅ 创建walpurgis_reverie — 10项算法改写 (已通过SYNTH)
+- M105: ✅ 清理bench后缀文件 (v10_theory, benchmark_v2)
+- M106: ✅ 创建gpu_experiment.sh (GPU服务器实验+自动push)
+- M107: ✅ 创建METR-LA/PEMS-BAY configs
+- M108: ✅ Push到main
+- M109: ✅ 编写子Claude dispatch prompt + M编号规划
+
+### 第二位Claude (Opus 4.6 medium): M110-M115 — METR-LA数据集准备+cascade实验
+- M110: git pull main, 检查GPU环境 (lscpu/nvidia-smi)
+- M111: 下载METR-LA数据集 (raw → generate_training_data.py)
+- M112: 下载PEMS-BAY数据集
+- M113: conda activate walpurgis (或新建)
+- M114: bash gpu_experiment.sh cascade METR-LA cuda:0 80
+- M115: push结果到main
+
+### 第三位Claude (Opus 4.6 medium): M116-M121 — nebula+prism实验
+- M116: git pull main
+- M117: bash gpu_experiment.sh nebula METR-LA cuda:0 80
+- M118: bash gpu_experiment.sh prism METR-LA cuda:0 80
+- M119: bash gpu_experiment.sh nebula PEMS-BAY cuda:0 80
+- M120: bash gpu_experiment.sh prism PEMS-BAY cuda:0 80
+- M121: push所有结果
+
+### 第四位Claude (Opus 4.6 medium): M122-M127 — flux+reverie+upstream baseline
+- M122: git pull main
+- M123: bash gpu_experiment.sh flux METR-LA cuda:0 80
+- M124: bash gpu_experiment.sh reverie METR-LA cuda:0 80
+- M125: 运行upstream D2STGNN baseline (验证D2STGNN MAE=3.04)
+- M126: bash gpu_experiment.sh flux PEMS-BAY cuda:0 80
+- M127: push所有结果
+
+### 第五位Claude (Opus 4.6 medium): M128-M133 — 结果汇总+tex表格
+- M128: git pull main, 收集所有结果summary.json
+- M129: 生成comparison_table.tex (所有变体 vs SOTA)
+- M130: 确定最优变体, 超参数微调 (lr/dropout/hidden_dim)
+- M131: 最优变体3-seed重训 (统计稳定性)
+- M132: 生成ablation_table.tex
+- M133: push论文就绪tex + 最终数据
+
+### 第六位Claude (Opus 4.6 medium): M134-M139 — 论文集成+最终验证
+- M134: git pull main, 验证所有实验可复现
+- M135: 更新walpurgis_reconstructed.tex Section 5
+- M136: 生成per-horizon分析图 (15min/30min/60min)
+- M137: 仓库最终清理 (删除SYNTH临时文件/pt权重)
+- M138: README更新 (实验复现步骤)
+- M139: 最终push, 论文数据锁定
+
+## 关键协调机制:
+- gpu_experiment.sh: 实验完成自动push results到git
+- 每个子Claude先 git pull main 获取最新代码和数据
+- 结果存储在 output/results_<variant>_<dataset>/summary.json
+- 子Claude通过 GH_TOKEN env var 访问仓库
+- conda环境: walpurgis (如已存在则复用)
