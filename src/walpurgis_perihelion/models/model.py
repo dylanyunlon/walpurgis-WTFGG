@@ -201,10 +201,18 @@ class D2STGNN(nn.Module):
                 # 跳过此层: 保持输入不变, forecast hidden为零
                 _dbg(f"stoch_depth.skip_layer_{layer_idx}",
                      f"p_drop={drop_prob:.3f}", "model")
-                zero_fh = torch.zeros_like(
-                    inh_backcast_seq_res[:, :, :, :self._forecast_dim]
-                ) if len(dif_forecast_hidden_list) == 0 else \
-                    torch.zeros_like(dif_forecast_hidden_list[0])
+                if len(dif_forecast_hidden_list) > 0:
+                    zero_fh = torch.zeros_like(
+                        dif_forecast_hidden_list[0])
+                else:
+                    # 首层被跳过: 推算forecast shape
+                    B = inh_backcast_seq_res.shape[0]
+                    N = inh_backcast_seq_res.shape[2]
+                    fk_steps = max(
+                        self._output_dim // self._model_args['gap'], 1)
+                    zero_fh = torch.zeros(
+                        B, fk_steps, N, self._forecast_dim,
+                        device=inh_backcast_seq_res.device)
                 dif_forecast_hidden_list.append(zero_fh)
                 inh_forecast_hidden_list.append(zero_fh)
                 continue
@@ -238,10 +246,16 @@ class D2STGNN(nn.Module):
                 inh_forecast_hidden_list) / N
         else:
             # 极端情况: 所有层都被跳过
+            B = history_data.shape[0]
+            N = history_data.shape[2]
+            fk_steps = max(
+                self._output_dim // self._model_args['gap'], 1)
             dif_forecast_hidden = torch.zeros(
-                1, device=history_data.device)
+                B, fk_steps, N, self._forecast_dim,
+                device=history_data.device)
             inh_forecast_hidden = torch.zeros(
-                1, device=history_data.device)
+                B, fk_steps, N, self._forecast_dim,
+                device=history_data.device)
 
         forecast_hidden = (dif_forecast_hidden
                            + inh_forecast_hidden)
