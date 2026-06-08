@@ -2,98 +2,68 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from walpurgis import _dbg
+from .... import _dbg
 
-_TAG = "dist"
-
-# 改动1: 多头注意力 head 数
-_NUM_HEADS = 3
+_TAG = "distance"
 
 
 class DistanceFunction(nn.Module):
+    """upstream: QK attention dot-product distance
+    改动: Radial Basis Function (RBF) kernel distance
+    RBF: exp(-||q-k||^2 / (2*sigma^2)), 可学习bandwidth sigma
+    比dot-product更能捕获局部结构: traffic graph中相邻节点的
+    特征应该距离近, 而非投影对齐
+    """
+
     def __init__(self, **model_args):
         super().__init__()
         self.hidden_dim = model_args['num_hidden']
         self.node_dim = model_args['node_hidden']
+        self.time_slot_emb_dim = self.hidden_dim
         self.input_seq_len = model_args['seq_length']
 
-        # 时序特征提取
         self.dropout = nn.Dropout(model_args['dropout'])
         self.fc_ts_emb1 = nn.Linear(self.input_seq_len, self.hidden_dim * 2)
         self.fc_ts_emb2 = nn.Linear(self.hidden_dim * 2, self.hidden_dim)
-
-        # 改动2: BN → LayerNorm (InstanceNorm1d在spatial=1时不可训练)
-        # LayerNorm 对每个 sample 的 feature 独立归一化
-        self.norm = nn.LayerNorm(self.hidden_dim * 2)
-
-        # 改动3: 残差 shortcut 投影 — upstream 无此路径
-        self.ts_shortcut = nn.Linear(self.input_seq_len, self.hidden_dim)
+        self.ts_feat_dim = self.hidden_dim
 
         self.time_slot_embedding = nn.Linear(
-            model_args['time_emb_dim'], self.hidden_dim)
+            model_args['time_emb_dim'], self.time_slot_emb_dim)
 
-        self.all_feat_dim = (self.hidden_dim + self.node_dim
-                             + model_args['time_emb_dim'] * 2)
+        self.all_feat_dim = (self.ts_feat_dim + self.node_dim +
+                            model_args['time_emb_dim'] * 2)
+        self.proj = nn.Linear(self.all_feat_dim, self.hidden_dim)
+        self.bn = nn.BatchNorm1d(self.hidden_dim * 2)
 
-        # 改动1: 3-head 独立 Q/K 投影
-        # upstream 只有 1 组 WQ, WK
-        self.WQ_heads = nn.ModuleList([
-            nn.Linear(self.all_feat_dim, self.hidden_dim, bias=False)
-            for _ in range(_NUM_HEADS)])
-        self.WK_heads = nn.ModuleList([
-            nn.Linear(self.all_feat_dim, self.hidden_dim, bias=False)
-            for _ in range(_NUM_HEADS)])
-
-        # 改动4: 注意力 dropout
-        self.attn_drop = nn.Dropout(0.1)
+        # 可学习RBF bandwidth
+        self.log_sigma = nn.Parameter(
+            torch.tensor(math.log(math.sqrt(self.hidden_dim))))
 
     def forward(self, X, E_d, E_u, T_D, D_W):
         T_D = T_D[:, -1, :, :]
         D_W = D_W[:, -1, :, :]
 
-        X_in = X[:, :, :, 0].transpose(1, 2).contiguous()
-        B, N, S = X_in.shape
-        X_flat = X_in.view(B * N, S)
+        X = X[:, :, :, 0].transpose(1, 2).contiguous()
+        batch_size, num_nodes, seq_len = X.shape
+        X = X.view(batch_size * num_nodes, seq_len)
+        dy_feat = self.fc_ts_emb2(
+            self.dropout(self.bn(F.relu(self.fc_ts_emb1(X)))))
+        dy_feat = dy_feat.view(batch_size, num_nodes, -1)
 
-        # 时序嵌入 + LayerNorm
-        h1 = F.gelu(self.fc_ts_emb1(X_flat))
-        # LayerNorm 直接接受 (BN, C) 输入
-        h1 = self.norm(h1)
-        h1 = self.dropout(h1)
-        dy_feat = self.fc_ts_emb2(h1).view(B, N, -1)
-
-        # 改动3: 残差 shortcut
-        shortcut = self.ts_shortcut(X_flat).view(B, N, -1)
-        dy_feat = dy_feat + shortcut
-
-        _dbg(_TAG, "ts_feat", dy_feat=dy_feat, shortcut_norm=shortcut.norm())
-
-        emb1 = E_d.unsqueeze(0).expand(B, -1, -1)
-        emb2 = E_u.unsqueeze(0).expand(B, -1, -1)
+        emb1 = E_d.unsqueeze(0).expand(batch_size, -1, -1)
+        emb2 = E_u.unsqueeze(0).expand(batch_size, -1, -1)
 
         X1 = torch.cat([dy_feat, T_D, D_W, emb1], dim=-1)
         X2 = torch.cat([dy_feat, T_D, D_W, emb2], dim=-1)
-        feat_pair = [X1, X2]
 
+        sigma_sq = (2 * self.log_sigma).exp()
         adjacent_list = []
-        for feat in feat_pair:
-            # 改动1: 3-head 注意力取平均
-            head_weights = []
-            for h in range(_NUM_HEADS):
-                Q = self.WQ_heads[h](feat)
-                K = self.WK_heads[h](feat)
-                QKT = torch.bmm(Q, K.transpose(-1, -2)) / math.sqrt(self.hidden_dim)
-                W = torch.softmax(QKT, dim=-1)
-                # 改动4: attention dropout
-                W = self.attn_drop(W)
-                head_weights.append(W)
+        for feat in [X1, X2]:
+            proj_feat = self.proj(feat)
+            dist_sq = torch.cdist(proj_feat, proj_feat, p=2).pow(2)
+            W = torch.exp(-dist_sq / (sigma_sq + 1e-6))
+            W = W / (W.sum(dim=-1, keepdim=True) + 1e-8)
+            adjacent_list.append(W)
 
-            # 多头平均
-            W_avg = sum(head_weights) / _NUM_HEADS
-            adjacent_list.append(W_avg)
-
-            _dbg(_TAG, "multi_head_attn",
-                 head_var=torch.stack(head_weights).var(dim=0).mean(),
-                 W_avg=W_avg)
-
+        _dbg(f"{_TAG}/rbf_sigma", self.log_sigma.exp(), _TAG)
         return adjacent_list

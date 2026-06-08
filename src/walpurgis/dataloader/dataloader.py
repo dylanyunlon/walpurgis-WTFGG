@@ -1,81 +1,66 @@
+"""Cascade DataLoader: standard padding + shuffle with cascade diagnostics."""
 import numpy as np
-from walpurgis import _dbg
+import sys
+import os
 
-_TAG = "loader"
+_CAS_DBG = os.environ.get('CASCADE_DEBUG', '0') == '1'
 
 
 class DataLoader(object):
-    """内存友好的DataLoader.
+    def __init__(self, xs, ys, batch_size, pad_with_last_sample=True, shuffle=False):
+        """Load train/val/test data and get a dataloader.
+            Ref code: https://github.com/nnzhan/Graph-WaveNet/blob/master/util.py
+        Args:
+            xs (np.array): history sequence, [num_samples, history_len, num_nodes, num_feats].
+            ys (np.array):  future sequence, ]num_samples, future_len, num_nodes, num_feats].
+            batch_size (int): batch size
+            pad_with_last_sample (bool, optional): pad with the last sample to make number of samples divisible to batch_size. Defaults to True.
+            shuffle (bool, optional): shuffle dataset. Defaults to False.
+        """
 
-    改动 vs upstream:
-      1) wrap-ring padding (而非重复末尾sample)
-      2) Knuth shuffle (原地, 只shuffle索引不拷贝数据)
-      3) 3-tuple yield (x, y, weight)
-      4) lazy slice — 不做 .copy(), 直接返回 view
-
-    vs 原walpurgis v10:
-      - 去掉了 prefetch 里的 .copy() — 在内存受限环境下那是致命的
-      - shuffle 改为只 shuffle 索引数组, 不移动底层数据
-      - padding 用索引而非拷贝数据
-    """
-
-    def __init__(self, xs, ys, batch_size,
-                 pad_with_last_sample=True, shuffle=False):
         self.batch_size = batch_size
         self.current_ind = 0
-        self._raw_size = len(xs)
 
-        # 不拷贝数据, 只记录原始引用
-        self.xs = xs
-        self.ys = ys
-
-        # wrap-ring padding: 只计算需要多少padding, 用索引表达
         if pad_with_last_sample:
             num_padding = (batch_size - (len(xs) % batch_size)) % batch_size
-        else:
-            num_padding = 0
-        self._num_padding = num_padding
+            x_padding = np.repeat(xs[-1:], num_padding, axis=0)
+            y_padding = np.repeat(ys[-1:], num_padding, axis=0)
+            xs = np.concatenate([xs, x_padding], axis=0)
+            ys = np.concatenate([ys, y_padding], axis=0)
 
-        self.size = self._raw_size + num_padding
+        self.size = len(xs)
+        # number of batches
         self.num_batch = int(self.size // self.batch_size)
-
-        # 索引数组: 初始为 [0, 1, ..., raw_size-1, 0, 1, ...] (wrap部分)
-        self._indices = np.arange(self.size, dtype=np.int32)
-        if num_padding > 0:
-            self._indices[self._raw_size:] = np.arange(num_padding) % self._raw_size
-
-        # 样本权重
-        self.sample_weights = np.ones(self.size, dtype=np.float32)
-
+        self.xs = xs
+        self.ys = ys
         if shuffle:
             self.shuffle()
-
-        mem_mb = (xs.nbytes + ys.nbytes) / 1e6
-        print(f"[v10 DataLoader] size={self.size}, "
-              f"num_batch={self.num_batch}, bs={batch_size}, "
-              f"pad={num_padding}, mem={mem_mb:.0f}MB")
+        if _CAS_DBG:
+            print(f"[CAS:dataloader] size={self.size} batches={self.num_batch} "
+                  f"batch_size={batch_size}", file=sys.stderr)
 
     def shuffle(self):
-        # Knuth shuffle 只操作索引, 不移动底层数据
-        n = self.size
-        for i in range(n - 1, 0, -1):
-            j = np.random.randint(0, i + 1)
-            self._indices[i], self._indices[j] = self._indices[j], self._indices[i]
+        permutation = np.random.permutation(self.size)
+        xs, ys = self.xs[permutation], self.ys[permutation]
+        self.xs = xs
+        self.ys = ys
 
     def __len__(self):
         return self.num_batch
 
     def get_iterator(self):
+        """Fetch a batch of data."""
+
         self.current_ind = 0
 
-        def _gen():
-            for batch_i in range(self.num_batch):
-                start = self.batch_size * batch_i
-                end = self.batch_size * (batch_i + 1)
-                idx = self._indices[start:end]
-
-                # 不 copy, 直接 fancy indexing (返回的是新数组但不重复整个dataset)
-                yield (self.xs[idx], self.ys[idx], self.sample_weights[idx])
+        def _wrapper():
+            while self.current_ind < self.num_batch:
+                start_ind = self.batch_size * self.current_ind
+                end_ind = min(self.size, self.batch_size *
+                              (self.current_ind + 1))
+                x_i = self.xs[start_ind: end_ind, ...]
+                y_i = self.ys[start_ind: end_ind, ...]
+                yield (x_i, y_i)
                 self.current_ind += 1
 
-        return _gen()
+        return _wrapper()

@@ -1,135 +1,184 @@
+"""
+Cascade losses — 算法改写:
+  新增 cascade_aware_loss: 级联感知损失
+  对不同预测时间步(horizon)施加递增权重
+  近期预测权重大, 远期预测权重递增(鼓励模型关注难样本)
+  同时加入gradient-scaled penalty: 梯度大的样本额外惩罚
+"""
 import torch
 import numpy as np
-from walpurgis import _dbg
+from .. import _dbg
 
-_TAG = "loss"
-
-# ---- 改动1: smooth Huber + log-cosh 混合 ----
-# upstream 用纯 masked_mae; 这里改成 δ=5 的 Huber 和 log-cosh 的加权和
-# Huber 在大残差处梯度更稳, log-cosh 在零附近更光滑
-_HUBER_DELTA = 5.0
-_LOGCOSH_WEIGHT = 0.3   # 30% log-cosh + 70% huber
+_horizon_weights_cache = {}
 
 
-def _build_mask(preds, labels, null_val=np.nan):
+def masked_mse(preds, labels, null_val=np.nan):
     if np.isnan(null_val):
         mask = ~torch.isnan(labels)
     else:
         mask = (labels != null_val)
     mask = mask.float()
-    denom = torch.mean(mask)
-    denom = torch.clamp(denom, min=1e-8)  # 改动: clamp防零除, upstream直接除
-    mask = mask / denom
+    mask /= torch.mean(mask)
     mask = torch.where(torch.isnan(mask), torch.zeros_like(mask), mask)
-    return mask
-
-
-def masked_huber_logcosh(preds, labels, null_val=np.nan):
-    """改动: upstream是纯MAE, 这里替换为Huber+log-cosh混合.
-    Huber(δ=5): 小误差用L2, 大误差用L1, 拐点在δ
-    log-cosh: log(cosh(x)) ≈ x²/2 (小x), |x|-log2 (大x), 处处二阶可微
-    """
-    mask = _build_mask(preds, labels, null_val)
-    diff = preds - labels
-
-    # Huber 部分
-    abs_diff = torch.abs(diff)
-    huber = torch.where(
-        abs_diff <= _HUBER_DELTA,
-        0.5 * diff * diff,
-        _HUBER_DELTA * (abs_diff - 0.5 * _HUBER_DELTA)
-    )
-
-    # log-cosh 部分: log(cosh(x)), 数值稳定写法
-    logcosh = diff + torch.nn.functional.softplus(-2.0 * diff) - np.log(2.0)
-
-    combined = (1.0 - _LOGCOSH_WEIGHT) * huber + _LOGCOSH_WEIGHT * logcosh
-    combined = combined * mask
-    combined = torch.where(torch.isnan(combined), torch.zeros_like(combined), combined)
-
-    result = torch.mean(combined)
-    _dbg(_TAG, "huber_logcosh", loss=result, abs_diff_mean=abs_diff.mean())
-    return result
-
-
-def masked_mse(preds, labels, null_val=np.nan):
-    mask = _build_mask(preds, labels, null_val)
     loss = (preds - labels) ** 2
     loss = loss * mask
     loss = torch.where(torch.isnan(loss), torch.zeros_like(loss), loss)
-    out = torch.mean(loss)
-    _dbg(_TAG, "mse", loss=out)
-    return out
+    return torch.mean(loss)
 
 
 def masked_rmse(preds, labels, null_val=np.nan):
-    return torch.sqrt(masked_mse(preds, labels, null_val))
+    return torch.sqrt(masked_mse(preds=preds, labels=labels, null_val=null_val))
+
+
+def masked_mae_loss(y_pred, y_true):
+    mask = (y_true != 0).float()
+    mask /= mask.mean()
+    loss = torch.abs(y_pred - y_true)
+    loss = loss * mask
+    # trick for nans: https://discuss.pytorch.org/t/how-to-set-nan-in-tensor-to-0/3918/3
+    loss[loss != loss] = 0
+    return loss.mean()
 
 
 def masked_mae(preds, labels, null_val=np.nan):
-    """保留接口兼容, 但内部走 huber+logcosh."""
-    return masked_huber_logcosh(preds, labels, null_val)
+    if np.isnan(null_val):
+        mask = ~torch.isnan(labels)
+    else:
+        mask = (labels != null_val)
+    mask = mask.float()
+    mask /= torch.mean(mask)
+    mask = torch.where(torch.isnan(mask), torch.zeros_like(mask), mask)
+    loss = torch.abs(preds - labels)
+    loss = loss * mask
+    loss = torch.where(torch.isnan(loss), torch.zeros_like(loss), loss)
+    return torch.mean(loss)
 
 
-# ---- 改动2: MAPE floor clamp 5e-6 ----
-# upstream 直接 abs(pred-real)/real, real=0时爆炸
-# 这里加 floor clamp, 比 upstream 更鲁棒
-_MAPE_FLOOR = 5e-6
+def masked_huber(preds, labels, null_val=np.nan):
+    crit = torch.nn.SmoothL1Loss()
+    # crit = torch.nn.MSELoss()
+    return crit(preds, labels)
 
 
 def masked_mape(preds, labels, null_val=np.nan):
-    mask = _build_mask(preds, labels, null_val)
-    # 改动: 分母 clamp 到 floor, upstream 无此保护
-    safe_labels = torch.clamp(torch.abs(labels), min=_MAPE_FLOOR)
-    loss = torch.abs(preds - labels) / safe_labels
+    if np.isnan(null_val):
+        mask = ~torch.isnan(labels)
+    else:
+        mask = (labels != null_val)
+    mask = mask.float()
+    mask /= torch.mean(mask)
+    mask = torch.where(torch.isnan(mask), torch.zeros_like(mask), mask)
+    loss = torch.abs(preds - labels) / labels
     loss = loss * mask
     loss = torch.where(torch.isnan(loss), torch.zeros_like(loss), loss)
-    out = torch.mean(loss)
-    _dbg(_TAG, "mape", loss=out)
-    return out
+    return torch.mean(loss)
 
 
-# ---- 改动3: 新增 quantile loss ----
-# upstream 完全没有 quantile loss; 这里新增, 可用于不确定性估计
-def quantile_loss(preds, labels, tau=0.5, null_val=np.nan):
-    """Pinball / quantile loss at quantile τ.
-    τ=0.5 退化为 scaled MAE.
+def cascade_aware_loss(preds, labels, null_val=np.nan,
+                       base_weight=1.0, horizon_scale=0.1,
+                       grad_penalty=0.01):
+    """Cascade特有: 级联感知损失
+
+    对不同预测horizon施加线性递增权重:
+      w_t = base_weight + horizon_scale * t
+    这鼓励模型对远期(更难)的预测投入更多attention
+
+    同时加入gradient-scaled penalty:
+      对残差大的样本施加额外二次惩罚
+      这与cascade residual的逐层纠正理念一致
     """
-    mask = _build_mask(preds, labels, null_val)
-    diff = labels - preds
-    ql = torch.where(diff >= 0, tau * diff, (tau - 1.0) * diff)
-    ql = ql * mask
-    ql = torch.where(torch.isnan(ql), torch.zeros_like(ql), ql)
-    out = torch.mean(ql)
-    _dbg(_TAG, f"quantile(tau={tau})", loss=out)
-    return out
+    if np.isnan(null_val):
+        mask = ~torch.isnan(labels)
+    else:
+        mask = (labels != null_val)
+    mask = mask.float()
+    mask /= torch.mean(mask)
+    mask = torch.where(
+        torch.isnan(mask), torch.zeros_like(mask), mask)
+
+    residual = torch.abs(preds - labels)
+
+    # 生成horizon权重 [1, T, 1]
+    T = preds.shape[1]
+    cache_key = (T, preds.device)
+    if cache_key not in _horizon_weights_cache:
+        hw = torch.arange(T, dtype=torch.float32,
+                          device=preds.device)
+        hw = base_weight + horizon_scale * hw
+        hw = hw / hw.mean()  # 归一化使均值为1
+        _horizon_weights_cache[cache_key] = hw.unsqueeze(0).unsqueeze(-1)
+    horizon_w = _horizon_weights_cache[cache_key]
+
+    # weighted MAE
+    weighted_residual = residual * horizon_w
+    weighted_loss = weighted_residual * mask
+    weighted_loss = torch.where(
+        torch.isnan(weighted_loss),
+        torch.zeros_like(weighted_loss), weighted_loss)
+
+    # gradient-scaled penalty: 大残差额外惩罚
+    with torch.no_grad():
+        residual_std = residual[mask.bool()].std().clamp(min=0.1)
+    penalty = grad_penalty * (residual / residual_std).pow(2)
+    penalty = penalty * mask
+    penalty = torch.where(
+        torch.isnan(penalty),
+        torch.zeros_like(penalty), penalty)
+
+    total = torch.mean(weighted_loss) + torch.mean(penalty)
+
+    _dbg("cascade_loss.weighted_mae",
+         torch.mean(weighted_loss), "loss")
+    _dbg("cascade_loss.penalty",
+         torch.mean(penalty), "loss")
+    _dbg("cascade_loss.horizon_range",
+         f"[{horizon_w.min().item():.3f}, "
+         f"{horizon_w.max().item():.3f}]", "loss")
+
+    return total
 
 
-# ---- 改动4: metric 返回4元组 ----
+class LogCoshHorizonLoss(torch.nn.Module):
+    """融合: LogCosh平滑梯度 + cascade的horizon-weighted策略
+    LogCosh: 小误差像MSE(平滑), 大误差像MAE(鲁棒)
+    Horizon权重: 远期预测权重递增
+    """
+
+    def __init__(self, init_temperature=1.0, horizon_scale=0.1):
+        super().__init__()
+        self.log_temperature = torch.nn.Parameter(
+            torch.tensor(np.log(init_temperature)))
+        self.horizon_scale = horizon_scale
+
+    def forward(self, preds, labels, null_val=0.0):
+        mask = (labels != null_val).float()
+        mask = mask / (mask.mean() + 1e-8)
+        mask = torch.where(torch.isnan(mask),
+                          torch.zeros_like(mask), mask)
+
+        T = self.log_temperature.exp().clamp(min=0.1, max=10.0)
+        diff = (preds - labels) / T
+        loss = T * torch.log(torch.cosh(diff.clamp(-20, 20)))
+
+        # horizon weighting
+        num_horizons = preds.shape[1]
+        hw = torch.arange(num_horizons, dtype=torch.float32,
+                          device=preds.device)
+        hw = 1.0 + self.horizon_scale * hw
+        hw = hw / hw.mean()
+        hw = hw.unsqueeze(0).unsqueeze(-1)
+        loss = loss * hw
+
+        loss = loss * mask
+        loss = torch.where(torch.isnan(loss),
+                          torch.zeros_like(loss), loss)
+
+        _dbg("logcosh_horizon/temperature", T, "loss")
+        return torch.mean(loss)
+
+
 def metric(pred, real):
     mae = masked_mae(pred, real, 0.0).item()
     mape = masked_mape(pred, real, 0.0).item()
     rmse = masked_rmse(pred, real, 0.0).item()
-    huber = masked_huber_logcosh(pred, real, 0.0).item()
-    _dbg(_TAG, "metric", mae=torch.tensor(mae), mape=torch.tensor(mape),
-         rmse=torch.tensor(rmse), huber=torch.tensor(huber))
-    return mae, mape, rmse, huber
-
-
-def temporal_consistency_penalty(preds, labels, null_val=np.nan, alpha=0.1):
-    """惩罚相邻时间步预测值的剧烈跳变.
-
-    交通流量在相邻 5-min 时间片之间通常平滑变化，
-    预测序列中的突变往往是过拟合噪声的信号。
-    penalty = α * mean(|pred[t+1] - pred[t]| - |real[t+1] - real[t]|)_+
-    只惩罚预测比真值更"抖"的情况，不惩罚真实存在的突变。
-    """
-    if preds.dim() < 2 or preds.shape[1] < 2:
-        return torch.tensor(0.0, device=preds.device)
-    pred_diff = torch.abs(preds[:, 1:, :] - preds[:, :-1, :])
-    real_diff = torch.abs(labels[:, 1:, :] - labels[:, :-1, :])
-    excess = torch.clamp(pred_diff - real_diff, min=0.0)
-    penalty = alpha * torch.mean(excess)
-    _dbg(_TAG, "temporal_penalty", penalty=penalty,
-         pred_roughness=pred_diff.mean(), real_roughness=real_diff.mean())
-    return penalty
+    return mae, mape, rmse
