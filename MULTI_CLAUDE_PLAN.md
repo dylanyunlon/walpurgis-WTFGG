@@ -217,3 +217,43 @@
 - 因果窗口流式推理、粗细渐进解码、Focal loss
 
 所有变体已push到main, git author = dylanyunlon <dogechat@163.com>
+
+---
+
+## 第三轮调度 (2026-06-08)
+
+### 第十三位Claude (管理者/开发者): M048 ✅ COMPLETE
+- 创建 walpurgis_meridian (40文件, 2290行)
+- 算法: bilinear EstimationGate + Mish, gated ResidualDecomp, Lanczos spectral filter + GLU,
+  cosine similarity DynGraph, adaptive soft-threshold mask, symmetric normalizer,
+  HighwayGRU + FrequencyPE + RelPosTransformer, GEGLU output + softmax aggregation,
+  focal loss with annealing, AdamW + ReduceLROnPlateau, trend-aware EarlyStopping
+- SYNTH test通过 (MAE=3.35, RMSE=4.80, MAPE=4.89%)
+- Commit: f0e7326, push成功
+
+### 第十四位Claude (Opus 4.6): M049 ⏳ DISPATCHING
+- 变体: walpurgis_penumbra (半影)
+- 算法: squeeze-excitation gate, PowerNorm+Swish decomp, Chebyshev polynomial+SpectralNorm conv,
+  Mahalanobis distance, Bernoulli mask, Sinkhorn normalizer, MinGRU+cross-attention,
+  EMA decay aggregation, log-cosh loss, Adan+OneCycleLR
+- 对话: 待配额恢复后调度
+- Prompt: /tmp/subclaude_prompt_penumbra.txt
+
+### 第十五位Claude (Opus 4.6): M050 ⏳ PENDING
+- 变体: walpurgis_corona (日冕)
+- 算法: gated attention pooling+SiLU, EMA decomp, attention-weighted graph conv,
+  learned metric embedding, top-k sparse mask, alternating normalizer,
+  LSTM+RoPE, gated residual aggregation, quantile loss, RAdam+CosineAnnealing
+- Prompt: /tmp/subclaude_prompt_corona.txt
+
+### 第十六位Claude (Opus 4.6): M051 ⏳ PENDING
+- 变体: walpurgis_umbra (本影)
+- 算法: MoE gating, Haar wavelet decomp, random walk diffusion+restart,
+  hyperbolic Poincaré distance, differentiable top-k, PageRank normalizer,
+  Mamba SSM+ALiBi, DenseNet skip connections, adaptive Huber loss, LAMB+polynomial decay
+- Prompt: /tmp/subclaude_prompt_umbra.txt
+
+### 配额状态
+- ORG1: 6bbaaedb... (59/60已用, 恢复时间: 2026-06-08 15:08:01 CST)
+- ORG2: 9b279708... (共享配额, 同上)
+- 计划: 配额恢复后依次调度M049→M050→M051
