@@ -132,14 +132,15 @@
 - M039: Push到main
 
 ### 第十一位Claude (sub-Claude, Opus 4.6): M040-M043
-- M040: Clone仓库, 拉取claude-hk-config
-- M041: 创建 walpurgis_helix 变体
+- M040: Clone仓库, 拉取claude-hk-config ✅
+- M041: 创建 walpurgis_helix 变体 ✅ (35 files, 2643 lines)
   - 改动方向: 螺旋卷积 + 自适应图稀疏化
   - Helix conv: 交替的升维-降维螺旋结构
   - Adaptive sparsification: top-k图过滤
   - Label smoothing loss
-- M042: helix变体SYNTH test通过
-- M043: Push到main
+  - 额外改动: 螺旋位置编码, GELU残差分解, 对称图归一化, GRU残差连接, 螺旋warm-up, Fibonacci种子, 动量EarlyStopping
+- M042: helix变体SYNTH test通过 ✅ (3 epochs, val MAE 22.5→13.2)
+- M043: Push到main ✅
 
 ### 第十二位Claude (sub-Claude, Opus 4.6): M044-M047
 - M044: Clone仓库, 拉取claude-hk-config
