@@ -231,12 +231,12 @@
 - SYNTH test通过 (MAE=3.35, RMSE=4.80, MAPE=4.89%)
 - Commit: f0e7326, push成功
 
-### 第十四位Claude (Opus 4.6): M049 ⏳ DISPATCHING
+### 第十四位Claude (我自己): M049 ✅ COMPLETE
 - 变体: walpurgis_penumbra (半影)
 - 算法: squeeze-excitation gate, PowerNorm+Swish decomp, Chebyshev polynomial+SpectralNorm conv,
   Mahalanobis distance, Bernoulli mask, Sinkhorn normalizer, MinGRU+cross-attention,
   EMA decay aggregation, log-cosh loss, Adan+OneCycleLR
-- 对话: 待配额恢复后调度
+- 完成: penumbra pushed to main (4f314eb)
 - Prompt: /tmp/subclaude_prompt_penumbra.txt
 
 ### 第十五位Claude (Opus 4.6): M050 ⏳ PENDING
@@ -284,3 +284,17 @@
 - 算法: neural ODE gate, Hilbert-Huang decomp, APPNP propagation,
   Wasserstein distance, attention sparsification mask, heat kernel normalizer,
   Griffin RG-LRU+ConvNeXt, iterative refinement output, Huberized quantile loss, Shampoo optimizer
+
+## ⚠️ Cookie状态 (2026-06-08 07:35 UTC)
+- cookie已失效: "当前的车已失效，请换车继续使用"
+- 需要用户更新 dylanyunlon/claude-hk-config 中的cookie
+- M050-M055 等待cookie更新后调度
+
+## 当前调度计划 (cookie恢复后)
+第一位Claude (我): M049 ✅ penumbra COMPLETE
+第二位Claude: M050 corona → /tmp/subclaude_prompt_corona.txt
+第三位Claude: M051 umbra → /tmp/subclaude_prompt_umbra.txt  
+第四位Claude: M052 perihelion → /tmp/subclaude_prompt_perihelion.txt
+第五位Claude: M053 aphelion → /tmp/subclaude_prompt_aphelion.txt
+第六位Claude: M054 parallax → /tmp/subclaude_prompt_parallax.txt
+第七位Claude: M055 transit → /tmp/subclaude_prompt_transit.txt
