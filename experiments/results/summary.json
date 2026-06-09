@@ -6,18 +6,12 @@
     "epochs": "N/A",
     "params": 3288309
   },
-  "walpurgis_METR-LA_20260609_110422": {
-    "MAE": 2.9,
-    "RMSE": 5.91,
-    "MAPE": 7.91,
-    "epochs": 38,
-    "params": 2016202
-  },
-  "walpurgis_METR-LA_20260609_110426": {
+  "experiment_SYNTH_20260609_110537": {
     "MAE": "N/A",
     "RMSE": "N/A",
     "MAPE": "N/A",
     "epochs": "N/A",
-    "params": "N/A"
+    "params": "N/A",
+    "status": "no_test_metrics"
   }
 }

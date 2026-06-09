@@ -69,7 +69,7 @@ class trainer():
         # CosineAnnealingWarmRestarts — stepped per epoch (not per batch)
         self.lr_scheduler = (
             torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
-                self.optimizer, T_0=15, T_mult=2, eta_min=1e-5
+                self.optimizer, T_0=30, T_mult=2, eta_min=5e-6
             ) if self.if_lr_scheduler else None)
 
         # Loss: primary MAE + auxiliary LogCosh with horizon weighting
