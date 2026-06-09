@@ -38,8 +38,8 @@ run_d2stgnn() {
     # 每次从 upstream 同步最新代码
     cp -r upstream/d2stgnn/* "$BDIR/"
 
-    # 确保数据链接 (删旧建新, 不吞错误)
-    rm -f "$BDIR/datasets"
+    # 确保数据链接 (upstream 有空的 datasets/, cp 会覆盖 symlink)
+    rm -rf "$BDIR/datasets"
     ln -s "$REPO_DIR/datasets" "$BDIR/datasets"
     echo "  Data symlink: $BDIR/datasets -> $REPO_DIR/datasets"
     ls "$BDIR/datasets/METR-LA/train.npz" > /dev/null || { echo "ERROR: data symlink broken"; return 1; }
