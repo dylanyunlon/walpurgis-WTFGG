@@ -35,6 +35,7 @@ echo "[Phase 2] Launching parallel training..."
 
 WALPURGIS_RUN_ID="walpurgis_METR-LA_${TIMESTAMP}"
 WALPURGIS_RESULT_DIR="experiments/results/${WALPURGIS_RUN_ID}"
+export WALPURGIS_RUN_ID WALPURGIS_RESULT_DIR
 mkdir -p "$WALPURGIS_RESULT_DIR"
 
 PIDS=()
@@ -154,10 +155,10 @@ PYEVAL
 echo ""
 echo "[Phase 4] Pushing results to git..."
 cd "$REPO_DIR"
+git pull --rebase origin main 2>/dev/null || git pull origin main 2>/dev/null || true
 git add experiments/results/
 git commit -m "experiment: METR-LA full run $(date '+%Y-%m-%d %H:%M')" || true
-git pull --rebase origin main 2>/dev/null || true
-git push origin main || echo "Push failed"
+git push origin main || { echo "Retrying push after pull..."; git pull --rebase origin main && git push origin main; } || echo "Push failed"
 
 echo ""
 echo "============================================"
