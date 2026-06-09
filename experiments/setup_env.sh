@@ -48,11 +48,23 @@ else
     echo "  PEMS-BAY: download needed (see README)"
 fi
 
-# ── 4. 验证 + 补装缺失依赖 ────────────────────────────
+# ── 4. 验证 + 修复依赖 ────────────────────────────────
 echo "[4/4] Verification..."
 python3 << 'PYCHECK'
 import subprocess, sys, os
 
+# scipy 1.15+ 需要 numpy >= 2.0, 但 torch 2.7+cu118 绑定 numpy 1.26
+# 检测并修复这个不兼容
+import numpy as np
+try:
+    import scipy.special
+except (ValueError, ImportError):
+    print(f'scipy/numpy 不兼容 (numpy {np.__version__}), 降级 scipy...')
+    subprocess.check_call([sys.executable, '-m', 'pip', 'install', '-q', 'scipy==1.13.1'])
+    import importlib, scipy
+    importlib.reload(scipy)
+
+# 安装缺失的核心依赖
 required = {'torch': 'torch', 'numpy': 'numpy', 'scipy': 'scipy', 'yaml': 'pyyaml'}
 missing = []
 for mod, pkg in required.items():
@@ -60,16 +72,14 @@ for mod, pkg in required.items():
         __import__(mod)
     except ImportError:
         missing.append(pkg)
-
 if missing:
-    print(f'Installing missing runtime deps: {missing}')
+    print(f'Installing: {missing}')
     subprocess.check_call([sys.executable, '-m', 'pip', 'install', '-q'] + missing)
-    # 验证安装成功
-    for mod in required:
-        __import__(mod)
 
 import torch
-print(f'PyTorch {torch.__version__}  CUDA {torch.version.cuda}  Available: {torch.cuda.is_available()}')
+print(f'PyTorch {torch.__version__}  CUDA {torch.version.cuda}  numpy {np.__version__}')
+import scipy
+print(f'scipy {scipy.__version__}  Available: {torch.cuda.is_available()}')
 for i in range(torch.cuda.device_count()):
     p = torch.cuda.get_device_properties(i)
     mem = getattr(p, 'total_memory', None) or getattr(p, 'total_mem', 0)
