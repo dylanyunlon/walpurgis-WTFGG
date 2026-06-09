@@ -59,7 +59,7 @@ print(f'Config updated: epochs=100, device=cuda:0')
 "
 
     CUDA_VISIBLE_DEVICES="$GPU" python3 main.py --dataset "$DATASET" \
-        2>&1 | tee "$BDIR/train_${DATASET}.log"
+        2>&1 | tee "train_${DATASET}.log"
     cd "$REPO_DIR"
 }
 

@@ -48,30 +48,31 @@ else
     echo "  PEMS-BAY: download needed (see README)"
 fi
 
-# ── 4. 验证 ────────────────────────────────────────────
-# ── 4. 验证 ────────────────────────────────────────────
+# ── 4. 验证 + 补装缺失依赖 ────────────────────────────
 echo "[4/4] Verification..."
 python3 << 'PYCHECK'
-import sys, os
+import subprocess, sys, os
 
-required = ['torch', 'numpy', 'scipy', 'yaml', 'pandas']
+required = {'torch': 'torch', 'numpy': 'numpy', 'scipy': 'scipy', 'yaml': 'pyyaml', 'pandas': 'pandas'}
 missing = []
-for mod in required:
+for mod, pkg in required.items():
     try:
         __import__(mod)
     except ImportError:
-        missing.append(mod)
+        missing.append(pkg)
 
 if missing:
-    fix = ' '.join(m if m != 'yaml' else 'pyyaml' for m in missing)
-    print(f'WARNING: missing packages: {missing}')
-    print(f'Fix:   pip install {fix}')
-else:
-    import torch
-    print(f'PyTorch {torch.__version__}  CUDA {torch.version.cuda}  Available: {torch.cuda.is_available()}')
-    for i in range(torch.cuda.device_count()):
-        p = torch.cuda.get_device_properties(i)
-        print(f'  GPU{i}: {p.name}  {p.total_mem/(1024**3):.0f}GB  cc={p.major}.{p.minor}')
+    print(f'Installing missing runtime deps: {missing}')
+    subprocess.check_call([sys.executable, '-m', 'pip', 'install', '-q'] + missing)
+    # 验证安装成功
+    for mod in required:
+        __import__(mod)
+
+import torch
+print(f'PyTorch {torch.__version__}  CUDA {torch.version.cuda}  Available: {torch.cuda.is_available()}')
+for i in range(torch.cuda.device_count()):
+    p = torch.cuda.get_device_properties(i)
+    print(f'  GPU{i}: {p.name}  {p.total_mem/(1024**3):.0f}GB  cc={p.major}.{p.minor}')
 
 import numpy as np
 for ds in ['METR-LA', 'PEMS-BAY']:
