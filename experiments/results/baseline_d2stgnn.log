@@ -7,6 +7,6 @@ Traceback (most recent call last):
     from models.losses import *
   File "/data/jiacheng/system/cache/temp/atc2026/walpurgis-WTFGG/experiments/baselines/d2stgnn/models/__init__.py", line 2, in <module>
     from models.trainer import trainer
-  File "/data/jiacheng/system/cache/temp/atc2026/walpurgis-WTFGG/experiments/baselines/d2stgnn/models/trainer.py", line 5, in <module>
-    from torchinfo.torchinfo import summary
-ModuleNotFoundError: No module named 'torchinfo'
+  File "/data/jiacheng/system/cache/temp/atc2026/walpurgis-WTFGG/experiments/baselines/d2stgnn/models/trainer.py", line 6, in <module>
+    from sklearn.metrics import mean_absolute_error
+ModuleNotFoundError: No module named 'sklearn'
