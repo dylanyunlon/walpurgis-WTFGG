@@ -1,0 +1,43 @@
+{
+  "server": "ags1",
+  "gpus": ["H100 NVL (93GB HBM2e)", "A6000 (47.5GB GDDR6)", "A6000 (47.5GB GDDR6)"],
+  "cpu": "2x AMD EPYC 9354 128-core",
+  "E1_bandwidth_256MB_GBps": {
+    "H100_to_A6000_0": 23.86, "A6000_0_to_H100": 23.65,
+    "H100_to_A6000_1": 24.53, "A6000_1_to_H100": 24.52,
+    "H100_to_DRAM": 25.24, "DRAM_to_H100": 25.01,
+    "A6000_0_to_DRAM": 53.99, "DRAM_to_A6000_0": 53.64,
+    "A6000_0_to_A6000_1": 23.61, "A6000_1_to_A6000_0": 23.86
+  },
+  "E2_placement": {
+    "edges": 10000000, "partitions": 20,
+    "sort_ms": 838, "placement_ms": 67,
+    "tiers": {"H100_HBM": 5, "A6000_0": 5, "A6000_1": 5, "DRAM": 5}
+  },
+  "E3_query_latency": {
+    "narrow_50": {"edges": 12869, "total_ms": 2.2, "ns_per_edge": 174},
+    "medium_1000": {"edges": 950900, "total_ms": 5.0, "ns_per_edge": 5.2},
+    "wide_5000": {"edges": 4949981, "total_ms": 59.7, "ns_per_edge": 12.1},
+    "full_10000": {"edges": 10000000, "total_ms": 120.8, "ns_per_edge": 12.1}
+  },
+  "E4_migration_5M_edges": {
+    "DRAM_to_H100": {"ms": 5.96, "GBps": 25.02},
+    "DRAM_to_A6000": {"ms": 2.78, "GBps": 53.68},
+    "H100_to_A6000": {"ms": 6.25, "GBps": 23.85},
+    "H100_to_DRAM": {"ms": 5.90, "GBps": 25.25}
+  },
+  "E5_concurrent": {
+    "query_only_40K": {"qps": 1967, "edges_scanned": 4040666278}
+  },
+  "cpu_bench": {
+    "narrow_1302edges": {"us": 4.6, "ns_per_edge": 3.53},
+    "medium_95K_edges": {"us": 146.8, "ns_per_edge": 1.55},
+    "wide_495K_edges": {"us": 755.9, "ns_per_edge": 1.53},
+    "concurrent_40K_queries": {"qps": 39148}
+  },
+  "partition_selection": {
+    "P8000_narrow_speedup": 1.7,
+    "P8000_medium_speedup": 1.3,
+    "P8000_wide_speedup": 1.2
+  }
+}
