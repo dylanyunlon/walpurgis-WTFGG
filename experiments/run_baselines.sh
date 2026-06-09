@@ -2,6 +2,7 @@
 # experiments/run_baselines.sh — 下载并运行 D2STGNN/STAEFormer 基线
 # 用法: bash experiments/run_baselines.sh [--gpu 0] [--model d2stgnn|staeformer|all]
 set -euo pipefail
+export CUDA_DEVICE_ORDER=PCI_BUS_ID
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_DIR"

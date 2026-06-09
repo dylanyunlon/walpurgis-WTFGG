@@ -3,6 +3,7 @@
 # 用法: bash experiments/run_metrla.sh [--gpu 0] [--epochs 100] [--tag baseline]
 # 结果自动写入 experiments/results/ 并 push 到 git
 set -euo pipefail
+export CUDA_DEVICE_ORDER=PCI_BUS_ID
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_DIR"

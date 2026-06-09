@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
 # experiments/run_all.sh — 全流程: 基线 + Walpurgis 并行训练 + 评估 + push
 # 在 ags1 上运行: nohup bash experiments/run_all.sh &
-# GPU 分配: GPU0 (A6000) = D2STGNN baseline
-#           GPU1 (A6000) = STAEFormer baseline
-#           GPU2 (H100)  = Walpurgis (我们的模型, 需要最多显存)
+# GPU 分配 (PCI_BUS_ID 顺序, 与 nvidia-smi 一致):
+#   GPU0 (A6000 48GB) = D2STGNN baseline
+#   GPU1 (A6000 48GB) = 消融实验 (预留)
+#   GPU2 (H100  96GB) = Walpurgis 主实验
 set -euo pipefail
+
+# 关键: 对齐 PyTorch 和 nvidia-smi 的 GPU 编号
+export CUDA_DEVICE_ORDER=PCI_BUS_ID
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_DIR"
