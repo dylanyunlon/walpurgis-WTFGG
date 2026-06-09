@@ -141,6 +141,7 @@ class LogCoshHorizonLoss(torch.nn.Module):
     """融合: LogCosh平滑梯度 + cascade的horizon-weighted策略
     LogCosh: 小误差像MSE(平滑), 大误差像MAE(鲁棒)
     Horizon权重: 远期预测权重递增
+    自适应温度: 早期高温(平滑)→后期低温(精确)
     """
 
     def __init__(self, init_temperature=1.0, horizon_scale=0.1):
@@ -148,6 +149,12 @@ class LogCoshHorizonLoss(torch.nn.Module):
         self.log_temperature = torch.nn.Parameter(
             torch.tensor(np.log(init_temperature)))
         self.horizon_scale = horizon_scale
+        self._epoch = 0
+        self._temp_schedule_alpha = 0.02  # 温度退火速率
+
+    def set_epoch(self, epoch):
+        """由trainer每epoch调用,驱动自适应温度"""
+        self._epoch = epoch
 
     def forward(self, preds, labels, null_val=0.0):
         mask = (labels != null_val).float()
@@ -155,7 +162,11 @@ class LogCoshHorizonLoss(torch.nn.Module):
         mask = torch.where(torch.isnan(mask),
                           torch.zeros_like(mask), mask)
 
-        T = self.log_temperature.exp().clamp(min=0.1, max=10.0)
+        # 自适应温度: sigmoid退火 — 早期T大(平滑),后期T小(精确)
+        epoch_factor = 1.0 / (1.0 + np.exp(self._temp_schedule_alpha * (self._epoch - 50)))
+        T_base = self.log_temperature.exp().clamp(min=0.1, max=10.0)
+        T = T_base * (0.3 + 0.7 * epoch_factor)  # T范围: [0.3*base, base]
+
         diff = (preds - labels) / T
         loss = T * torch.log(torch.cosh(diff.clamp(-20, 20)))
 
@@ -173,6 +184,8 @@ class LogCoshHorizonLoss(torch.nn.Module):
                           torch.zeros_like(loss), loss)
 
         _dbg("logcosh_horizon/temperature", T, "loss")
+        _dbg("logcosh_horizon/epoch_factor",
+             f"epoch={self._epoch} factor={epoch_factor:.4f}", "loss")
         return torch.mean(loss)
 
 

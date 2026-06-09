@@ -11,7 +11,7 @@ export CUDA_DEVICE_ORDER=PCI_BUS_ID
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_DIR"
-export GIT_TOKEN="${GIT_TOKEN:-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}"
+export GIT_TOKEN="${GIT_TOKEN:-${GIT_TOKEN}}"
 
 git remote set-url origin "https://x-access-token:${GIT_TOKEN}@github.com/dylanyunlon/walpurgis-WTFGG.git" 2>/dev/null || true
 

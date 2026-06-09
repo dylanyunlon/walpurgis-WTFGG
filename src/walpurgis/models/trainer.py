@@ -99,6 +99,9 @@ class trainer():
         self._current_epoch = epoch
         if self.lr_scheduler is not None:
             self.lr_scheduler.step(epoch)
+        # 同步LogCosh自适应温度
+        if hasattr(self.logcosh_loss, 'set_epoch'):
+            self.logcosh_loss.set_epoch(epoch)
 
     def _node_dropout(self, x):
         """Training-time node dropout: randomly zero out ~10% of nodes.
@@ -151,6 +154,18 @@ class trainer():
         output = output.transpose(1, 2)
         self.perf.stop("forward")
 
+        # ── 断点调试: forward阶段状态 ──
+        if _is_debug() and self._global_step % 10 == 0:
+            dump_struct_state(
+                f"forward_step_{self._global_step}",
+                input_shape=input.shape if isinstance(input, torch.Tensor) else str(type(input)),
+                output_shape=output,
+                output_has_nan=torch.isnan(output).any().item(),
+                output_range_min=output.min().item(),
+                output_range_max=output.max().item(),
+                output_mean=output.mean().item(),
+                output_std=output.std().item())
+
         # curriculum learning: sigmoid ramp
         batch_num = kwargs['batch_num']
         if batch_num < self.warm_steps:
@@ -185,13 +200,33 @@ class trainer():
         # No depth gate regularization — let gates learn freely from init=3.0 (≈0.95)
         loss = mae_loss / self._grad_accum_steps
         self.perf.stop("loss")
+
+        # ── 断点调试: loss阶段状态 ──
+        if _is_debug() and self._global_step % 10 == 0:
+            dump_struct_state(
+                f"loss_step_{self._global_step}",
+                mae_loss=mae_loss.item(),
+                total_loss=loss.item(),
+                cl_len=self.cl_len,
+                predict_range_min=predict.min().item(),
+                predict_range_max=predict.max().item(),
+                real_val_range_min=real_val_s.min().item(),
+                real_val_range_max=real_val_s.max().item())
+
         self.perf.start("backward")
         loss.backward()
 
         if self._accum_count >= self._grad_accum_steps:
             # Single gradient clip — simple and effective
             if self.clip is not None:
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.clip)
+                total_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.clip)
+                # ── 断点调试: backward阶段状态 ──
+                if _is_debug() and self._global_step % 10 == 0:
+                    dump_struct_state(
+                        f"backward_step_{self._global_step}",
+                        grad_total_norm=total_norm.item() if isinstance(total_norm, torch.Tensor) else total_norm,
+                        clip_threshold=self.clip,
+                        was_clipped=total_norm > self.clip if isinstance(total_norm, (int, float)) else (total_norm.item() > self.clip))
             self.optimizer.step()
             # LR scheduler is now stepped per-epoch from training loop, not here
             self._accum_count = 0

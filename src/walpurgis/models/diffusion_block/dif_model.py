@@ -35,11 +35,25 @@ class STLocalizedConv(nn.Module):
     def gconv(self, support, X_k, X_0):
         out = [X_0]
         for graph in support:
-            if len(graph.shape) == 2:  # staitic or predefined graph
+            if len(graph.shape) == 2:  # static or predefined graph
                 pass
             else:
                 graph = graph.unsqueeze(1)
-            H_k = torch.matmul(graph, X_k)
+            # 分块图卷积: 沿node维度分chunk执行matmul，降低内存峰值
+            N = X_k.shape[-2]
+            chunk_size = max(N // 4, 64)
+            if N > chunk_size and len(graph.shape) >= 2:
+                H_k_chunks = []
+                for ci in range(0, N, chunk_size):
+                    ce = min(ci + chunk_size, N)
+                    if len(graph.shape) == 2:
+                        g_slice = graph[ci:ce, :]
+                    else:
+                        g_slice = graph[..., ci:ce, :]
+                    H_k_chunks.append(torch.matmul(g_slice, X_k))
+                H_k = torch.cat(H_k_chunks, dim=-2)
+            else:
+                H_k = torch.matmul(graph, X_k)
             out.append(H_k)
         out = torch.cat(out, dim=-1)
         out = self.gcn_updt(out)

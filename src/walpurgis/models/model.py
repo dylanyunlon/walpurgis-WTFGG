@@ -71,6 +71,8 @@ class DecoupleLayer(nn.Module):
         self.se_block = SqueezeExcitation(hidden_dim, reduction=4)
         # 每层到cascade输出的投影 (用于cascade residual)
         self.cascade_proj = nn.Linear(hidden_dim, fk_dim)
+        # 频率域残差门控: 从cascade特征中提取周期性成分注回
+        self.freq_gate = nn.Parameter(torch.tensor(0.1))
         self._gap = model_args.get('gap', 3)
         self._seq_length = model_args.get('seq_length', 12)
 
@@ -118,6 +120,15 @@ class DecoupleLayer(nn.Module):
         cascade_feat = inh_backcast_seq_res.mean(dim=1, keepdim=True)  # [B, 1, N, D]
         fk_len = self._seq_length // self._gap
         cascade_residual = self.cascade_proj(cascade_feat)  # [B, 1, N, fk_dim]
+        # 频率域残差注入: 提取cascade_feat周期成分，增强长程pattern捕获
+        freq_input = cascade_feat.squeeze(1)  # [B, N, D]
+        if freq_input.shape[-1] > 1:
+            cascade_fft = torch.fft.rfft(freq_input, dim=-1)
+            freq_mag = cascade_fft.abs().mean()
+            freq_recon = torch.fft.irfft(cascade_fft, n=freq_input.shape[-1], dim=-1)
+            freq_proj = self.cascade_proj(freq_recon).unsqueeze(1)  # [B, 1, N, fk_dim]
+            cascade_residual = cascade_residual + self.freq_gate * freq_proj
+            _dbg(f"decouple_L{self.layer_idx}.freq_mag", freq_mag, "model")
         cascade_residual = cascade_residual.expand(-1, fk_len, -1, -1)  # [B, fk_len, N, fk_dim]
         _dbg(f"decouple_L{self.layer_idx}.se_weights",
              se_weights, "model")
