@@ -1,15 +1,15 @@
 ============================================
  Walpurgis Training Run
- ID:      walpurgis_METR-LA_20260609_040836
+ ID:      walpurgis_METR-LA_20260609_042801
  Dataset: METR-LA
  GPU:     2
  Epochs:  100
  Seed:    42
 ============================================
-[TRAIN] Starting at 04:08:36...
+[TRAIN] Starting at 04:28:01...
 /data/jiacheng/system/cache/temp/atc2026/walpurgis-WTFGG/src/walpurgis/utils/cal_adj.py:68: RuntimeWarning: divide by zero encountered in power
   d_inv = np.power(rowsum, -1).flatten()
-[CAS:log] dir=log/2026-06-09-04:08:40
+[CAS:log] dir=log/2026-06-09-04:28:05
 
 ============================================================
   Walpurgis Training Pipeline
@@ -19,7 +19,7 @@
   Debug   : False
 ============================================================
 
-Loaded dataset: 2.61s
+Loaded dataset: 2.57s
 Loaded adj: 0.00s
 =============== model args =================
 |          batch_size:|                  32|
@@ -62,10 +62,16 @@ Traceback (most recent call last):
     main()
   File "/data/jiacheng/system/cache/temp/atc2026/walpurgis-WTFGG/train_walpurgis.py", line 338, in main
     run(args.dataset, args.device,
-  File "/data/jiacheng/system/cache/temp/atc2026/walpurgis-WTFGG/train_walpurgis.py", line 225, in run
-    trainx = data_reshaper(x, device)
-             ^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/data/jiacheng/system/cache/temp/atc2026/walpurgis-WTFGG/src/walpurgis/utils/train.py", line 117, in data_reshaper
-    data = torch.from_numpy(data).to(device)
-           ^^^^^^^^^^^^^^^^^^^^^^
-TypeError: expected np.ndarray (got numpy.ndarray)
+  File "/data/jiacheng/system/cache/temp/atc2026/walpurgis-WTFGG/train_walpurgis.py", line 227, in run
+    mae, mape, rmse = engine.train(
+                      ^^^^^^^^^^^^^
+  File "/data/jiacheng/system/cache/temp/atc2026/walpurgis-WTFGG/src/walpurgis/models/trainer.py", line 154, in train
+    predict = self.scaler.inverse_transform(output)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/data/jiacheng/system/cache/temp/atc2026/walpurgis-WTFGG/src/walpurgis/utils/load_data.py", line 38, in inverse_transform
+    return (data * self.std) + self.mean
+            ~~~~~^~~~~~~~~~
+  File "/home/jiacheng/anaconda3/envs/walking3/lib/python3.12/site-packages/torch/_tensor.py", line 1225, in __array__
+    return self.numpy()
+           ^^^^^^^^^^^^
+TypeError: can't convert cuda:0 device type tensor to numpy. Use Tensor.cpu() to copy the tensor to host memory first.

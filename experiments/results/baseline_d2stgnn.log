@@ -3,10 +3,15 @@
 ============================================
 Config updated: epochs=100, device=cuda:0
 Traceback (most recent call last):
-  File "/data/jiacheng/system/cache/temp/atc2026/walpurgis-WTFGG/experiments/baselines/d2stgnn/main.py", line 12, in <module>
-    from models.losses import *
-  File "/data/jiacheng/system/cache/temp/atc2026/walpurgis-WTFGG/experiments/baselines/d2stgnn/models/__init__.py", line 2, in <module>
-    from models.trainer import trainer
-  File "/data/jiacheng/system/cache/temp/atc2026/walpurgis-WTFGG/experiments/baselines/d2stgnn/models/trainer.py", line 6, in <module>
-    from sklearn.metrics import mean_absolute_error
-ModuleNotFoundError: No module named 'sklearn'
+  File "/data/jiacheng/system/cache/temp/atc2026/walpurgis-WTFGG/experiments/baselines/d2stgnn/main.py", line 178, in <module>
+    main()
+  File "/data/jiacheng/system/cache/temp/atc2026/walpurgis-WTFGG/experiments/baselines/d2stgnn/main.py", line 57, in main
+    dataloader  = load_dataset(data_dir, batch_size, batch_size, batch_size, dataset_name)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/data/jiacheng/system/cache/temp/atc2026/walpurgis-WTFGG/experiments/baselines/d2stgnn/utils/load_data.py", line 131, in load_dataset
+    _   = np.load(os.path.join(data_dir, mode + '.npz'))
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/jiacheng/anaconda3/envs/walking3/lib/python3.12/site-packages/numpy/lib/npyio.py", line 427, in load
+    fid = stack.enter_context(open(os_fspath(file), "rb"))
+                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: 'datasets/METR-LA/train.npz'
