@@ -49,21 +49,39 @@ else
 fi
 
 # ── 4. 验证 ────────────────────────────────────────────
+# ── 4. 验证 ────────────────────────────────────────────
 echo "[4/4] Verification..."
-python3 -c "
-import torch, numpy, scipy, yaml
-print(f'PyTorch {torch.__version__}  CUDA {torch.version.cuda}  Available: {torch.cuda.is_available()}')
-for i in range(torch.cuda.device_count()):
-    p = torch.cuda.get_device_properties(i)
-    print(f'  GPU{i}: {p.name}  {p.total_mem/(1024**3):.0f}GB  cc={p.major}.{p.minor}')
+python3 << 'PYCHECK'
+import sys, os
+
+required = ['torch', 'numpy', 'scipy', 'yaml', 'pandas']
+missing = []
+for mod in required:
+    try:
+        __import__(mod)
+    except ImportError:
+        missing.append(mod)
+
+if missing:
+    fix = ' '.join(m if m != 'yaml' else 'pyyaml' for m in missing)
+    print(f'WARNING: missing packages: {missing}')
+    print(f'Fix:   pip install {fix}')
+else:
+    import torch
+    print(f'PyTorch {torch.__version__}  CUDA {torch.version.cuda}  Available: {torch.cuda.is_available()}')
+    for i in range(torch.cuda.device_count()):
+        p = torch.cuda.get_device_properties(i)
+        print(f'  GPU{i}: {p.name}  {p.total_mem/(1024**3):.0f}GB  cc={p.major}.{p.minor}')
+
 import numpy as np
 for ds in ['METR-LA', 'PEMS-BAY']:
-    try:
-        d = np.load(f'datasets/{ds}/test.npz')
-        print(f'{ds}: x={d[\"x\"].shape}  y={d[\"y\"].shape}')
-    except:
+    path = f'datasets/{ds}/test.npz'
+    if os.path.isfile(path):
+        d = np.load(path)
+        print(f'{ds}: x={d["x"].shape}  y={d["y"].shape}')
+    else:
         print(f'{ds}: NOT READY')
-"
+PYCHECK
 
 echo ""
 echo "============================================"

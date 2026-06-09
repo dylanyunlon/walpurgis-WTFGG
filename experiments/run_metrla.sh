@@ -101,13 +101,16 @@ result = {
 # 如果训练产出了 metrics.csv, 解析最终结果
 metrics_path = '${RESULT_DIR}/metrics.csv'
 if os.path.exists(metrics_path):
-    import pandas as pd
-    df = pd.read_csv(metrics_path)
-    best = df.loc[df['val_mae'].idxmin()]
-    result['best_epoch'] = int(best.get('epoch', -1))
-    result['best_val_mae'] = float(best['val_mae'])
-    result['best_val_rmse'] = float(best.get('val_rmse', 0))
-    print(f'Best epoch: {result[\"best_epoch\"]}  val_MAE: {result[\"best_val_mae\"]:.4f}')
+    import csv
+    with open(metrics_path) as f:
+        reader = csv.DictReader(f)
+        rows = list(reader)
+    if rows:
+        best = min(rows, key=lambda r: float(r.get('val_mae', '1e9')))
+        result['best_epoch'] = int(float(best.get('epoch', -1)))
+        result['best_val_mae'] = float(best['val_mae'])
+        result['best_val_rmse'] = float(best.get('val_rmse', 0))
+        print(f'Best epoch: {result[\"best_epoch\"]}  val_MAE: {result[\"best_val_mae\"]:.4f}')
 
 with open('${RESULT_DIR}/result.json', 'w') as f:
     json.dump(result, f, indent=2)
