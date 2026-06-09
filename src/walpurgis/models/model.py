@@ -29,6 +29,7 @@ class SqueezeExcitation(nn.Module):
         super().__init__()
         mid = max(channels // reduction, 4)
         self.squeeze = nn.AdaptiveAvgPool1d(1)
+        self.ln = nn.LayerNorm(channels)
         self.excitation = nn.Sequential(
             nn.Linear(channels, mid, bias=False),
             nn.ReLU(inplace=True),
@@ -39,8 +40,10 @@ class SqueezeExcitation(nn.Module):
     def forward(self, x):
         # x: [B, L, N, C]
         B, L, N, C = x.shape
+        # LayerNorm stabilizes channel statistics before squeeze
+        x_normed = self.ln(x)
         # squeeze: 对空间维度N做全局平均
-        squeezed = x.mean(dim=2)  # [B, L, C]
+        squeezed = x_normed.mean(dim=2)  # [B, L, C]
         squeezed = squeezed.mean(dim=1)  # [B, C]
         # excitation
         weights = self.excitation(squeezed)  # [B, C]
@@ -111,8 +114,8 @@ class DecoupleLayer(nn.Module):
         inh_backcast_seq_res, se_weights = self.se_block(
             inh_backcast_seq_res)
         # Cascade特有: 生成cascade residual (该层对输出的直接贡献)
-        # 取backcast的最后时间步做全局pool, 投影到forecast维度
-        cascade_feat = inh_backcast_seq_res[:, -1:, :, :]  # [B, 1, N, D]
+        # 用时间维度均值池化(比单取最后一步更稳定,梯度信号更丰富)
+        cascade_feat = inh_backcast_seq_res.mean(dim=1, keepdim=True)  # [B, 1, N, D]
         fk_len = self._seq_length // self._gap
         cascade_residual = self.cascade_proj(cascade_feat)  # [B, 1, N, fk_dim]
         cascade_residual = cascade_residual.expand(-1, fk_len, -1, -1)  # [B, fk_len, N, fk_dim]
@@ -174,9 +177,9 @@ class D2STGNN(nn.Module):
         ])
 
         # Cascade特有: 动态深度门控 — 每层一个可学习gate
-        # sigmoid输出决定该层的forecast贡献是否被采纳
+        # sigmoid(3.0) ≈ 0.95, 初始近乎全开, 训练中学习是否关闭某些层
         self.depth_gates = nn.ParameterList([
-            nn.Parameter(torch.tensor(2.0))
+            nn.Parameter(torch.tensor(3.0))
             for _ in range(self._num_layers)
         ])
 

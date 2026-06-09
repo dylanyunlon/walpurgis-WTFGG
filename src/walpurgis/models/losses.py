@@ -76,16 +76,15 @@ def masked_mape(preds, labels, null_val=np.nan):
 
 def cascade_aware_loss(preds, labels, null_val=np.nan,
                        base_weight=1.0, horizon_scale=0.1,
-                       grad_penalty=0.01):
+                       grad_penalty=0.005):
     """Cascade特有: 级联感知损失
 
-    对不同预测horizon施加线性递增权重:
-      w_t = base_weight + horizon_scale * t
-    这鼓励模型对远期(更难)的预测投入更多attention
+    对不同预测horizon施加指数递增权重:
+      w_t = exp(horizon_scale * t)
+    远期horizon(更难)获得指数级更高权重, 迫使模型关注长程预测质量
 
-    同时加入gradient-scaled penalty:
-      对残差大的样本施加额外二次惩罚
-      这与cascade residual的逐层纠正理念一致
+    gradient-scaled penalty: 对残差大的样本施加额外二次惩罚
+    penalty系数适度降低(0.005)以减少早期训练噪声
     """
     if np.isnan(null_val):
         mask = ~torch.isnan(labels)
@@ -98,13 +97,13 @@ def cascade_aware_loss(preds, labels, null_val=np.nan,
 
     residual = torch.abs(preds - labels)
 
-    # 生成horizon权重 [1, T, 1]
+    # 生成horizon权重 [1, T, 1] — 指数递增
     T = preds.shape[1]
-    cache_key = (T, preds.device)
+    cache_key = (T, preds.device, horizon_scale)
     if cache_key not in _horizon_weights_cache:
         hw = torch.arange(T, dtype=torch.float32,
                           device=preds.device)
-        hw = base_weight + horizon_scale * hw
+        hw = torch.exp(horizon_scale * hw)  # 指数递增
         hw = hw / hw.mean()  # 归一化使均值为1
         _horizon_weights_cache[cache_key] = hw.unsqueeze(0).unsqueeze(-1)
     horizon_w = _horizon_weights_cache[cache_key]
@@ -116,10 +115,10 @@ def cascade_aware_loss(preds, labels, null_val=np.nan,
         torch.isnan(weighted_loss),
         torch.zeros_like(weighted_loss), weighted_loss)
 
-    # gradient-scaled penalty: 大残差额外惩罚 (clamped for stability)
+    # gradient-scaled penalty: 大残差额外惩罚 (tighter clamp for stability)
     with torch.no_grad():
         residual_std = residual[mask.bool()].std().clamp(min=0.5)
-    penalty = grad_penalty * (residual / residual_std).clamp(max=5.0).pow(2)
+    penalty = grad_penalty * (residual / residual_std).clamp(max=3.0).pow(2)
     penalty = penalty * mask
     penalty = torch.where(
         torch.isnan(penalty),
@@ -160,11 +159,11 @@ class LogCoshHorizonLoss(torch.nn.Module):
         diff = (preds - labels) / T
         loss = T * torch.log(torch.cosh(diff.clamp(-20, 20)))
 
-        # horizon weighting
+        # horizon weighting — exponential (consistent with cascade_aware_loss)
         num_horizons = preds.shape[1]
         hw = torch.arange(num_horizons, dtype=torch.float32,
                           device=preds.device)
-        hw = 1.0 + self.horizon_scale * hw
+        hw = torch.exp(self.horizon_scale * hw)
         hw = hw / hw.mean()
         hw = hw.unsqueeze(0).unsqueeze(-1)
         loss = loss * hw

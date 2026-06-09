@@ -65,10 +65,12 @@ class trainer():
         self.optimizer = optim.RAdam(
             self.model.parameters(), lr=self.lrate,
             weight_decay=self.wdecay, eps=self.eps)
-        # CosineAnnealingWarmRestarts (周期性退火, 避免局部最优)
+        # CosineAnnealingWarmRestarts: T_0=20 aligns first restart with post-CL phase
+        # T_mult=2 gives restarts at 20, 60, 180 — good coverage for 200 epochs
+        # eta_min=1e-5 keeps LR floor useful (1e-6 too low for fine-tuning)
         self.lr_scheduler = (
             torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
-                self.optimizer, T_0=10, T_mult=2, eta_min=1e-6
+                self.optimizer, T_0=20, T_mult=2, eta_min=1e-5
             ) if self.if_lr_scheduler else None)
 
         # loss: LogCosh + horizon weighting (融合cascade策略)
@@ -168,7 +170,7 @@ class trainer():
         depth_reg = torch.tensor(0.0, device=mae_loss.device)
         for gate_param in self.model.depth_gates:
             depth_reg = depth_reg + torch.sigmoid(gate_param)
-        depth_reg = depth_reg * 0.001  # 正则化系数
+        depth_reg = depth_reg * 0.0005  # 正则化系数(适度,不与gate初始化冲突)
 
         loss = (mae_loss + depth_reg) / self._grad_accum_steps
         self.perf.stop("loss")
