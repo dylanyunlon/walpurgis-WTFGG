@@ -128,7 +128,9 @@ def read_h5(h5_path, adj_dir):
         raise FileNotFoundError(
             f'Missing {ids_path} — rerun with download step')
     with open(ids_path) as f:
-        sensor_ids = [line.strip() for line in f if line.strip()]
+        content = f.read().strip()
+    # 格式: 逗号分隔的 sensor ID 在一行里
+    sensor_ids = [s.strip() for s in content.split(',') if s.strip()]
 
     if len(sensor_ids) != data.shape[1]:
         raise ValueError(
