@@ -13,5 +13,14 @@
     "epochs": "N/A",
     "params": "N/A",
     "status": "no_test_metrics"
+  },
+  "experiment_SYNTH_20260609_133724": {
+    "MAE": 4.68,
+    "RMSE": 5.59,
+    "MAPE": "8.09%",
+    "epochs": 5,
+    "dataset": "SYNTH",
+    "status": "quick_validation",
+    "note": "Claude-8 M176-M200 SYNTH 5-epoch sanity check: dropout(0.1)+num_hidden 112+horizon_scale 0.15 all confirmed working"
   }
 }
