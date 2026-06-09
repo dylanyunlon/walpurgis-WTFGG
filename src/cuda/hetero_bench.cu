@@ -481,6 +481,11 @@ static void partition_and_place(
         part.edge_count = count;
         part.ts_lo      = lo;
         part.ts_hi      = hi;
+
+        // Create stream on the correct device
+        if (tier_to_gpu(tier) >= 0) {
+            CUDA_CHECK(cudaSetDevice(tier_to_gpu(tier)));
+        }
         CUDA_CHECK(cudaStreamCreate(&part.stream));
 
         ps.parts.push_back(std::move(part));
@@ -586,7 +591,8 @@ static QueryResult cross_tier_query(
 
         if (tier_to_gpu(p.tier) >= 0) {
             // GPU partition: async D2H
-            CUDA_CHECK(cudaSetDevice(tier_to_gpu(p.tier)));
+            int dev = tier_to_gpu(p.tier);
+            CUDA_CHECK(cudaSetDevice(dev));
             CUDA_CHECK(cudaMemcpyAsync(
                 gathered[gi].host_edges.data(),
                 p.dev_ptr,
@@ -595,8 +601,9 @@ static QueryResult cross_tier_query(
                 p.stream));
             CUDA_CHECK(cudaEventRecord(events[gi], p.stream));
         } else {
-            // Host partition: direct memcpy
+            // Host partition: direct memcpy, record event on device 0 default stream
             memcpy(gathered[gi].host_edges.data(), p.dev_ptr, p.size_bytes);
+            CUDA_CHECK(cudaSetDevice(0));
             CUDA_CHECK(cudaEventRecord(events[gi]));
         }
     }
