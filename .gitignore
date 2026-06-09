@@ -14,12 +14,11 @@ __pycache__/
 # Data (too large for git)
 *.h5
 *.hdf5
-*.npz
-!datasets/SYNTH/*.npz
-datasets/METR-LA/
 datasets/PEMS-BAY/
 datasets/PEMS04/
 datasets/PEMS08/
+# Raw h5 source (processed npz is committed)
+src/walpurgis/datasets/raw_data/
 
 # Experiment logs (results json is tracked, raw logs are not)
 experiments/results/*/train.log
