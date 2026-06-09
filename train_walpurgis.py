@@ -50,7 +50,7 @@ def _resolve_path(rel_path, base=None):
 
 
 def run(dataset, device_str='cpu', epochs_override=None,
-        debug=False):
+        debug=False, save_dir=None):
     if debug:
         os.environ['WALPURGIS_DEBUG'] = '1'
 
@@ -85,14 +85,21 @@ def run(dataset, device_str='cpu', epochs_override=None,
     model_name = config['start_up']['model_name']
     mode = config['start_up']['mode']
 
-    os.makedirs(os.path.join(_REPO_ROOT, 'output'),
-                exist_ok=True)
-    save_path = os.path.join(
-        _REPO_ROOT, 'output',
-        f'{model_name}_{dataset_name}.pt')
-    save_path_resume = os.path.join(
-        _REPO_ROOT, 'output',
-        f'{model_name}_{dataset_name}_resume.pt')
+    if save_dir:
+        os.makedirs(save_dir, exist_ok=True)
+        save_path = os.path.join(
+            save_dir, f'{model_name}_{dataset_name}.pt')
+        save_path_resume = os.path.join(
+            save_dir, f'{model_name}_{dataset_name}_resume.pt')
+    else:
+        os.makedirs(os.path.join(_REPO_ROOT, 'output'),
+                    exist_ok=True)
+        save_path = os.path.join(
+            _REPO_ROOT, 'output',
+            f'{model_name}_{dataset_name}.pt')
+        save_path_resume = os.path.join(
+            _REPO_ROOT, 'output',
+            f'{model_name}_{dataset_name}_resume.pt')
 
     print(f"\n{'='*60}")
     print(f"  Walpurgis Training Pipeline")
@@ -310,12 +317,27 @@ def main():
                         default='cpu')
     parser.add_argument('--epochs', type=int,
                         default=None)
+    parser.add_argument('--seed', type=int,
+                        default=42)
+    parser.add_argument('--save_dir', type=str,
+                        default=None,
+                        help='Directory for checkpoints and metrics')
     parser.add_argument('--debug',
                         action='store_true')
     args = parser.parse_args()
+
+    # 设置随机种子
+    torch.manual_seed(args.seed)
+    np.random.seed(args.seed)
+    import random
+    random.seed(args.seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(args.seed)
+
     t_start = time.time()
     run(args.dataset, args.device,
-        args.epochs, args.debug)
+        args.epochs, args.debug,
+        save_dir=args.save_dir)
     print(f"Total time: {time.time()-t_start:.2f}s")
 
 

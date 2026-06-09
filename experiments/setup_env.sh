@@ -53,7 +53,7 @@ echo "[4/4] Verification..."
 python3 << 'PYCHECK'
 import subprocess, sys, os
 
-required = {'torch': 'torch', 'numpy': 'numpy', 'scipy': 'scipy', 'yaml': 'pyyaml', 'pandas': 'pandas'}
+required = {'torch': 'torch', 'numpy': 'numpy', 'scipy': 'scipy', 'yaml': 'pyyaml', 'pandas': 'pandas', 'torchinfo': 'torchinfo'}
 missing = []
 for mod, pkg in required.items():
     try:
