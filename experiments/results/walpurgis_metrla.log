@@ -1,17 +1,13 @@
 ============================================
  Walpurgis Training Run
- ID:      walpurgis_METR-LA_20260609_033315
+ ID:      walpurgis_METR-LA_20260609_040313
  Dataset: METR-LA
  GPU:     2
  Epochs:  100
  Seed:    42
 ============================================
-[TRAIN] Starting at 03:33:15...
-Traceback (most recent call last):
-  File "/data/jiacheng/system/cache/temp/atc2026/walpurgis-WTFGG/train_walpurgis.py", line 30, in <module>
-    from walpurgis.utils.load_data import (
-  File "/data/jiacheng/system/cache/temp/atc2026/walpurgis-WTFGG/src/walpurgis/utils/load_data.py", line 9, in <module>
-    from .cal_adj import check_nan_inf, remove_nan_inf
-  File "/data/jiacheng/system/cache/temp/atc2026/walpurgis-WTFGG/src/walpurgis/utils/cal_adj.py", line 4, in <module>
-    import scipy.sparse as sp
-ModuleNotFoundError: No module named 'scipy'
+[TRAIN] Starting at 04:03:13...
+usage: train_walpurgis.py [-h]
+                          [--dataset {SYNTH,METR-LA,PEMS-BAY,PEMS04,PEMS08}]
+                          [--device DEVICE] [--epochs EPOCHS] [--debug]
+train_walpurgis.py: error: unrecognized arguments: --seed 42 --save_dir experiments/results/walpurgis_METR-LA_20260609_040313

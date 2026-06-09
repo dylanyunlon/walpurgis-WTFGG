@@ -2,14 +2,11 @@
  D2STGNN Baseline on METR-LA
 ============================================
 Config updated: epochs=100, device=cuda:0
-tee: experiments/baselines/d2stgnn/train_METR-LA.log: No such file or directory
 Traceback (most recent call last):
-  File "/data/jiacheng/system/cache/temp/atc2026/walpurgis-WTFGG/experiments/baselines/d2stgnn/main.py", line 9, in <module>
-    from utils.train import *
-  File "/data/jiacheng/system/cache/temp/atc2026/walpurgis-WTFGG/experiments/baselines/d2stgnn/utils/__init__.py", line 1, in <module>
-    from utils.load_data import load_adj
-  File "/data/jiacheng/system/cache/temp/atc2026/walpurgis-WTFGG/experiments/baselines/d2stgnn/utils/load_data.py", line 7, in <module>
-    from utils.cal_adj import *
-  File "/data/jiacheng/system/cache/temp/atc2026/walpurgis-WTFGG/experiments/baselines/d2stgnn/utils/cal_adj.py", line 3, in <module>
-    import scipy.sparse as sp
-ModuleNotFoundError: No module named 'scipy'
+  File "/data/jiacheng/system/cache/temp/atc2026/walpurgis-WTFGG/experiments/baselines/d2stgnn/main.py", line 12, in <module>
+    from models.losses import *
+  File "/data/jiacheng/system/cache/temp/atc2026/walpurgis-WTFGG/experiments/baselines/d2stgnn/models/__init__.py", line 2, in <module>
+    from models.trainer import trainer
+  File "/data/jiacheng/system/cache/temp/atc2026/walpurgis-WTFGG/experiments/baselines/d2stgnn/models/trainer.py", line 5, in <module>
+    from torchinfo.torchinfo import summary
+ModuleNotFoundError: No module named 'torchinfo'
