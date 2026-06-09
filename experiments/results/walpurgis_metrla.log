@@ -1,15 +1,15 @@
 ============================================
  Walpurgis Training Run
- ID:      walpurgis_METR-LA_20260609_071459
+ ID:      walpurgis_METR-LA_20260609_110426
  Dataset: METR-LA
  GPU:     2
  Epochs:  200
  Seed:    42
 ============================================
-[TRAIN] Starting at 07:14:59...
+[TRAIN] Starting at 11:04:26...
 /data/jiacheng/system/cache/temp/atc2026/walpurgis-WTFGG/src/walpurgis/utils/cal_adj.py:68: RuntimeWarning: divide by zero encountered in power
   d_inv = np.power(rowsum, -1).flatten()
-[CAS:log] dir=log/2026-06-09-07:15:03
+[CAS:log] dir=log/2026-06-09-11:04:30
 
 ============================================================
   Walpurgis Training Pipeline
@@ -22,12 +22,12 @@
 Loaded dataset: 2.57s
 Loaded adj: 0.00s
 =============== model args =================
-|          batch_size:|                 128|
+|          batch_size:|                  64|
 |            num_feat:|                   1|
-|          num_hidden:|                 128|
-|         node_hidden:|                  64|
-|        time_emb_dim:|                  64|
-|             dropout:|                 0.1|
+|          num_hidden:|                  96|
+|         node_hidden:|                  48|
+|        time_emb_dim:|                  48|
+|             dropout:|                0.05|
 |          seq_length:|                  12|
 |                 k_t:|                   3|
 |                 k_s:|                   2|
@@ -48,75 +48,579 @@ Loaded adj: 0.00s
 |               if_cl:|                True|
 |           cl_epochs:|                   6|
 |      output_seq_len:|                  12|
-|         warm_epochs:|                   5|
+|         warm_epochs:|                   8|
 |              epochs:|                 200|
 |            patience:|                  30|
 |          seq_length:|                  12|
-|    grad_accum_steps:|                   1|
-|   node_dropout_rate:|                 0.1|
-|      time_shift_max:|                   2|
 |        cl_ramp_mode:|             sigmoid|
-|            cl_steps:|                1128|
-|          warm_steps:|                 940|
-|    _steps_per_epoch:|                 188|
+|            cl_steps:|                2250|
+|          warm_steps:|                3000|
+|    _steps_per_epoch:|                 375|
 --------------------------------------------
-Model params: 3,288,309
-Traceback (most recent call last):
-  File "/data/jiacheng/system/cache/temp/atc2026/walpurgis-WTFGG/train_walpurgis.py", line 351, in <module>
-    main()
-  File "/data/jiacheng/system/cache/temp/atc2026/walpurgis-WTFGG/train_walpurgis.py", line 344, in main
-    run(args.dataset, args.device,
-  File "/data/jiacheng/system/cache/temp/atc2026/walpurgis-WTFGG/train_walpurgis.py", line 230, in run
-    mae, mape, rmse = engine.train(
-                      ^^^^^^^^^^^^^
-  File "/data/jiacheng/system/cache/temp/atc2026/walpurgis-WTFGG/src/walpurgis/models/trainer.py", line 150, in train
-    output = self.model(input_aug)
-             ^^^^^^^^^^^^^^^^^^^^^
-  File "/home/jiacheng/anaconda3/envs/walking3/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1751, in _wrapped_call_impl
-    return self._call_impl(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/jiacheng/anaconda3/envs/walking3/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1762, in _call_impl
-    return forward_call(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/data/jiacheng/system/cache/temp/atc2026/walpurgis-WTFGG/src/walpurgis/models/model.py", line 292, in forward
-    inh_backcast_seq_res, dif_forecast_hidden, inh_forecast_hidden, cascade_res = layer(inh_backcast_seq_res, dynamic_graph, static_graph, node_embedding_u, node_embedding_d, time_in_day_feat, day_in_week_feat)
-                                                                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/jiacheng/anaconda3/envs/walking3/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1751, in _wrapped_call_impl
-    return self._call_impl(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/jiacheng/anaconda3/envs/walking3/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1762, in _call_impl
-    return forward_call(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/data/jiacheng/system/cache/temp/atc2026/walpurgis-WTFGG/src/walpurgis/models/model.py", line 106, in forward
-    self.dif_layer(
-  File "/home/jiacheng/anaconda3/envs/walking3/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1751, in _wrapped_call_impl
-    return self._call_impl(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/jiacheng/anaconda3/envs/walking3/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1762, in _call_impl
-    return forward_call(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/data/jiacheng/system/cache/temp/atc2026/walpurgis-WTFGG/src/walpurgis/models/diffusion_block/dif_block.py", line 53, in forward
-    forecast_hidden = self.forecast_branch(gated_history_data, hidden_states_dif, self.localized_st_conv, dynamic_graph, static_graph)
-                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/jiacheng/anaconda3/envs/walking3/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1751, in _wrapped_call_impl
-    return self._call_impl(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/jiacheng/anaconda3/envs/walking3/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1762, in _call_impl
-    return forward_call(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/data/jiacheng/system/cache/temp/atc2026/walpurgis-WTFGG/src/walpurgis/models/diffusion_block/forecast.py", line 39, in forward
-    predict.append(localized_st_conv(_1, dynamic_graph, static_graph))
-                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/jiacheng/anaconda3/envs/walking3/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1751, in _wrapped_call_impl
-    return self._call_impl(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/jiacheng/anaconda3/envs/walking3/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1762, in _call_impl
-    return forward_call(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/data/jiacheng/system/cache/temp/atc2026/walpurgis-WTFGG/src/walpurgis/models/diffusion_block/dif_model.py", line 102, in forward
-    hidden = self.gconv(support, X_k, X_0)
-             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/data/jiacheng/system/cache/temp/atc2026/walpurgis-WTFGG/src/walpurgis/models/diffusion_block/dif_model.py", line 42, in gconv
-    H_k = torch.matmul(graph, X_k)
-          ^^^^^^^^^^^^^^^^^^^^^^^^
-torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 40.00 MiB. GPU 0 has a total capacity of 93.00 GiB of which 4.56 MiB is free. Process 1914791 has 53.37 GiB memory in use. Including non-PyTorch memory, this process has 39.61 GiB memory in use. Of the allocated memory 38.52 GiB is allocated by PyTorch, and 251.64 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)
+Model params: 2,016,202
+test: 5.695652961730957test: 4.795127868652344test: 3.2202532291412354test: 3.124199151992798test: 4.46104097366333test: 4.065506458282471test: 5.946787357330322test: 2.6384127140045166test: 3.260417938232422test: 4.927999973297119test: 5.805005073547363test: 3.0948033332824707test: 2.1472842693328857test: 1.7776386737823486test: 3.256856679916382test: 2.800774574279785test: 2.2127628326416016test: 2.0121471881866455test: 1.4919966459274292test: 2.1922717094421387test: 2.3572657108306885test: 2.3338465690612793test: 1.8701550960540771test: 2.187340021133423test: 1.6420055627822876test: 1.9648942947387695test: 3.3555874824523926test: 4.223343372344971test: 4.418765068054199test: 3.588780641555786test: 3.121702194213867test: 4.76235294342041test: 3.0939407348632812test: 4.96931791305542test: 2.24092173576355test: 3.552982807159424test: 5.032785415649414test: 5.878053188323975test: 3.295147657394409test: 2.6440930366516113test: 0.0test: 7.197889804840088test: 5.899404525756836test: 2.297070026397705test: 2.3370394706726074test: 2.646421194076538test: 3.955127000808716test: 2.302548885345459test: 2.022425889968872test: 2.3030552864074707test: 1.7354230880737305test: 1.788142204284668test: 2.7044124603271484test: 2.765375375747680709-11-07 | Epoch 001 | Train MAE=3.9914 MAPE=0.1137 RMSE=7.6727 | Val MAE=3.2484 RMSE=6.1722 MAPE=0.0964 | LR=0.000989
+Evaluate best model on test data for horizon 1, Test MAE: 2.6203, Test RMSE: 4.5726, Test MAPE: 0.0686
+Evaluate best model on test data for horizon 2, Test MAE: 2.8114, Test RMSE: 5.2762, Test MAPE: 0.0741
+Evaluate best model on test data for horizon 3, Test MAE: 3.0521, Test RMSE: 5.9170, Test MAPE: 0.0848
+Evaluate best model on test data for horizon 4, Test MAE: 3.3928, Test RMSE: 6.5465, Test MAPE: 0.0969
+Evaluate best model on test data for horizon 5, Test MAE: 3.4115, Test RMSE: 6.8104, Test MAPE: 0.0991
+Evaluate best model on test data for horizon 6, Test MAE: 3.5613, Test RMSE: 7.1802, Test MAPE: 0.1056
+Evaluate best model on test data for horizon 7, Test MAE: 3.7919, Test RMSE: 7.6203, Test MAPE: 0.1144
+Evaluate best model on test data for horizon 8, Test MAE: 3.8312, Test RMSE: 7.7814, Test MAPE: 0.1163
+Evaluate best model on test data for horizon 9, Test MAE: 3.9722, Test RMSE: 7.9651, Test MAPE: 0.1199
+Evaluate best model on test data for horizon 10, Test MAE: 4.1403, Test RMSE: 8.3600, Test MAPE: 0.1291
+Evaluate best model on test data for horizon 11, Test MAE: 4.1940, Test RMSE: 8.4664, Test MAPE: 0.1319
+Evaluate best model on test data for horizon 12, Test MAE: 4.3669, Test RMSE: 8.6150, Test MAPE: 0.1351
+(On average over 12 horizons) Test MAE: 3.60 | Test RMSE: 7.09 | Test MAPE: 10.63% |
+test: 5.2203216552734375test: 4.452955722808838test: 2.9639270305633545test: 2.9605798721313477test: 4.001864433288574test: 3.971472978591919test: 5.275752544403076test: 2.370872735977173test: 3.0277903079986572test: 4.794009685516357test: 5.518294334411621test: 2.8367443084716797test: 2.0397889614105225test: 1.6691449880599976test: 3.066638231277466test: 2.6215081214904785test: 2.0920965671539307test: 1.939149022102356test: 1.3648840188980103test: 2.039515495300293test: 2.2197673320770264test: 2.170557975769043test: 1.8706544637680054test: 2.106121301651001test: 1.602204442024231test: 1.9284312725067139test: 3.0887067317962646test: 3.878046989440918test: 4.064052104949951test: 3.2790775299072266test: 2.970909833908081test: 4.319356918334961test: 2.8970248699188232test: 4.581034183502197test: 2.1454193592071533test: 3.2632501125335693test: 4.653626441955566test: 5.398881912231445test: 3.086915969848633test: 2.5230417251586914test: 0.0test: 6.453153610229492test: 5.210737228393555test: 2.0095860958099365test: 2.245999574661255test: 2.4899895191192627test: 3.7217159271240234test: 2.168750047683716test: 1.9635157585144043test: 2.017306089401245test: 1.5852508544921875test: 1.6689586639404297test: 2.2656681537628174test: 2.622673034667968809-11-09 | Epoch 002 | Train MAE=3.2450 MAPE=0.0942 RMSE=6.7482 | Val MAE=3.0129 RMSE=5.8798 MAPE=0.0869 | LR=0.000957
+Evaluate best model on test data for horizon 1, Test MAE: 2.3720, Test RMSE: 4.2043, Test MAPE: 0.0580
+Evaluate best model on test data for horizon 2, Test MAE: 2.6934, Test RMSE: 5.1163, Test MAPE: 0.0689
+Evaluate best model on test data for horizon 3, Test MAE: 2.9647, Test RMSE: 5.7708, Test MAPE: 0.0783
+Evaluate best model on test data for horizon 4, Test MAE: 3.0715, Test RMSE: 6.2119, Test MAPE: 0.0845
+Evaluate best model on test data for horizon 5, Test MAE: 3.2410, Test RMSE: 6.6243, Test MAPE: 0.0910
+Evaluate best model on test data for horizon 6, Test MAE: 3.4224, Test RMSE: 7.0109, Test MAPE: 0.0980
+Evaluate best model on test data for horizon 7, Test MAE: 3.4868, Test RMSE: 7.2295, Test MAPE: 0.1023
+Evaluate best model on test data for horizon 8, Test MAE: 3.6002, Test RMSE: 7.5468, Test MAPE: 0.1077
+Evaluate best model on test data for horizon 9, Test MAE: 3.6753, Test RMSE: 7.6958, Test MAPE: 0.1110
+Evaluate best model on test data for horizon 10, Test MAE: 3.8032, Test RMSE: 7.9005, Test MAPE: 0.1166
+Evaluate best model on test data for horizon 11, Test MAE: 3.8813, Test RMSE: 8.1499, Test MAPE: 0.1212
+Evaluate best model on test data for horizon 12, Test MAE: 3.9762, Test RMSE: 8.2539, Test MAPE: 0.1242
+(On average over 12 horizons) Test MAE: 3.35 | Test RMSE: 6.81 | Test MAPE: 9.68% |
+test: 4.797145366668701test: 3.9028356075286865test: 2.785399913787842test: 2.908212184906006test: 3.5435616970062256test: 3.7604587078094482test: 5.059473037719727test: 2.347320556640625test: 2.8533997535705566test: 4.48483943939209test: 5.218876838684082test: 2.714238405227661test: 1.9979498386383057test: 1.651189923286438test: 2.9493248462677test: 2.5526483058929443test: 1.9954010248184204test: 1.9340863227844238test: 1.3168951272964478test: 2.0034656524658203test: 2.2307586669921875test: 2.1568660736083984test: 2.287647247314453test: 2.1279468536376953test: 1.7110910415649414test: 1.8976490497589111test: 2.695988416671753test: 3.5935420989990234test: 3.849069356918335test: 3.189394235610962test: 2.915760040283203test: 3.638632297515869test: 2.7267367839813232test: 4.0333428382873535test: 2.107097864151001test: 2.895655632019043test: 4.343684196472168test: 5.134810924530029test: 2.8509998321533203test: 2.48390793800354test: 0.0test: 6.029804706573486test: 4.984022617340088test: 1.9387367963790894test: 2.206932544708252test: 2.4656929969787598test: 3.606523275375366test: 2.084498405456543test: 1.9353523254394531test: 1.9621115922927856test: 1.5072245597839355test: 1.6573797464370728test: 2.162360191345215test: 2.52686023712158209-11-12 | Epoch 003 | Train MAE=2.9968 MAPE=0.0861 RMSE=6.3123 | Val MAE=2.8651 RMSE=5.5924 MAPE=0.0827 | LR=0.000905
+Evaluate best model on test data for horizon 1, Test MAE: 2.3294, Test RMSE: 4.0509, Test MAPE: 0.0585
+Evaluate best model on test data for horizon 2, Test MAE: 2.6063, Test RMSE: 4.8963, Test MAPE: 0.0687
+Evaluate best model on test data for horizon 3, Test MAE: 2.8135, Test RMSE: 5.4691, Test MAPE: 0.0771
+Evaluate best model on test data for horizon 4, Test MAE: 2.9579, Test RMSE: 5.8896, Test MAPE: 0.0828
+Evaluate best model on test data for horizon 5, Test MAE: 3.0770, Test RMSE: 6.2554, Test MAPE: 0.0881
+Evaluate best model on test data for horizon 6, Test MAE: 3.1979, Test RMSE: 6.5697, Test MAPE: 0.0934
+Evaluate best model on test data for horizon 7, Test MAE: 3.2936, Test RMSE: 6.8577, Test MAPE: 0.0973
+Evaluate best model on test data for horizon 8, Test MAE: 3.3901, Test RMSE: 7.0833, Test MAPE: 0.1008
+Evaluate best model on test data for horizon 9, Test MAE: 3.4625, Test RMSE: 7.2384, Test MAPE: 0.1039
+Evaluate best model on test data for horizon 10, Test MAE: 3.5157, Test RMSE: 7.4357, Test MAPE: 0.1072
+Evaluate best model on test data for horizon 11, Test MAE: 3.5991, Test RMSE: 7.6002, Test MAPE: 0.1099
+Evaluate best model on test data for horizon 12, Test MAE: 3.6614, Test RMSE: 7.7450, Test MAPE: 0.1131
+(On average over 12 horizons) Test MAE: 3.16 | Test RMSE: 6.42 | Test MAPE: 9.17% |
+test: 4.536322116851807test: 3.798058032989502test: 2.69952130317688test: 2.883638858795166test: 3.378385066986084test: 3.614652156829834test: 4.725275039672852test: 2.307549476623535test: 2.768798589706421test: 4.48962926864624test: 5.1085076332092285test: 2.6736040115356445test: 1.9806870222091675test: 1.611901879310608test: 2.937451124191284test: 2.592294692993164test: 1.8755425214767456test: 1.9092859029769897test: 1.289632797241211test: 2.013455867767334test: 2.086163282394409test: 2.1065239906311035test: 2.2933189868927test: 2.149873971939087test: 1.7255628108978271test: 1.8865249156951904test: 2.6159720420837402test: 3.530540704727173test: 3.680978536605835test: 3.0839712619781494test: 2.9016823768615723test: 3.433485269546509test: 2.669738292694092test: 4.006641864776611test: 2.1011040210723877test: 2.8301355838775635test: 4.176418781280518test: 4.908252239227295test: 2.8539984226226807test: 2.472200870513916test: 0.0test: 5.513214111328125test: 4.712033748626709test: 1.944901704788208test: 2.1754496097564697test: 2.4353952407836914test: 3.5985798835754395test: 2.1178205013275146test: 1.8897098302841187test: 1.905256986618042test: 1.5012545585632324test: 1.6317837238311768test: 2.118706703186035test: 2.50318789482116709-11-15 | Epoch 004 | Train MAE=2.8447 MAPE=0.0808 RMSE=6.0173 | Val MAE=2.7918 RMSE=5.4609 MAPE=0.0767 | LR=0.000836
+Evaluate best model on test data for horizon 1, Test MAE: 2.2974, Test RMSE: 4.0149, Test MAPE: 0.0549
+Evaluate best model on test data for horizon 2, Test MAE: 2.5550, Test RMSE: 4.7665, Test MAPE: 0.0635
+Evaluate best model on test data for horizon 3, Test MAE: 2.7695, Test RMSE: 5.3423, Test MAPE: 0.0712
+Evaluate best model on test data for horizon 4, Test MAE: 2.8828, Test RMSE: 5.7012, Test MAPE: 0.0758
+Evaluate best model on test data for horizon 5, Test MAE: 2.9843, Test RMSE: 5.9821, Test MAPE: 0.0800
+Evaluate best model on test data for horizon 6, Test MAE: 3.1021, Test RMSE: 6.3010, Test MAPE: 0.0849
+Evaluate best model on test data for horizon 7, Test MAE: 3.1907, Test RMSE: 6.6015, Test MAPE: 0.0894
+Evaluate best model on test data for horizon 8, Test MAE: 3.2489, Test RMSE: 6.7658, Test MAPE: 0.0923
+Evaluate best model on test data for horizon 9, Test MAE: 3.3282, Test RMSE: 6.9655, Test MAPE: 0.0953
+Evaluate best model on test data for horizon 10, Test MAE: 3.4153, Test RMSE: 7.1887, Test MAPE: 0.0993
+Evaluate best model on test data for horizon 11, Test MAE: 3.4510, Test RMSE: 7.2899, Test MAPE: 0.1015
+Evaluate best model on test data for horizon 12, Test MAE: 3.5324, Test RMSE: 7.4595, Test MAPE: 0.1042
+(On average over 12 horizons) Test MAE: 3.06 | Test RMSE: 6.20 | Test MAPE: 8.44% |
+test: 4.682283401489258test: 3.833814859390259test: 2.68983793258667test: 2.911388874053955test: 3.5861246585845947test: 3.763005256652832test: 4.9263916015625test: 2.3262481689453125test: 2.7827517986297607test: 4.505749225616455test: 5.338921546936035test: 2.62416672706604test: 2.02116322517395test: 1.6713037490844727test: 2.945688247680664test: 2.526702880859375test: 1.9366766214370728test: 1.9279412031173706test: 1.3701896667480469test: 2.0264217853546143test: 2.1084413528442383test: 2.256645441055298test: 2.4835753440856934test: 2.3829100131988525test: 1.8705838918685913test: 2.036115884780884test: 2.6547656059265137test: 3.5213069915771484test: 3.898052930831909test: 3.0993196964263916test: 2.9226808547973633test: 3.535104274749756test: 2.6761648654937744test: 3.9967541694641113test: 2.1151833534240723test: 2.858635187149048test: 4.3310346603393555test: 4.931395530700684test: 2.7609975337982178test: 2.4848685264587402test: 0.0test: 5.448391437530518test: 4.822556018829346test: 1.9345215559005737test: 2.20570707321167test: 2.464517831802368test: 3.540262460708618test: 2.0590317249298096test: 1.9258801937103271test: 1.922696828842163test: 1.5566530227661133test: 1.6571139097213745test: 2.1302506923675537test: 2.49142408370971709-11-18 | Epoch 005 | Train MAE=2.7665 MAPE=0.0780 RMSE=5.8612 | Val MAE=2.8422 RMSE=5.5072 MAPE=0.0821 | LR=0.000753
+EarlyStopping counter: 1 out of 30
+Evaluate best model on test data for horizon 1, Test MAE: 2.3081, Test RMSE: 3.9711, Test MAPE: 0.0559
+Evaluate best model on test data for horizon 2, Test MAE: 2.5593, Test RMSE: 4.7082, Test MAPE: 0.0659
+Evaluate best model on test data for horizon 3, Test MAE: 2.8139, Test RMSE: 5.2994, Test MAPE: 0.0755
+Evaluate best model on test data for horizon 4, Test MAE: 2.9080, Test RMSE: 5.7299, Test MAPE: 0.0786
+Evaluate best model on test data for horizon 5, Test MAE: 3.0108, Test RMSE: 6.0257, Test MAPE: 0.0845
+Evaluate best model on test data for horizon 6, Test MAE: 3.1623, Test RMSE: 6.3713, Test MAPE: 0.0915
+Evaluate best model on test data for horizon 7, Test MAE: 3.2299, Test RMSE: 6.7229, Test MAPE: 0.0944
+Evaluate best model on test data for horizon 8, Test MAE: 3.3312, Test RMSE: 6.8906, Test MAPE: 0.0993
+Evaluate best model on test data for horizon 9, Test MAE: 3.3882, Test RMSE: 7.0964, Test MAPE: 0.1040
+Evaluate best model on test data for horizon 10, Test MAE: 3.4990, Test RMSE: 7.4719, Test MAPE: 0.1092
+Evaluate best model on test data for horizon 11, Test MAE: 3.5767, Test RMSE: 7.5953, Test MAPE: 0.1136
+Evaluate best model on test data for horizon 12, Test MAE: 3.6567, Test RMSE: 7.8037, Test MAPE: 0.1187
+(On average over 12 horizons) Test MAE: 3.12 | Test RMSE: 6.31 | Test MAPE: 9.09% |
+test: 4.275454044342041test: 3.5802931785583496test: 2.5858676433563232test: 2.871340274810791test: 3.3116402626037598test: 3.5704076290130615test: 4.540839672088623test: 2.267935037612915test: 2.727631092071533test: 4.345208168029785test: 5.060148239135742test: 2.638685941696167test: 1.9677340984344482test: 1.6265228986740112test: 3.0551977157592773test: 2.4684700965881348test: 1.831082820892334test: 1.8997269868850708test: 1.3374689817428589test: 2.0334513187408447test: 2.0173115730285645test: 2.146726131439209test: 2.424014091491699test: 2.189669370651245test: 1.722735047340393test: 1.9032115936279297test: 2.5253560543060303test: 3.3921959400177test: 3.6313881874084473test: 2.9832959175109863test: 2.882690191268921test: 3.1833901405334473test: 2.6073710918426514test: 3.8301315307617188test: 2.0810091495513916test: 2.7611606121063232test: 4.059733867645264test: 4.792180061340332test: 2.733247756958008test: 2.4405603408813477test: 0.0test: 5.140725135803223test: 4.480279922485352test: 1.9507453441619873test: 2.1784610748291016test: 2.4660990238189697test: 3.4978058338165283test: 2.0937116146087646test: 1.8640496730804443test: 1.869185447692871test: 1.540920376777649test: 1.6219333410263062test: 2.066790819168091test: 2.477636098861694309-11-21 | Epoch 006 | Train MAE=2.7206 MAPE=0.0765 RMSE=5.7847 | Val MAE=2.7324 RMSE=5.3649 MAPE=0.0739 | LR=0.000658
+Evaluate best model on test data for horizon 1, Test MAE: 2.2489, Test RMSE: 3.9195, Test MAPE: 0.0537
+Evaluate best model on test data for horizon 2, Test MAE: 2.5175, Test RMSE: 4.6787, Test MAPE: 0.0624
+Evaluate best model on test data for horizon 3, Test MAE: 2.6900, Test RMSE: 5.1798, Test MAPE: 0.0690
+Evaluate best model on test data for horizon 4, Test MAE: 2.8052, Test RMSE: 5.5555, Test MAPE: 0.0738
+Evaluate best model on test data for horizon 5, Test MAE: 2.9354, Test RMSE: 5.8951, Test MAPE: 0.0788
+Evaluate best model on test data for horizon 6, Test MAE: 3.0045, Test RMSE: 6.1402, Test MAPE: 0.0819
+Evaluate best model on test data for horizon 7, Test MAE: 3.0930, Test RMSE: 6.3955, Test MAPE: 0.0861
+Evaluate best model on test data for horizon 8, Test MAE: 3.1867, Test RMSE: 6.6166, Test MAPE: 0.0895
+Evaluate best model on test data for horizon 9, Test MAE: 3.2169, Test RMSE: 6.7423, Test MAPE: 0.0911
+Evaluate best model on test data for horizon 10, Test MAE: 3.2961, Test RMSE: 6.9260, Test MAPE: 0.0937
+Evaluate best model on test data for horizon 11, Test MAE: 3.3793, Test RMSE: 7.0979, Test MAPE: 0.0963
+Evaluate best model on test data for horizon 12, Test MAE: 3.3993, Test RMSE: 7.1909, Test MAPE: 0.0975
+(On average over 12 horizons) Test MAE: 2.98 | Test RMSE: 6.03 | Test MAPE: 8.12% |
+test: 4.275691509246826test: 3.717302083969116test: 2.607818126678467test: 2.876837730407715test: 3.2779321670532227test: 3.5316667556762695test: 4.605214595794678test: 2.2508671283721924test: 2.7660484313964844test: 4.419461727142334test: 5.12070369720459test: 2.744454860687256test: 1.9761680364608765test: 1.632339596748352test: 3.084174871444702test: 2.563183307647705test: 1.893018126487732test: 1.9031546115875244test: 1.3464926481246948test: 2.0787360668182373test: 2.0442862510681152test: 2.2698898315429688test: 2.336890459060669test: 2.2838592529296875test: 1.7549351453781128test: 1.9730724096298218test: 2.5840630531311035test: 3.4531874656677246test: 3.6556894779205322test: 2.989759922027588test: 2.881486177444458test: 3.229715585708618test: 2.5567715167999268test: 3.9251110553741455test: 2.077167272567749test: 2.7519476413726807test: 4.176425457000732test: 4.877833843231201test: 2.7701430320739746test: 2.457711696624756test: 0.0test: 5.143426418304443test: 4.521049499511719test: 1.9491541385650635test: 2.16452693939209test: 2.532132625579834test: 3.63979434967041test: 2.11783766746521test: 1.9076032638549805test: 1.9038045406341553test: 1.549530267715454test: 1.6429821252822876test: 2.086498737335205test: 2.47706770896911609-11-24 | Epoch 007 | Train MAE=2.6742 MAPE=0.0750 RMSE=5.6956 | Val MAE=2.7659 RMSE=5.3728 MAPE=0.0719 | LR=0.000557
+EarlyStopping counter: 1 out of 30
+Evaluate best model on test data for horizon 1, Test MAE: 2.2588, Test RMSE: 3.9247, Test MAPE: 0.0532
+Evaluate best model on test data for horizon 2, Test MAE: 2.5462, Test RMSE: 4.7429, Test MAPE: 0.0618
+Evaluate best model on test data for horizon 3, Test MAE: 2.7698, Test RMSE: 5.2130, Test MAPE: 0.0683
+Evaluate best model on test data for horizon 4, Test MAE: 2.8547, Test RMSE: 5.6623, Test MAPE: 0.0724
+Evaluate best model on test data for horizon 5, Test MAE: 2.9986, Test RMSE: 6.0407, Test MAPE: 0.0771
+Evaluate best model on test data for horizon 6, Test MAE: 3.0919, Test RMSE: 6.2168, Test MAPE: 0.0800
+Evaluate best model on test data for horizon 7, Test MAE: 3.1333, Test RMSE: 6.4454, Test MAPE: 0.0834
+Evaluate best model on test data for horizon 8, Test MAE: 3.2342, Test RMSE: 6.7258, Test MAPE: 0.0871
+Evaluate best model on test data for horizon 9, Test MAE: 3.2790, Test RMSE: 6.7845, Test MAPE: 0.0884
+Evaluate best model on test data for horizon 10, Test MAE: 3.3240, Test RMSE: 6.9609, Test MAPE: 0.0909
+Evaluate best model on test data for horizon 11, Test MAE: 3.4339, Test RMSE: 7.2081, Test MAPE: 0.0945
+Evaluate best model on test data for horizon 12, Test MAE: 3.4474, Test RMSE: 7.2113, Test MAPE: 0.0950
+(On average over 12 horizons) Test MAE: 3.03 | Test RMSE: 6.09 | Test MAPE: 7.93% |
+test: 4.537799835205078test: 3.589747428894043test: 2.535277843475342test: 2.8770289421081543test: 3.418426513671875test: 3.6580593585968018test: 4.542573928833008test: 2.2701869010925293test: 2.7449605464935303test: 4.340246200561523test: 5.104703426361084test: 2.5645971298217773test: 1.9491981267929077test: 1.609536051750183test: 2.9223263263702393test: 2.4350481033325195test: 1.8628607988357544test: 1.8841122388839722test: 1.3291352987289429test: 1.9949336051940918test: 2.021315813064575test: 2.1147899627685547test: 2.2348897457122803test: 2.213899850845337test: 1.694853663444519test: 1.9274226427078247test: 2.5204927921295166test: 3.378854274749756test: 3.665546178817749test: 2.961042881011963test: 2.8914341926574707test: 3.278961420059204test: 2.610382318496704test: 3.789698600769043test: 2.0735957622528076test: 2.7708377838134766test: 4.0757622718811035test: 4.6976776123046875test: 2.675536632537842test: 2.4342939853668213test: 0.0test: 5.366608142852783test: 4.587865829467773test: 1.9488942623138428test: 2.1542534828186035test: 2.446601390838623test: 3.4817287921905518test: 2.016392707824707test: 1.8787508010864258test: 1.8685745000839233test: 1.4948796033859253test: 1.5918210744857788test: 2.084026575088501test: 2.49242687225341809-11-27 | Epoch 008 | Train MAE=2.6430 MAPE=0.0739 RMSE=5.6341 | Val MAE=2.7336 RMSE=5.3664 MAPE=0.0763 | LR=0.000453
+EarlyStopping counter: 2 out of 30
+Evaluate best model on test data for horizon 1, Test MAE: 2.2464, Test RMSE: 3.9424, Test MAPE: 0.0542
+Evaluate best model on test data for horizon 2, Test MAE: 2.5195, Test RMSE: 4.7214, Test MAPE: 0.0629
+Evaluate best model on test data for horizon 3, Test MAE: 2.6737, Test RMSE: 5.1667, Test MAPE: 0.0696
+Evaluate best model on test data for horizon 4, Test MAE: 2.8241, Test RMSE: 5.6460, Test MAPE: 0.0758
+Evaluate best model on test data for horizon 5, Test MAE: 2.9475, Test RMSE: 5.9795, Test MAPE: 0.0807
+Evaluate best model on test data for horizon 6, Test MAE: 3.0025, Test RMSE: 6.1820, Test MAPE: 0.0844
+Evaluate best model on test data for horizon 7, Test MAE: 3.1440, Test RMSE: 6.5180, Test MAPE: 0.0896
+Evaluate best model on test data for horizon 8, Test MAE: 3.2143, Test RMSE: 6.7193, Test MAPE: 0.0926
+Evaluate best model on test data for horizon 9, Test MAE: 3.2350, Test RMSE: 6.8360, Test MAPE: 0.0950
+Evaluate best model on test data for horizon 10, Test MAE: 3.3511, Test RMSE: 7.0694, Test MAPE: 0.1001
+Evaluate best model on test data for horizon 11, Test MAE: 3.4220, Test RMSE: 7.2300, Test MAPE: 0.1029
+Evaluate best model on test data for horizon 12, Test MAE: 3.4302, Test RMSE: 7.3077, Test MAPE: 0.1048
+(On average over 12 horizons) Test MAE: 3.00 | Test RMSE: 6.11 | Test MAPE: 8.44% |
+test: 4.642758846282959test: 3.8566746711730957test: 2.7057995796203613test: 2.971834897994995test: 3.52254581451416test: 3.7799830436706543test: 4.759529113769531test: 2.336385488510132test: 2.8633604049682617test: 4.527507781982422test: 5.239182949066162test: 2.67911434173584test: 2.0079991817474365test: 1.6491395235061646test: 2.9586284160614014test: 2.4789655208587646test: 1.9429196119308472test: 1.9262077808380127test: 1.3550046682357788test: 2.02017879486084test: 2.1017355918884277test: 2.131138563156128test: 2.1567113399505615test: 2.2022857666015625test: 1.7310364246368408test: 1.9201939105987549test: 2.7005200386047363test: 3.6196811199188232test: 3.770321846008301test: 3.121293306350708test: 3.0193912982940674test: 3.5713212490081787test: 2.7735588550567627test: 4.093533039093018test: 2.157351493835449test: 2.9279463291168213test: 4.306147575378418test: 4.757303714752197test: 2.8801512718200684test: 2.553828001022339test: 0.0test: 5.406376361846924test: 4.655829429626465test: 2.041154623031616test: 2.2176969051361084test: 2.4617462158203125test: 3.4991414546966553test: 2.0718820095062256test: 1.9230375289916992test: 1.8860783576965332test: 1.5348725318908691test: 1.625827431678772test: 2.118581533432007test: 2.56038212776184109-11-29 | Epoch 009 | Train MAE=2.0496 MAPE=0.0787 RMSE=5.9093 | Val MAE=2.8282 RMSE=5.4826 MAPE=0.0783 | LR=0.000352
+EarlyStopping counter: 3 out of 30
+Evaluate best model on test data for horizon 1, Test MAE: 2.1706, Test RMSE: 3.7825, Test MAPE: 0.0518
+Evaluate best model on test data for horizon 2, Test MAE: 2.6514, Test RMSE: 4.8335, Test MAPE: 0.0678
+Evaluate best model on test data for horizon 3, Test MAE: 2.9523, Test RMSE: 5.4504, Test MAPE: 0.0812
+Evaluate best model on test data for horizon 4, Test MAE: 2.8101, Test RMSE: 5.6119, Test MAPE: 0.0754
+Evaluate best model on test data for horizon 5, Test MAE: 3.0534, Test RMSE: 6.1102, Test MAPE: 0.0840
+Evaluate best model on test data for horizon 6, Test MAE: 3.2482, Test RMSE: 6.4511, Test MAPE: 0.0931
+Evaluate best model on test data for horizon 7, Test MAE: 3.1260, Test RMSE: 6.4806, Test MAPE: 0.0860
+Evaluate best model on test data for horizon 8, Test MAE: 3.3415, Test RMSE: 6.8637, Test MAPE: 0.0932
+Evaluate best model on test data for horizon 9, Test MAE: 3.3716, Test RMSE: 6.9832, Test MAPE: 0.0973
+Evaluate best model on test data for horizon 10, Test MAE: 3.3444, Test RMSE: 7.0067, Test MAPE: 0.0953
+Evaluate best model on test data for horizon 11, Test MAE: 3.5040, Test RMSE: 7.3143, Test MAPE: 0.1011
+Evaluate best model on test data for horizon 12, Test MAE: 3.5086, Test RMSE: 7.3341, Test MAPE: 0.1030
+(On average over 12 horizons) Test MAE: 3.09 | Test RMSE: 6.19 | Test MAPE: 8.58% |
+test: 4.455451488494873test: 3.694589138031006test: 2.6241462230682373test: 2.9083030223846436test: 3.4235754013061523test: 3.699979066848755test: 4.589041233062744test: 2.2788708209991455test: 2.7828245162963867test: 4.402788162231445test: 5.1339111328125test: 2.636002779006958test: 1.9769307374954224test: 1.6074951887130737test: 2.8990280628204346test: 2.4380385875701904test: 1.8737359046936035test: 1.891798496246338test: 1.295496940612793test: 1.9869084358215332test: 2.0368337631225586test: 2.1372973918914795test: 2.268357515335083test: 2.191617965698242test: 1.7306395769119263test: 1.9354908466339111test: 2.6743507385253906test: 3.504647731781006test: 3.6600182056427test: 3.0502705574035645test: 2.951706886291504test: 3.416471004486084test: 2.616145610809326test: 4.015129566192627test: 2.105759382247925test: 2.8324227333068848test: 4.167863368988037test: 4.627200603485107test: 2.8227121829986572test: 2.4927029609680176test: 0.0test: 5.2906293869018555test: 4.491381645202637test: 1.962369680404663test: 2.173036813735962test: 2.4069206714630127test: 3.4085466861724854test: 2.0351622104644775test: 1.8762379884719849test: 1.842440128326416test: 1.4858454465866089test: 1.6074001789093018test: 2.070493459701538test: 2.50317668914794909-11-32 | Epoch 010 | Train MAE=2.0715 MAPE=0.0774 RMSE=5.8168 | Val MAE=2.7591 RMSE=5.4129 MAPE=0.0755 | LR=0.000258
+EarlyStopping counter: 4 out of 30
+Evaluate best model on test data for horizon 1, Test MAE: 2.1687, Test RMSE: 3.7891, Test MAPE: 0.0518
+Evaluate best model on test data for horizon 2, Test MAE: 2.4535, Test RMSE: 4.5880, Test MAPE: 0.0610
+Evaluate best model on test data for horizon 3, Test MAE: 2.6468, Test RMSE: 5.1334, Test MAPE: 0.0685
+Evaluate best model on test data for horizon 4, Test MAE: 2.8031, Test RMSE: 5.5529, Test MAPE: 0.0757
+Evaluate best model on test data for horizon 5, Test MAE: 2.9210, Test RMSE: 5.9301, Test MAPE: 0.0799
+Evaluate best model on test data for horizon 6, Test MAE: 3.0445, Test RMSE: 6.2656, Test MAPE: 0.0844
+Evaluate best model on test data for horizon 7, Test MAE: 3.1562, Test RMSE: 6.4955, Test MAPE: 0.0877
+Evaluate best model on test data for horizon 8, Test MAE: 3.2291, Test RMSE: 6.7072, Test MAPE: 0.0902
+Evaluate best model on test data for horizon 9, Test MAE: 3.3639, Test RMSE: 6.9676, Test MAPE: 0.0937
+Evaluate best model on test data for horizon 10, Test MAE: 3.3819, Test RMSE: 7.0718, Test MAPE: 0.0978
+Evaluate best model on test data for horizon 11, Test MAE: 3.4633, Test RMSE: 7.2377, Test MAPE: 0.1014
+Evaluate best model on test data for horizon 12, Test MAE: 3.5285, Test RMSE: 7.4000, Test MAPE: 0.1018
+(On average over 12 horizons) Test MAE: 3.01 | Test RMSE: 6.09 | Test MAPE: 8.28% |
+test: 4.240932464599609test: 3.59218692779541test: 2.5025720596313477test: 2.881392478942871test: 3.275143623352051test: 3.6083457469940186test: 4.531145095825195test: 2.236982822418213test: 2.7481141090393066test: 4.248776912689209test: 5.096065521240234test: 2.5841081142425537test: 1.9452167749404907test: 1.5907831192016602test: 2.9241037368774414test: 2.3712215423583984test: 1.8200058937072754test: 1.8783063888549805test: 1.309025526046753test: 1.9915506839752197test: 1.9944310188293457test: 2.122891664505005test: 2.347891330718994test: 2.3475332260131836test: 1.7738308906555176test: 1.9351122379302979test: 2.599867582321167test: 3.3244893550872803test: 3.610116481781006test: 2.909782886505127test: 2.9069013595581055test: 3.1931514739990234test: 2.5298876762390137test: 3.85556697845459test: 2.0679328441619873test: 2.7913577556610107test: 4.030142784118652test: 4.599118709564209test: 2.69464373588562test: 2.4292218685150146test: 0.0test: 5.28485107421875test: 4.387197017669678test: 1.8969347476959229test: 2.146954298019409test: 2.3933441638946533test: 3.3738603591918945test: 1.9980063438415527test: 1.8539186716079712test: 1.8447997570037842test: 1.488823652267456test: 1.5819011926651test: 2.0585572719573975test: 2.46465849876403809-11-35 | Epoch 011 | Train MAE=2.2354 MAPE=0.0742 RMSE=5.6852 | Val MAE=2.7077 RMSE=5.3095 MAPE=0.0749 | LR=0.000174
+Evaluate best model on test data for horizon 1, Test MAE: 2.1533, Test RMSE: 3.7524, Test MAPE: 0.0516
+Evaluate best model on test data for horizon 2, Test MAE: 2.4296, Test RMSE: 4.5238, Test MAPE: 0.0609
+Evaluate best model on test data for horizon 3, Test MAE: 2.6176, Test RMSE: 5.0431, Test MAPE: 0.0683
+Evaluate best model on test data for horizon 4, Test MAE: 2.7393, Test RMSE: 5.4549, Test MAPE: 0.0732
+Evaluate best model on test data for horizon 5, Test MAE: 2.8530, Test RMSE: 5.7868, Test MAPE: 0.0781
+Evaluate best model on test data for horizon 6, Test MAE: 2.9625, Test RMSE: 6.0713, Test MAPE: 0.0826
+Evaluate best model on test data for horizon 7, Test MAE: 3.0568, Test RMSE: 6.3162, Test MAPE: 0.0858
+Evaluate best model on test data for horizon 8, Test MAE: 3.1474, Test RMSE: 6.5516, Test MAPE: 0.0891
+Evaluate best model on test data for horizon 9, Test MAE: 3.2355, Test RMSE: 6.7639, Test MAPE: 0.0926
+Evaluate best model on test data for horizon 10, Test MAE: 3.3240, Test RMSE: 6.9370, Test MAPE: 0.0972
+Evaluate best model on test data for horizon 11, Test MAE: 3.4073, Test RMSE: 7.1402, Test MAPE: 0.1002
+Evaluate best model on test data for horizon 12, Test MAE: 3.4960, Test RMSE: 7.3258, Test MAPE: 0.1032
+(On average over 12 horizons) Test MAE: 2.95 | Test RMSE: 5.97 | Test MAPE: 8.19% |
+test: 4.2801313400268555test: 3.4566004276275635test: 2.4985926151275635test: 2.852135419845581test: 3.259439706802368test: 3.501831293106079test: 4.462689399719238test: 2.2174220085144043test: 2.6981163024902344test: 4.227762222290039test: 5.080357074737549test: 2.60831356048584test: 1.9462844133377075test: 1.6023781299591064test: 3.0902230739593506test: 2.5637645721435547test: 1.8088566064834595test: 1.871809482574463test: 1.3409780263900757test: 2.019104242324829test: 2.0758726596832275test: 2.262955904006958test: 2.3853983879089355test: 2.5316836833953857test: 1.8030942678451538test: 2.012319803237915test: 2.546056032180786test: 3.249615430831909test: 3.5749924182891846test: 2.8639848232269287test: 2.8535468578338623test: 3.103895425796509test: 2.4494690895080566test: 3.7725281715393066test: 2.0366454124450684test: 2.7323179244995117test: 3.942342758178711test: 4.660688400268555test: 2.6468052864074707test: 2.3885657787323test: 0.0test: 5.10383939743042test: 4.474068641662598test: 1.874621868133545test: 2.1355459690093994test: 2.430954933166504test: 3.524643659591675test: 2.060746908187866test: 1.8620245456695557test: 1.8578358888626099test: 1.5286837816238403test: 1.6146348714828491test: 2.041715383529663test: 2.446950435638427709-11-38 | Epoch 012 | Train MAE=2.4028 MAPE=0.0722 RMSE=5.5266 | Val MAE=2.7081 RMSE=5.2852 MAPE=0.0737 | LR=0.000105
+EarlyStopping counter: 1 out of 30
+Evaluate best model on test data for horizon 1, Test MAE: 2.1616, Test RMSE: 3.7673, Test MAPE: 0.0515
+Evaluate best model on test data for horizon 2, Test MAE: 2.4355, Test RMSE: 4.5279, Test MAPE: 0.0603
+Evaluate best model on test data for horizon 3, Test MAE: 2.6184, Test RMSE: 5.0359, Test MAPE: 0.0672
+Evaluate best model on test data for horizon 4, Test MAE: 2.7455, Test RMSE: 5.4550, Test MAPE: 0.0728
+Evaluate best model on test data for horizon 5, Test MAE: 2.8539, Test RMSE: 5.7708, Test MAPE: 0.0769
+Evaluate best model on test data for horizon 6, Test MAE: 2.9552, Test RMSE: 6.0475, Test MAPE: 0.0810
+Evaluate best model on test data for horizon 7, Test MAE: 3.0415, Test RMSE: 6.3040, Test MAPE: 0.0847
+Evaluate best model on test data for horizon 8, Test MAE: 3.1238, Test RMSE: 6.5135, Test MAPE: 0.0875
+Evaluate best model on test data for horizon 9, Test MAE: 3.1967, Test RMSE: 6.7083, Test MAPE: 0.0904
+Evaluate best model on test data for horizon 10, Test MAE: 3.2986, Test RMSE: 6.8828, Test MAPE: 0.0953
+Evaluate best model on test data for horizon 11, Test MAE: 3.3647, Test RMSE: 7.0514, Test MAPE: 0.0975
+Evaluate best model on test data for horizon 12, Test MAE: 3.4355, Test RMSE: 7.2196, Test MAPE: 0.1000
+(On average over 12 horizons) Test MAE: 2.94 | Test RMSE: 5.94 | Test MAPE: 8.04% |
+test: 4.1528096199035645test: 3.4306349754333496test: 2.454129219055176test: 2.8340494632720947test: 3.2182114124298096test: 3.4976918697357178test: 4.378820419311523test: 2.2086703777313232test: 2.680666446685791test: 4.195997714996338test: 4.962266445159912test: 2.5507752895355225test: 1.9261428117752075test: 1.5842264890670776test: 3.011366605758667test: 2.437016010284424test: 1.791829228401184test: 1.8652946949005127test: 1.3410671949386597test: 2.0160350799560547test: 1.9891602993011475test: 2.1857008934020996test: 2.374595880508423test: 2.4350719451904297test: 1.7232944965362549test: 1.943621039390564test: 2.4982211589813232test: 3.2128939628601074test: 3.5355777740478516test: 2.836151361465454test: 2.8439230918884277test: 3.018275499343872test: 2.445286989212036test: 3.69211745262146test: 2.030763626098633test: 2.6935651302337646test: 3.8759829998016357test: 4.582695007324219test: 2.6008875370025635test: 2.388366937637329test: 0.0test: 5.05046272277832test: 4.321599006652832test: 1.8660169839859009test: 2.1194262504577637test: 2.387634754180908test: 3.4013290405273438test: 2.0218472480773926test: 1.8467020988464355test: 1.8190339803695679test: 1.52963125705719test: 1.5918265581130981test: 2.011878490447998test: 2.437848806381225609-11-41 | Epoch 013 | Train MAE=2.4824 MAPE=0.0707 RMSE=5.4326 | Val MAE=2.6639 RMSE=5.2344 MAPE=0.0716 | LR=0.000053
+Evaluate best model on test data for horizon 1, Test MAE: 2.1561, Test RMSE: 3.7443, Test MAPE: 0.0509
+Evaluate best model on test data for horizon 2, Test MAE: 2.4278, Test RMSE: 4.4948, Test MAPE: 0.0595
+Evaluate best model on test data for horizon 3, Test MAE: 2.6030, Test RMSE: 5.0146, Test MAPE: 0.0664
+Evaluate best model on test data for horizon 4, Test MAE: 2.7373, Test RMSE: 5.4416, Test MAPE: 0.0718
+Evaluate best model on test data for horizon 5, Test MAE: 2.8422, Test RMSE: 5.7456, Test MAPE: 0.0760
+Evaluate best model on test data for horizon 6, Test MAE: 2.9369, Test RMSE: 6.0272, Test MAPE: 0.0801
+Evaluate best model on test data for horizon 7, Test MAE: 3.0258, Test RMSE: 6.2744, Test MAPE: 0.0835
+Evaluate best model on test data for horizon 8, Test MAE: 3.1000, Test RMSE: 6.4615, Test MAPE: 0.0862
+Evaluate best model on test data for horizon 9, Test MAE: 3.1642, Test RMSE: 6.6564, Test MAPE: 0.0891
+Evaluate best model on test data for horizon 10, Test MAE: 3.2327, Test RMSE: 6.8259, Test MAPE: 0.0916
+Evaluate best model on test data for horizon 11, Test MAE: 3.2955, Test RMSE: 6.9550, Test MAPE: 0.0938
+Evaluate best model on test data for horizon 12, Test MAE: 3.3596, Test RMSE: 7.1184, Test MAPE: 0.0965
+(On average over 12 horizons) Test MAE: 2.91 | Test RMSE: 5.90 | Test MAPE: 7.88% |
+test: 4.174951076507568test: 3.4326975345611572test: 2.4479944705963135test: 2.8306894302368164test: 3.192328453063965test: 3.513327121734619test: 4.379114627838135test: 2.199817180633545test: 2.676582098007202test: 4.2216796875test: 4.948148250579834test: 2.5400211811065674test: 1.922753930091858test: 1.575207233428955test: 2.978671073913574test: 2.459012031555176test: 1.8123940229415894test: 1.861367106437683test: 1.328414797782898test: 1.9858455657958984test: 2.004733085632324test: 2.211329698562622test: 2.365079402923584test: 2.4827866554260254test: 1.7175772190093994test: 1.9664702415466309test: 2.486294746398926test: 3.206212043762207test: 3.5554561614990234test: 2.8187525272369385test: 2.838320255279541test: 2.9864816665649414test: 2.436707019805908test: 3.6768176555633545test: 2.0261619091033936test: 2.680466651916504test: 3.8903467655181885test: 4.589979648590088test: 2.5873520374298096test: 2.3841071128845215test: 0.0test: 5.007735729217529test: 4.36135196685791test: 1.85899817943573test: 2.1159520149230957test: 2.3899645805358887test: 3.392605781555176test: 2.004666805267334test: 1.854771375656128test: 1.8267203569412231test: 1.4978193044662476test: 1.581743836402893test: 2.0143589973449707test: 2.437795162200927709-11-44 | Epoch 014 | Train MAE=2.4917 MAPE=0.0697 RMSE=5.3719 | Val MAE=2.6618 RMSE=5.2328 MAPE=0.0721 | LR=0.000021
+Evaluate best model on test data for horizon 1, Test MAE: 2.1584, Test RMSE: 3.7579, Test MAPE: 0.0513
+Evaluate best model on test data for horizon 2, Test MAE: 2.4279, Test RMSE: 4.5161, Test MAPE: 0.0599
+Evaluate best model on test data for horizon 3, Test MAE: 2.6041, Test RMSE: 5.0170, Test MAPE: 0.0666
+Evaluate best model on test data for horizon 4, Test MAE: 2.7403, Test RMSE: 5.4506, Test MAPE: 0.0721
+Evaluate best model on test data for horizon 5, Test MAE: 2.8435, Test RMSE: 5.7679, Test MAPE: 0.0761
+Evaluate best model on test data for horizon 6, Test MAE: 2.9369, Test RMSE: 6.0322, Test MAPE: 0.0801
+Evaluate best model on test data for horizon 7, Test MAE: 3.0273, Test RMSE: 6.2914, Test MAPE: 0.0838
+Evaluate best model on test data for horizon 8, Test MAE: 3.0958, Test RMSE: 6.4893, Test MAPE: 0.0865
+Evaluate best model on test data for horizon 9, Test MAE: 3.1579, Test RMSE: 6.6575, Test MAPE: 0.0893
+Evaluate best model on test data for horizon 10, Test MAE: 3.2238, Test RMSE: 6.8299, Test MAPE: 0.0922
+Evaluate best model on test data for horizon 11, Test MAE: 3.2821, Test RMSE: 6.9788, Test MAPE: 0.0944
+Evaluate best model on test data for horizon 12, Test MAE: 3.3468, Test RMSE: 7.1059, Test MAPE: 0.0970
+(On average over 12 horizons) Test MAE: 2.90 | Test RMSE: 5.91 | Test MAPE: 7.91% |
+test: 4.175667762756348test: 3.409517526626587test: 2.443284273147583test: 2.829571485519409test: 3.2291505336761475test: 3.485762119293213test: 4.387507438659668test: 2.1984469890594482test: 2.677797317504883test: 4.189506530761719test: 4.964571952819824test: 2.5358569622039795test: 1.9221632480621338test: 1.5756456851959229test: 2.9914391040802test: 2.4567692279815674test: 1.7928893566131592test: 1.8629982471466064test: 1.3241335153579712test: 2.007728099822998test: 1.9849706888198853test: 2.18917179107666test: 2.339913845062256test: 2.4373738765716553test: 1.695270299911499test: 1.9505739212036133test: 2.494675636291504test: 3.191403865814209test: 3.544405698776245test: 2.827704429626465test: 2.838285446166992test: 2.9847958087921143test: 2.4222042560577393test: 3.673755407333374test: 2.0270566940307617test: 2.684929609298706test: 3.8816776275634766test: 4.56920051574707test: 2.580718755722046test: 2.383840560913086test: 0.0test: 5.0428266525268555test: 4.377120018005371test: 1.8531309366226196test: 2.1171979904174805test: 2.4013006687164307test: 3.383052349090576test: 2.006472587585449test: 1.8512885570526123test: 1.8275667428970337test: 1.5049110651016235test: 1.5854032039642334test: 2.0135602951049805test: 2.433763504028320309-11-47 | Epoch 015 | Train MAE=2.4771 MAPE=0.0692 RMSE=5.3397 | Val MAE=2.6585 RMSE=5.2250 MAPE=0.0723 | LR=0.001000
+Evaluate best model on test data for horizon 1, Test MAE: 2.1566, Test RMSE: 3.7499, Test MAPE: 0.0512
+Evaluate best model on test data for horizon 2, Test MAE: 2.4249, Test RMSE: 4.5022, Test MAPE: 0.0599
+Evaluate best model on test data for horizon 3, Test MAE: 2.6021, Test RMSE: 4.9996, Test MAPE: 0.0666
+Evaluate best model on test data for horizon 4, Test MAE: 2.7337, Test RMSE: 5.4287, Test MAPE: 0.0720
+Evaluate best model on test data for horizon 5, Test MAE: 2.8359, Test RMSE: 5.7382, Test MAPE: 0.0762
+Evaluate best model on test data for horizon 6, Test MAE: 2.9299, Test RMSE: 6.0011, Test MAPE: 0.0802
+Evaluate best model on test data for horizon 7, Test MAE: 3.0202, Test RMSE: 6.2657, Test MAPE: 0.0840
+Evaluate best model on test data for horizon 8, Test MAE: 3.0883, Test RMSE: 6.4593, Test MAPE: 0.0868
+Evaluate best model on test data for horizon 9, Test MAE: 3.1520, Test RMSE: 6.6308, Test MAPE: 0.0896
+Evaluate best model on test data for horizon 10, Test MAE: 3.2190, Test RMSE: 6.8087, Test MAPE: 0.0924
+Evaluate best model on test data for horizon 11, Test MAE: 3.2770, Test RMSE: 6.9552, Test MAPE: 0.0948
+Evaluate best model on test data for horizon 12, Test MAE: 3.3462, Test RMSE: 7.0890, Test MAPE: 0.0975
+(On average over 12 horizons) Test MAE: 2.90 | Test RMSE: 5.89 | Test MAPE: 7.92% |
+test: 4.1461567878723145test: 3.43284010887146test: 2.5577714443206787test: 2.858931064605713test: 3.240295171737671test: 3.473728656768799test: 4.43419075012207test: 2.244107723236084test: 2.7197699546813965test: 4.224637985229492test: 4.979362487792969test: 2.659977436065674test: 1.9415897130966187test: 1.5805500745773315test: 3.019796371459961test: 2.502354145050049test: 1.847292184829712test: 1.8724071979522705test: 1.2837600708007812test: 2.059880256652832test: 2.016996383666992test: 2.2515900135040283test: 2.5598671436309814test: 2.4724533557891846test: 1.874474048614502test: 1.9989013671875test: 2.5187888145446777test: 3.2945570945739746test: 3.674241304397583test: 2.925110101699829test: 2.868431329727173test: 3.04752254486084test: 2.487577199935913test: 3.786667823791504test: 2.0449917316436768test: 2.7227888107299805test: 3.9972751140594482test: 4.652062892913818test: 2.709291458129883test: 2.407358407974243test: 0.0test: 5.073037147521973test: 4.452873706817627test: 1.9292210340499878test: 2.139416456222534test: 2.4195594787597656test: 3.4946541786193848test: 2.0185744762420654test: 1.8747588396072388test: 1.860923171043396test: 1.4819605350494385test: 1.5892057418823242test: 2.0683376789093018test: 2.46966600418090809-11-49 | Epoch 016 | Train MAE=2.5666 MAPE=0.0719 RMSE=5.4914 | Val MAE=2.7086 RMSE=5.2774 MAPE=0.0720 | LR=0.000997
+EarlyStopping counter: 1 out of 30
+Evaluate best model on test data for horizon 1, Test MAE: 2.1952, Test RMSE: 3.7821, Test MAPE: 0.0517
+Evaluate best model on test data for horizon 2, Test MAE: 2.4561, Test RMSE: 4.5601, Test MAPE: 0.0604
+Evaluate best model on test data for horizon 3, Test MAE: 2.6465, Test RMSE: 5.0264, Test MAPE: 0.0672
+Evaluate best model on test data for horizon 4, Test MAE: 2.7717, Test RMSE: 5.4405, Test MAPE: 0.0719
+Evaluate best model on test data for horizon 5, Test MAE: 2.8691, Test RMSE: 5.7745, Test MAPE: 0.0759
+Evaluate best model on test data for horizon 6, Test MAE: 2.9751, Test RMSE: 6.0102, Test MAPE: 0.0797
+Evaluate best model on test data for horizon 7, Test MAE: 3.0644, Test RMSE: 6.2962, Test MAPE: 0.0828
+Evaluate best model on test data for horizon 8, Test MAE: 3.1403, Test RMSE: 6.5238, Test MAPE: 0.0858
+Evaluate best model on test data for horizon 9, Test MAE: 3.2091, Test RMSE: 6.6336, Test MAPE: 0.0880
+Evaluate best model on test data for horizon 10, Test MAE: 3.2969, Test RMSE: 6.8802, Test MAPE: 0.0895
+Evaluate best model on test data for horizon 11, Test MAE: 3.3593, Test RMSE: 7.0421, Test MAPE: 0.0921
+Evaluate best model on test data for horizon 12, Test MAE: 3.4265, Test RMSE: 7.0999, Test MAPE: 0.0939
+(On average over 12 horizons) Test MAE: 2.95 | Test RMSE: 5.92 | Test MAPE: 7.83% |
+test: 4.172966480255127test: 3.5393385887145996test: 2.500124931335449test: 2.868643283843994test: 3.372096300125122test: 3.580423355102539test: 4.506011009216309test: 2.2548108100891113test: 2.7428016662597656test: 4.293889999389648test: 5.103945732116699test: 2.6354317665100098test: 1.9610265493392944test: 1.6097429990768433test: 3.0731453895568848test: 2.4558897018432617test: 1.8442442417144775test: 1.8817368745803833test: 1.33238685131073test: 2.0095009803771973test: 2.063235282897949test: 2.307542085647583test: 2.5489261150360107test: 2.6524035930633545test: 1.8904423713684082test: 2.046312093734741test: 2.591350793838501test: 3.2455413341522217test: 3.710242509841919test: 2.9311282634735107test: 2.879286050796509test: 3.144155740737915test: 2.4839253425598145test: 3.811762809753418test: 2.051767110824585test: 2.769557237625122test: 4.007181167602539test: 4.739444255828857test: 2.655752420425415test: 2.4287898540496826test: 0.0test: 5.177682876586914test: 4.481423854827881test: 1.9029271602630615test: 2.162245035171509test: 2.441991090774536test: 3.4393935203552246test: 2.06211519241333test: 1.9041335582733154test: 1.8317137956619263test: 1.532297134399414test: 1.580947995185852test: 2.0723793506622314test: 2.487770318984985409-11-52 | Epoch 017 | Train MAE=2.5608 MAPE=0.0720 RMSE=5.4967 | Val MAE=2.7366 RMSE=5.2445 MAPE=0.0743 | LR=0.000989
+EarlyStopping counter: 2 out of 30
+Evaluate best model on test data for horizon 1, Test MAE: 2.2396, Test RMSE: 3.8081, Test MAPE: 0.0536
+Evaluate best model on test data for horizon 2, Test MAE: 2.5452, Test RMSE: 4.5644, Test MAPE: 0.0648
+Evaluate best model on test data for horizon 3, Test MAE: 2.6962, Test RMSE: 5.0659, Test MAPE: 0.0700
+Evaluate best model on test data for horizon 4, Test MAE: 2.8165, Test RMSE: 5.4448, Test MAPE: 0.0734
+Evaluate best model on test data for horizon 5, Test MAE: 2.9371, Test RMSE: 5.7440, Test MAPE: 0.0796
+Evaluate best model on test data for horizon 6, Test MAE: 2.9932, Test RMSE: 6.0126, Test MAPE: 0.0817
+Evaluate best model on test data for horizon 7, Test MAE: 3.1111, Test RMSE: 6.2781, Test MAPE: 0.0846
+Evaluate best model on test data for horizon 8, Test MAE: 3.2002, Test RMSE: 6.4508, Test MAPE: 0.0901
+Evaluate best model on test data for horizon 9, Test MAE: 3.2049, Test RMSE: 6.6484, Test MAPE: 0.0909
+Evaluate best model on test data for horizon 10, Test MAE: 3.3147, Test RMSE: 6.8115, Test MAPE: 0.0925
+Evaluate best model on test data for horizon 11, Test MAE: 3.3938, Test RMSE: 6.9254, Test MAPE: 0.0981
+Evaluate best model on test data for horizon 12, Test MAE: 3.3867, Test RMSE: 7.1173, Test MAPE: 0.0985
+(On average over 12 horizons) Test MAE: 2.99 | Test RMSE: 5.91 | Test MAPE: 8.15% |
+test: 4.220534801483154test: 3.53403902053833test: 2.471057415008545test: 2.8456523418426514test: 3.2612624168395996test: 3.6836838722229004test: 4.5365190505981445test: 2.248866319656372test: 2.7109873294830322test: 4.266550540924072test: 5.177781581878662test: 2.525778293609619test: 1.9446648359298706test: 1.6218310594558716test: 2.979754686355591test: 2.4482154846191406test: 1.8244025707244873test: 1.881425380706787test: 1.3150825500488281test: 1.9717705249786377test: 1.9955166578292847test: 2.1690824031829834test: 2.368137836456299test: 2.373896837234497test: 1.710564374923706test: 1.9458436965942383test: 2.511718273162842test: 3.296454668045044test: 3.7547924518585205test: 2.9151954650878906test: 2.8686037063598633test: 3.0678458213806152test: 2.5537939071655273test: 3.7152106761932373test: 2.0544989109039307test: 2.7272024154663086test: 4.036650657653809test: 4.722037315368652test: 2.6071677207946777test: 2.4062397480010986test: 0.0test: 5.3331618309021test: 4.57117223739624test: 1.9151262044906616test: 2.14925479888916test: 2.459773540496826test: 3.4145681858062744test: 2.020872116088867test: 1.86571204662323test: 1.8667068481445312test: 1.495924472808838test: 1.5971933603286743test: 2.0416338443756104test: 2.46786260604858409-11-55 | Epoch 018 | Train MAE=2.5398 MAPE=0.0713 RMSE=5.4549 | Val MAE=2.7124 RMSE=5.3090 MAPE=0.0749 | LR=0.000976
+EarlyStopping counter: 3 out of 30
+Evaluate best model on test data for horizon 1, Test MAE: 2.2207, Test RMSE: 3.8509, Test MAPE: 0.0538
+Evaluate best model on test data for horizon 2, Test MAE: 2.4666, Test RMSE: 4.5958, Test MAPE: 0.0618
+Evaluate best model on test data for horizon 3, Test MAE: 2.6338, Test RMSE: 5.0809, Test MAPE: 0.0682
+Evaluate best model on test data for horizon 4, Test MAE: 2.8260, Test RMSE: 5.5879, Test MAPE: 0.0754
+Evaluate best model on test data for horizon 5, Test MAE: 2.9023, Test RMSE: 5.8863, Test MAPE: 0.0791
+Evaluate best model on test data for horizon 6, Test MAE: 2.9779, Test RMSE: 6.1213, Test MAPE: 0.0824
+Evaluate best model on test data for horizon 7, Test MAE: 3.1414, Test RMSE: 6.4795, Test MAPE: 0.0885
+Evaluate best model on test data for horizon 8, Test MAE: 3.1776, Test RMSE: 6.6621, Test MAPE: 0.0908
+Evaluate best model on test data for horizon 9, Test MAE: 3.2130, Test RMSE: 6.7880, Test MAPE: 0.0926
+Evaluate best model on test data for horizon 10, Test MAE: 3.3543, Test RMSE: 7.0457, Test MAPE: 0.0974
+Evaluate best model on test data for horizon 11, Test MAE: 3.3704, Test RMSE: 7.1695, Test MAPE: 0.0990
+Evaluate best model on test data for horizon 12, Test MAE: 3.4002, Test RMSE: 7.2310, Test MAPE: 0.1004
+(On average over 12 horizons) Test MAE: 2.97 | Test RMSE: 6.04 | Test MAPE: 8.25% |
+test: 4.395761013031006test: 3.522239923477173test: 2.495354175567627test: 2.8375957012176514test: 3.318673610687256test: 3.524893283843994test: 4.4572062492370605test: 2.2600841522216797test: 2.6994385719299316test: 4.234958648681641test: 5.075698375701904test: 2.514859914779663test: 1.9344584941864014test: 1.5923629999160767test: 2.9215946197509766test: 2.435225009918213test: 1.8400676250457764test: 1.871228814125061test: 1.3015143871307373test: 1.969321608543396test: 2.1269237995147705test: 2.142932891845703test: 2.34187388420105test: 2.407611846923828test: 1.7453482151031494test: 1.9307537078857422test: 2.50237774848938test: 3.3531558513641357test: 3.6277835369110107test: 2.9129526615142822test: 2.857576847076416test: 3.0758931636810303test: 2.495932102203369test: 3.7101922035217285test: 2.0433874130249023test: 2.713244915008545test: 3.968440294265747test: 4.820825099945068test: 2.646094560623169test: 2.4009649753570557test: 0.0test: 5.254030704498291test: 4.574090003967285test: 1.864371418952942test: 2.127450942993164test: 2.3713107109069824test: 3.3745152950286865test: 1.9948830604553223test: 1.8745344877243042test: 1.8336207866668701test: 1.4714200496673584test: 1.5629266500473022test: 2.027393341064453test: 2.448889255523681609-11-58 | Epoch 019 | Train MAE=2.5348 MAPE=0.0711 RMSE=5.4419 | Val MAE=2.7001 RMSE=5.2884 MAPE=0.0756 | LR=0.000957
+EarlyStopping counter: 4 out of 30
+Evaluate best model on test data for horizon 1, Test MAE: 2.2251, Test RMSE: 3.8560, Test MAPE: 0.0551
+Evaluate best model on test data for horizon 2, Test MAE: 2.4742, Test RMSE: 4.5846, Test MAPE: 0.0632
+Evaluate best model on test data for horizon 3, Test MAE: 2.6350, Test RMSE: 5.0493, Test MAPE: 0.0688
+Evaluate best model on test data for horizon 4, Test MAE: 2.7867, Test RMSE: 5.5251, Test MAPE: 0.0760
+Evaluate best model on test data for horizon 5, Test MAE: 2.8860, Test RMSE: 5.8422, Test MAPE: 0.0799
+Evaluate best model on test data for horizon 6, Test MAE: 2.9731, Test RMSE: 6.0805, Test MAPE: 0.0832
+Evaluate best model on test data for horizon 7, Test MAE: 3.0840, Test RMSE: 6.4062, Test MAPE: 0.0885
+Evaluate best model on test data for horizon 8, Test MAE: 3.1461, Test RMSE: 6.5960, Test MAPE: 0.0910
+Evaluate best model on test data for horizon 9, Test MAE: 3.2053, Test RMSE: 6.7486, Test MAPE: 0.0932
+Evaluate best model on test data for horizon 10, Test MAE: 3.3071, Test RMSE: 6.9944, Test MAPE: 0.0981
+Evaluate best model on test data for horizon 11, Test MAE: 3.3433, Test RMSE: 7.1117, Test MAPE: 0.0995
+Evaluate best model on test data for horizon 12, Test MAE: 3.3961, Test RMSE: 7.2018, Test MAPE: 0.1010
+(On average over 12 horizons) Test MAE: 2.96 | Test RMSE: 6.00 | Test MAPE: 8.31% |
+test: 4.196669101715088test: 3.4174585342407227test: 2.5127246379852295test: 2.878957509994507test: 3.1992321014404297test: 3.5687577724456787test: 4.496873378753662test: 2.2635116577148438test: 2.7184865474700928test: 4.381931304931641test: 5.1640825271606445test: 2.6841280460357666test: 1.9387894868850708test: 1.5870617628097534test: 3.0660698413848877test: 2.4858248233795166test: 1.792313575744629test: 1.8705040216445923test: 1.315497636795044test: 2.063261032104492test: 1.9892196655273438test: 2.168241024017334test: 2.34989333152771test: 2.402942180633545test: 1.8439693450927734test: 1.9132791757583618test: 2.492220640182495test: 3.2911007404327393test: 3.644153594970703test: 2.8656153678894043test: 2.886744499206543test: 3.1220414638519287test: 2.526186466217041test: 3.721327543258667test: 2.066075563430786test: 2.7261242866516113test: 3.9563732147216797test: 4.753049850463867test: 2.699613094329834test: 2.4358441829681396test: 0.0test: 5.1965179443359375test: 4.460736274719238test: 1.9031040668487549test: 2.1338977813720703test: 2.423004627227783test: 3.446566581726074test: 2.053510904312134test: 1.8273437023162842test: 1.8372596502304077test: 1.4804041385650635test: 1.595045804977417test: 2.0468499660491943test: 2.47740268707275409-12-01 | Epoch 020 | Train MAE=2.5237 MAPE=0.0708 RMSE=5.4275 | Val MAE=2.7100 RMSE=5.3304 MAPE=0.0728 | LR=0.000934
+EarlyStopping counter: 5 out of 30
+Evaluate best model on test data for horizon 1, Test MAE: 2.2002, Test RMSE: 3.8403, Test MAPE: 0.0526
+Evaluate best model on test data for horizon 2, Test MAE: 2.4681, Test RMSE: 4.5932, Test MAPE: 0.0611
+Evaluate best model on test data for horizon 3, Test MAE: 2.6656, Test RMSE: 5.1308, Test MAPE: 0.0681
+Evaluate best model on test data for horizon 4, Test MAE: 2.7871, Test RMSE: 5.5505, Test MAPE: 0.0737
+Evaluate best model on test data for horizon 5, Test MAE: 2.8880, Test RMSE: 5.8578, Test MAPE: 0.0772
+Evaluate best model on test data for horizon 6, Test MAE: 3.0018, Test RMSE: 6.1540, Test MAPE: 0.0818
+Evaluate best model on test data for horizon 7, Test MAE: 3.0789, Test RMSE: 6.3911, Test MAPE: 0.0853
+Evaluate best model on test data for horizon 8, Test MAE: 3.1458, Test RMSE: 6.5844, Test MAPE: 0.0870
+Evaluate best model on test data for horizon 9, Test MAE: 3.2311, Test RMSE: 6.7885, Test MAPE: 0.0905
+Evaluate best model on test data for horizon 10, Test MAE: 3.2796, Test RMSE: 6.9015, Test MAPE: 0.0929
+Evaluate best model on test data for horizon 11, Test MAE: 3.3443, Test RMSE: 7.0485, Test MAPE: 0.0939
+Evaluate best model on test data for horizon 12, Test MAE: 3.4205, Test RMSE: 7.2260, Test MAPE: 0.0972
+(On average over 12 horizons) Test MAE: 2.96 | Test RMSE: 6.01 | Test MAPE: 8.01% |
+test: 4.1182169914245605test: 3.488891839981079test: 2.4656178951263428test: 2.840459108352661test: 3.2770802974700928test: 3.5080630779266357test: 4.394471168518066test: 2.2860138416290283test: 2.7210276126861572test: 4.407754421234131test: 4.875317573547363test: 2.714046001434326test: 1.9529907703399658test: 1.6552534103393555test: 3.4645729064941406test: 2.753380537033081test: 1.8412692546844482test: 1.888838768005371test: 1.550766944885254test: 2.242189884185791test: 2.105705738067627test: 2.223435163497925test: 2.560500144958496test: 2.731384515762329test: 1.9761953353881836test: 1.9727948904037476test: 2.534323215484619test: 3.379626989364624test: 3.5834226608276367test: 2.907153844833374test: 2.851480007171631test: 3.206735134124756test: 2.516629457473755test: 3.733637571334839test: 2.035362958908081test: 2.751065731048584test: 4.044269561767578test: 4.747786998748779test: 2.7121880054473877test: 2.394592046737671test: 0.0test: 5.281552791595459test: 4.373088836669922test: 1.917557954788208test: 2.1439013481140137test: 2.491445302963257test: 3.5699033737182617test: 2.14694881439209test: 1.8681385517120361test: 1.883008360862732test: 1.816168189048767test: 1.7011744976043701test: 2.022162914276123test: 2.4485499858856209-12-04 | Epoch 021 | Train MAE=2.5096 MAPE=0.0702 RMSE=5.3854 | Val MAE=2.7607 RMSE=5.4372 MAPE=0.0716 | LR=0.000905
+EarlyStopping counter: 6 out of 30
+Evaluate best model on test data for horizon 1, Test MAE: 2.2124, Test RMSE: 3.8611, Test MAPE: 0.0527
+Evaluate best model on test data for horizon 2, Test MAE: 2.4838, Test RMSE: 4.5992, Test MAPE: 0.0604
+Evaluate best model on test data for horizon 3, Test MAE: 2.6670, Test RMSE: 5.1172, Test MAPE: 0.0668
+Evaluate best model on test data for horizon 4, Test MAE: 2.7959, Test RMSE: 5.5548, Test MAPE: 0.0715
+Evaluate best model on test data for horizon 5, Test MAE: 2.9171, Test RMSE: 5.8653, Test MAPE: 0.0751
+Evaluate best model on test data for horizon 6, Test MAE: 3.0171, Test RMSE: 6.1358, Test MAPE: 0.0788
+Evaluate best model on test data for horizon 7, Test MAE: 3.0975, Test RMSE: 6.4270, Test MAPE: 0.0822
+Evaluate best model on test data for horizon 8, Test MAE: 3.1974, Test RMSE: 6.6369, Test MAPE: 0.0849
+Evaluate best model on test data for horizon 9, Test MAE: 3.2665, Test RMSE: 6.8387, Test MAPE: 0.0875
+Evaluate best model on test data for horizon 10, Test MAE: 3.3104, Test RMSE: 7.0050, Test MAPE: 0.0903
+Evaluate best model on test data for horizon 11, Test MAE: 3.3979, Test RMSE: 7.1326, Test MAPE: 0.0921
+Evaluate best model on test data for horizon 12, Test MAE: 3.4696, Test RMSE: 7.2993, Test MAPE: 0.0944
+(On average over 12 horizons) Test MAE: 2.99 | Test RMSE: 6.04 | Test MAPE: 7.81% |
+test: 4.416964530944824test: 3.618544340133667test: 2.5872855186462402test: 2.8501317501068115test: 3.3196187019348145test: 3.801739454269409test: 4.5240020751953125test: 2.284569025039673test: 2.7351372241973877test: 4.346042633056641test: 5.367998123168945test: 2.53989839553833test: 1.949049711227417test: 1.6268235445022583test: 3.013575315475464test: 2.4648780822753906test: 1.9327095746994019test: 1.9041011333465576test: 1.3844109773635864test: 2.0396416187286377test: 2.0567479133605957test: 2.0884008407592773test: 2.270665407180786test: 2.265282392501831test: 1.727832317352295test: 1.9293954372406006test: 2.533843517303467test: 3.285106658935547test: 3.7656424045562744test: 3.003342628479004test: 2.876384973526001test: 3.057776927947998test: 2.585803508758545test: 3.7659034729003906test: 2.087089776992798test: 2.7256717681884766test: 3.975823402404785test: 4.7027506828308105test: 2.6991562843322754test: 2.409863233566284test: 0.0test: 5.371212482452393test: 4.7310614585876465test: 1.9208048582077026test: 2.1471099853515625test: 2.407925844192505test: 3.440913677215576test: 1.9924910068511963test: 1.9026881456375122test: 1.8599110841751099test: 1.5436424016952515test: 1.62729811668396test: 2.0964889526367188test: 2.457269906997680709-12-07 | Epoch 022 | Train MAE=2.4912 MAPE=0.0695 RMSE=5.3394 | Val MAE=2.7411 RMSE=5.4176 MAPE=0.0769 | LR=0.000873
+EarlyStopping counter: 7 out of 30
+Evaluate best model on test data for horizon 1, Test MAE: 2.2705, Test RMSE: 3.9252, Test MAPE: 0.0536
+Evaluate best model on test data for horizon 2, Test MAE: 2.4939, Test RMSE: 4.6708, Test MAPE: 0.0627
+Evaluate best model on test data for horizon 3, Test MAE: 2.6954, Test RMSE: 5.2209, Test MAPE: 0.0715
+Evaluate best model on test data for horizon 4, Test MAE: 2.9065, Test RMSE: 5.8449, Test MAPE: 0.0790
+Evaluate best model on test data for horizon 5, Test MAE: 2.9626, Test RMSE: 6.1278, Test MAPE: 0.0827
+Evaluate best model on test data for horizon 6, Test MAE: 3.0696, Test RMSE: 6.3987, Test MAPE: 0.0879
+Evaluate best model on test data for horizon 7, Test MAE: 3.2211, Test RMSE: 6.7837, Test MAPE: 0.0934
+Evaluate best model on test data for horizon 8, Test MAE: 3.2240, Test RMSE: 6.8886, Test MAPE: 0.0944
+Evaluate best model on test data for horizon 9, Test MAE: 3.2928, Test RMSE: 7.0425, Test MAPE: 0.0982
+Evaluate best model on test data for horizon 10, Test MAE: 3.4053, Test RMSE: 7.2773, Test MAPE: 0.1018
+Evaluate best model on test data for horizon 11, Test MAE: 3.4042, Test RMSE: 7.3294, Test MAPE: 0.1021
+Evaluate best model on test data for horizon 12, Test MAE: 3.4822, Test RMSE: 7.4576, Test MAPE: 0.1062
+(On average over 12 horizons) Test MAE: 3.04 | Test RMSE: 6.25 | Test MAPE: 8.61% |
+test: 4.21505069732666test: 3.490225076675415test: 2.4177005290985107test: 2.8434178829193115test: 3.1942427158355713test: 3.659752607345581test: 4.419894695281982test: 2.2252471446990967test: 2.692054271697998test: 4.257198810577393test: 5.036719799041748test: 2.57328200340271test: 1.928551197052002test: 1.5682379007339478test: 2.9793198108673096test: 2.4875714778900146test: 1.8684355020523071test: 1.8689287900924683test: 1.2926524877548218test: 2.014871120452881test: 2.022813081741333test: 2.0987937450408936test: 2.2330710887908936test: 2.3785791397094727test: 1.7722361087799072test: 1.9341462850570679test: 2.515968084335327test: 3.2562315464019775test: 3.663461923599243test: 2.926809787750244test: 2.8672878742218018test: 3.0434398651123047test: 2.5073461532592773test: 3.7114577293395996test: 2.0380706787109375test: 2.7077999114990234test: 3.9202780723571777test: 4.61176061630249test: 2.6459779739379883test: 2.398172616958618test: 0.0test: 5.160931587219238test: 4.48505973815918test: 1.888512134552002test: 2.1267876625061035test: 2.3518998622894287test: 3.3779258728027344test: 2.05255126953125test: 1.8659809827804565test: 1.8021612167358398test: 1.4836775064468384test: 1.5764226913452148test: 2.0099220275878906test: 2.44171333312988309-12-09 | Epoch 023 | Train MAE=2.4689 MAPE=0.0688 RMSE=5.2895 | Val MAE=2.6835 RMSE=5.2922 MAPE=0.0728 | LR=0.000836
+EarlyStopping counter: 8 out of 30
+Evaluate best model on test data for horizon 1, Test MAE: 2.1890, Test RMSE: 3.8125, Test MAPE: 0.0518
+Evaluate best model on test data for horizon 2, Test MAE: 2.4528, Test RMSE: 4.5561, Test MAPE: 0.0605
+Evaluate best model on test data for horizon 3, Test MAE: 2.6365, Test RMSE: 5.0943, Test MAPE: 0.0676
+Evaluate best model on test data for horizon 4, Test MAE: 2.7687, Test RMSE: 5.5299, Test MAPE: 0.0724
+Evaluate best model on test data for horizon 5, Test MAE: 2.8714, Test RMSE: 5.8276, Test MAPE: 0.0770
+Evaluate best model on test data for horizon 6, Test MAE: 2.9847, Test RMSE: 6.1366, Test MAPE: 0.0817
+Evaluate best model on test data for horizon 7, Test MAE: 3.0652, Test RMSE: 6.4008, Test MAPE: 0.0848
+Evaluate best model on test data for horizon 8, Test MAE: 3.1333, Test RMSE: 6.5898, Test MAPE: 0.0878
+Evaluate best model on test data for horizon 9, Test MAE: 3.2199, Test RMSE: 6.8156, Test MAPE: 0.0910
+Evaluate best model on test data for horizon 10, Test MAE: 3.2625, Test RMSE: 6.9484, Test MAPE: 0.0933
+Evaluate best model on test data for horizon 11, Test MAE: 3.3174, Test RMSE: 7.0831, Test MAPE: 0.0958
+Evaluate best model on test data for horizon 12, Test MAE: 3.3950, Test RMSE: 7.2426, Test MAPE: 0.0987
+(On average over 12 horizons) Test MAE: 2.94 | Test RMSE: 6.00 | Test MAPE: 8.02% |
+test: 4.206857681274414test: 3.392029047012329test: 2.5001893043518066test: 2.840705633163452test: 3.2885701656341553test: 3.577019214630127test: 4.498211860656738test: 2.2199695110321045test: 2.7145743370056152test: 4.25400972366333test: 5.0930070877075195test: 2.502206802368164test: 1.9361613988876343test: 1.5872386693954468test: 3.0628864765167236test: 2.4868788719177246test: 1.8692905902862549test: 1.8778349161148071test: 1.3407251834869385test: 2.0646464824676514test: 2.107063055038452test: 2.2573487758636475test: 2.4205894470214844test: 2.7190139293670654test: 1.7888822555541992test: 2.015392780303955test: 2.529890298843384test: 3.247424364089966test: 3.6543033123016357test: 2.9769816398620605test: 2.849916458129883test: 3.0409626960754395test: 2.5080816745758057test: 3.7074944972991943test: 2.0271096229553223test: 2.7034244537353516test: 3.907144069671631test: 4.685261249542236test: 2.6525192260742188test: 2.3851022720336914test: 0.0test: 5.2074689865112305test: 4.416021347045898test: 1.8827788829803467test: 2.1200602054595947test: 2.366013765335083test: 3.391913652420044test: 2.06583833694458test: 1.8721059560775757test: 1.8345906734466553test: 1.5603306293487549test: 1.6057108640670776test: 2.011986255645752test: 2.448548793792724609-12-12 | Epoch 024 | Train MAE=2.4486 MAPE=0.0680 RMSE=5.2323 | Val MAE=2.7089 RMSE=5.3036 MAPE=0.0735 | LR=0.000796
+EarlyStopping counter: 9 out of 30
+Evaluate best model on test data for horizon 1, Test MAE: 2.2150, Test RMSE: 3.8185, Test MAPE: 0.0529
+Evaluate best model on test data for horizon 2, Test MAE: 2.4744, Test RMSE: 4.5878, Test MAPE: 0.0616
+Evaluate best model on test data for horizon 3, Test MAE: 2.6377, Test RMSE: 5.1133, Test MAPE: 0.0682
+Evaluate best model on test data for horizon 4, Test MAE: 2.7967, Test RMSE: 5.5212, Test MAPE: 0.0741
+Evaluate best model on test data for horizon 5, Test MAE: 2.8999, Test RMSE: 5.8610, Test MAPE: 0.0783
+Evaluate best model on test data for horizon 6, Test MAE: 2.9832, Test RMSE: 6.1551, Test MAPE: 0.0820
+Evaluate best model on test data for horizon 7, Test MAE: 3.1009, Test RMSE: 6.3945, Test MAPE: 0.0859
+Evaluate best model on test data for horizon 8, Test MAE: 3.1696, Test RMSE: 6.6240, Test MAPE: 0.0887
+Evaluate best model on test data for horizon 9, Test MAE: 3.2202, Test RMSE: 6.8160, Test MAPE: 0.0913
+Evaluate best model on test data for horizon 10, Test MAE: 3.3105, Test RMSE: 6.9918, Test MAPE: 0.0948
+Evaluate best model on test data for horizon 11, Test MAE: 3.3591, Test RMSE: 7.1410, Test MAPE: 0.0968
+Evaluate best model on test data for horizon 12, Test MAE: 3.4089, Test RMSE: 7.2600, Test MAPE: 0.0990
+(On average over 12 horizons) Test MAE: 2.96 | Test RMSE: 6.02 | Test MAPE: 8.11% |
+test: 4.183740139007568test: 3.496187448501587test: 2.4808075428009033test: 2.830195426940918test: 3.2778851985931396test: 3.5816924571990967test: 4.467022895812988test: 2.268293619155884test: 2.7098019123077393test: 4.222284317016602test: 4.991053581237793test: 2.6029109954833984test: 1.9313113689422607test: 1.5767326354980469test: 2.9937617778778076test: 2.520756244659424test: 1.8476521968841553test: 1.8621017932891846test: 1.30385422706604test: 2.1050612926483154test: 2.017883539199829test: 2.2947256565093994test: 2.4068996906280518test: 2.531359910964966test: 1.758481502532959test: 2.0045721530914307test: 2.613023042678833test: 3.223489761352539test: 3.658679246902466test: 2.960299491882324test: 2.841245651245117test: 3.057605504989624test: 2.4936866760253906test: 3.800590991973877test: 2.0218658447265625test: 2.722740650177002test: 3.9988348484039307test: 4.631891250610352test: 2.7410292625427246test: 2.37174916267395test: 0.0test: 5.177070617675781test: 4.435344219207764test: 1.879381775856018test: 2.1200201511383057test: 2.3531389236450195test: 3.406463146209717test: 2.0295352935791016test: 1.8491891622543335test: 1.8326969146728516test: 1.5337085723876953test: 1.6086015701293945test: 2.0138182640075684test: 2.450538635253906209-12-15 | Epoch 025 | Train MAE=2.4340 MAPE=0.0676 RMSE=5.1943 | Val MAE=2.7054 RMSE=5.3101 MAPE=0.0727 | LR=0.000753
+EarlyStopping counter: 10 out of 30
+Evaluate best model on test data for horizon 1, Test MAE: 2.1862, Test RMSE: 3.8028, Test MAPE: 0.0518
+Evaluate best model on test data for horizon 2, Test MAE: 2.4587, Test RMSE: 4.5526, Test MAPE: 0.0604
+Evaluate best model on test data for horizon 3, Test MAE: 2.6304, Test RMSE: 5.0708, Test MAPE: 0.0669
+Evaluate best model on test data for horizon 4, Test MAE: 2.7791, Test RMSE: 5.4938, Test MAPE: 0.0723
+Evaluate best model on test data for horizon 5, Test MAE: 2.8879, Test RMSE: 5.8042, Test MAPE: 0.0767
+Evaluate best model on test data for horizon 6, Test MAE: 2.9783, Test RMSE: 6.1039, Test MAPE: 0.0806
+Evaluate best model on test data for horizon 7, Test MAE: 3.0821, Test RMSE: 6.3547, Test MAPE: 0.0844
+Evaluate best model on test data for horizon 8, Test MAE: 3.1568, Test RMSE: 6.5599, Test MAPE: 0.0875
+Evaluate best model on test data for horizon 9, Test MAE: 3.2200, Test RMSE: 6.7763, Test MAPE: 0.0903
+Evaluate best model on test data for horizon 10, Test MAE: 3.2981, Test RMSE: 6.9326, Test MAPE: 0.0923
+Evaluate best model on test data for horizon 11, Test MAE: 3.3606, Test RMSE: 7.0780, Test MAPE: 0.0947
+Evaluate best model on test data for horizon 12, Test MAE: 3.4277, Test RMSE: 7.2421, Test MAPE: 0.0972
+(On average over 12 horizons) Test MAE: 2.96 | Test RMSE: 5.98 | Test MAPE: 7.96% |
+test: 4.303328514099121test: 3.490388870239258test: 2.43119478225708test: 2.857701539993286test: 3.2566280364990234test: 3.6170012950897217test: 4.401403427124023test: 2.23716402053833test: 2.70320987701416test: 4.312193870544434test: 4.9938483238220215test: 2.5371947288513184test: 1.9321740865707397test: 1.5742231607437134test: 3.155430316925049test: 2.4894747734069824test: 1.858289122581482test: 1.8657774925231934test: 1.2784066200256348test: 2.0779120922088623test: 2.0156729221343994test: 2.1514601707458496test: 2.3275227546691895test: 2.461916446685791test: 1.7640870809555054test: 1.9558377265930176test: 2.540926933288574test: 3.3610124588012695test: 3.560239553451538test: 2.923609495162964test: 2.8644111156463623test: 3.107023239135742test: 2.5032479763031006test: 3.7838871479034424test: 2.0342376232147217test: 2.6926088333129883test: 3.923790454864502test: 4.677151679992676test: 2.6847262382507324test: 2.3948657512664795test: 0.0test: 5.226200580596924test: 4.426296234130859test: 1.9102154970169067test: 2.130718946456909test: 2.4524614810943604test: 3.4447193145751953test: 2.0751891136169434test: 1.8687628507614136test: 1.8775100708007812test: 1.5092490911483765test: 1.5864824056625366test: 2.0516977310180664test: 2.450776576995849609-12-18 | Epoch 026 | Train MAE=2.4162 MAPE=0.0669 RMSE=5.1512 | Val MAE=2.7058 RMSE=5.3461 MAPE=0.0719 | LR=0.000706
+EarlyStopping counter: 11 out of 30
+Evaluate best model on test data for horizon 1, Test MAE: 2.1913, Test RMSE: 3.8158, Test MAPE: 0.0514
+Evaluate best model on test data for horizon 2, Test MAE: 2.4545, Test RMSE: 4.5705, Test MAPE: 0.0597
+Evaluate best model on test data for horizon 3, Test MAE: 2.6377, Test RMSE: 5.0972, Test MAPE: 0.0665
+Evaluate best model on test data for horizon 4, Test MAE: 2.7729, Test RMSE: 5.5526, Test MAPE: 0.0718
+Evaluate best model on test data for horizon 5, Test MAE: 2.8801, Test RMSE: 5.8770, Test MAPE: 0.0760
+Evaluate best model on test data for horizon 6, Test MAE: 2.9904, Test RMSE: 6.1619, Test MAPE: 0.0804
+Evaluate best model on test data for horizon 7, Test MAE: 3.0756, Test RMSE: 6.4323, Test MAPE: 0.0835
+Evaluate best model on test data for horizon 8, Test MAE: 3.1547, Test RMSE: 6.6568, Test MAPE: 0.0864
+Evaluate best model on test data for horizon 9, Test MAE: 3.2304, Test RMSE: 6.8369, Test MAPE: 0.0896
+Evaluate best model on test data for horizon 10, Test MAE: 3.2875, Test RMSE: 6.9904, Test MAPE: 0.0912
+Evaluate best model on test data for horizon 11, Test MAE: 3.3540, Test RMSE: 7.1644, Test MAPE: 0.0937
+Evaluate best model on test data for horizon 12, Test MAE: 3.4084, Test RMSE: 7.2651, Test MAPE: 0.0962
+(On average over 12 horizons) Test MAE: 2.95 | Test RMSE: 6.04 | Test MAPE: 7.89% |
+test: 4.314916133880615test: 3.4812703132629395test: 2.4544119834899902test: 2.834897994995117test: 3.2626399993896484test: 3.6019694805145264test: 4.428991794586182test: 2.219899892807007test: 2.684443473815918test: 4.344099998474121test: 5.015101909637451test: 2.59354829788208test: 1.9296832084655762test: 1.5789885520935059test: 3.2361574172973633test: 2.533348321914673test: 1.7988835573196411test: 1.8636304140090942test: 1.2927170991897583test: 2.0938735008239746test: 2.0528793334960938test: 2.197295665740967test: 2.3362374305725098test: 2.5397136211395264test: 1.7927451133728027test: 2.0007777214050293test: 2.5383050441741943test: 3.289311408996582test: 3.6768908500671387test: 2.916239023208618test: 2.8411219120025635test: 3.039609670639038test: 2.4914731979370117test: 3.752692937850952test: 2.0283143520355225test: 2.666886806488037test: 3.9256319999694824test: 4.670840263366699test: 2.6558687686920166test: 2.382401943206787test: 0.0test: 5.11257266998291test: 4.564497470855713test: 1.8477528095245361test: 2.110830307006836test: 2.4197371006011963test: 3.4248011112213135test: 2.0209500789642334test: 1.8650041818618774test: 1.8013497591018677test: 1.5251692533493042test: 1.5616052150726318test: 2.0061488151550293test: 2.44391560554504409-12-21 | Epoch 027 | Train MAE=2.3951 MAPE=0.0661 RMSE=5.0925 | Val MAE=2.7049 RMSE=5.3045 MAPE=0.0719 | LR=0.000658
+EarlyStopping counter: 12 out of 30
+Evaluate best model on test data for horizon 1, Test MAE: 2.1979, Test RMSE: 3.8282, Test MAPE: 0.0514
+Evaluate best model on test data for horizon 2, Test MAE: 2.4641, Test RMSE: 4.5766, Test MAPE: 0.0599
+Evaluate best model on test data for horizon 3, Test MAE: 2.6395, Test RMSE: 5.0815, Test MAPE: 0.0664
+Evaluate best model on test data for horizon 4, Test MAE: 2.7937, Test RMSE: 5.5386, Test MAPE: 0.0719
+Evaluate best model on test data for horizon 5, Test MAE: 2.9003, Test RMSE: 5.8614, Test MAPE: 0.0766
+Evaluate best model on test data for horizon 6, Test MAE: 3.0063, Test RMSE: 6.1476, Test MAPE: 0.0807
+Evaluate best model on test data for horizon 7, Test MAE: 3.1133, Test RMSE: 6.4787, Test MAPE: 0.0848
+Evaluate best model on test data for horizon 8, Test MAE: 3.1889, Test RMSE: 6.7030, Test MAPE: 0.0882
+Evaluate best model on test data for horizon 9, Test MAE: 3.2620, Test RMSE: 6.8822, Test MAPE: 0.0910
+Evaluate best model on test data for horizon 10, Test MAE: 3.3336, Test RMSE: 7.0994, Test MAPE: 0.0933
+Evaluate best model on test data for horizon 11, Test MAE: 3.3902, Test RMSE: 7.2467, Test MAPE: 0.0957
+Evaluate best model on test data for horizon 12, Test MAE: 3.4483, Test RMSE: 7.3424, Test MAPE: 0.0976
+(On average over 12 horizons) Test MAE: 2.98 | Test RMSE: 6.07 | Test MAPE: 7.98% |
+test: 4.197592258453369test: 3.3697409629821777test: 2.4973320960998535test: 2.8355114459991455test: 3.164029598236084test: 3.570952892303467test: 4.514504432678223test: 2.2425920963287354test: 2.695161819458008test: 4.365007400512695test: 5.068939685821533test: 2.5956788063049316test: 1.9208886623382568test: 1.5771143436431885test: 3.277111291885376test: 2.6083595752716064test: 1.7677167654037476test: 1.860490322113037test: 1.3399938344955444test: 2.1429057121276855test: 2.0159387588500977test: 2.23942232131958test: 2.4008708000183105test: 2.550036668777466test: 1.773195743560791test: 2.0088720321655273test: 2.539207696914673test: 3.2684123516082764test: 3.7353904247283936test: 2.884915590286255test: 2.8434059619903564test: 2.991790771484375test: 2.462033987045288test: 3.7582759857177734test: 2.0269851684570312test: 2.685161590576172test: 3.920344591140747test: 4.762351989746094test: 2.648238182067871test: 2.384763240814209test: 0.0test: 5.007180690765381test: 4.593160152435303test: 1.8494930267333984test: 2.111919403076172test: 2.4266645908355713test: 3.4651036262512207test: 2.0635488033294678test: 1.8495073318481445test: 1.796384334564209test: 1.6197482347488403test: 1.660274624824524test: 2.002939224243164test: 2.429081201553344709-12-24 | Epoch 028 | Train MAE=2.3636 MAPE=0.0649 RMSE=5.0047 | Val MAE=2.7109 RMSE=5.3260 MAPE=0.0724 | LR=0.000608
+EarlyStopping counter: 13 out of 30
+Evaluate best model on test data for horizon 1, Test MAE: 2.1842, Test RMSE: 3.8019, Test MAPE: 0.0530
+Evaluate best model on test data for horizon 2, Test MAE: 2.4512, Test RMSE: 4.5710, Test MAPE: 0.0615
+Evaluate best model on test data for horizon 3, Test MAE: 2.6277, Test RMSE: 5.0786, Test MAPE: 0.0677
+Evaluate best model on test data for horizon 4, Test MAE: 2.7818, Test RMSE: 5.5191, Test MAPE: 0.0741
+Evaluate best model on test data for horizon 5, Test MAE: 2.8848, Test RMSE: 5.8516, Test MAPE: 0.0777
+Evaluate best model on test data for horizon 6, Test MAE: 2.9905, Test RMSE: 6.1292, Test MAPE: 0.0810
+Evaluate best model on test data for horizon 7, Test MAE: 3.0918, Test RMSE: 6.3951, Test MAPE: 0.0846
+Evaluate best model on test data for horizon 8, Test MAE: 3.1641, Test RMSE: 6.6312, Test MAPE: 0.0870
+Evaluate best model on test data for horizon 9, Test MAE: 3.2390, Test RMSE: 6.8120, Test MAPE: 0.0891
+Evaluate best model on test data for horizon 10, Test MAE: 3.3109, Test RMSE: 6.9785, Test MAPE: 0.0916
+Evaluate best model on test data for horizon 11, Test MAE: 3.3639, Test RMSE: 7.1433, Test MAPE: 0.0935
+Evaluate best model on test data for horizon 12, Test MAE: 3.4313, Test RMSE: 7.2536, Test MAPE: 0.0955
+(On average over 12 horizons) Test MAE: 2.96 | Test RMSE: 6.01 | Test MAPE: 7.97% |
+test: 4.2487382888793945test: 3.481713056564331test: 2.4424283504486084test: 2.8342981338500977test: 3.2765114307403564test: 3.6929733753204346test: 4.440751552581787test: 2.2426366806030273test: 2.6793360710144043test: 4.27069091796875test: 5.1551618576049805test: 2.5551552772521973test: 1.9264625310897827test: 1.5644172430038452test: 3.1172008514404297test: 2.4985764026641846test: 1.8526268005371094test: 1.8643553256988525test: 1.2886680364608765test: 2.0410804748535156test: 2.0961315631866455test: 2.2597641944885254test: 2.385904312133789test: 2.604858160018921test: 1.8012654781341553test: 2.026411771774292test: 2.5135231018066406test: 3.2405614852905273test: 3.7045862674713135test: 2.8629908561706543test: 2.849619150161743test: 2.9894721508026123test: 2.4845876693725586test: 3.6501688957214355test: 2.015012741088867test: 2.678635597229004test: 3.964470624923706test: 4.770100116729736test: 2.6466851234436035test: 2.377673864364624test: 0.0test: 5.075695991516113test: 4.532157897949219test: 1.8399333953857422test: 2.1065337657928467test: 2.3747708797454834test: 3.4454948902130127test: 2.042489528656006test: 1.8700368404388428test: 1.8014036417007446test: 1.4938901662826538test: 1.5772098302841187test: 1.9993895292282104test: 2.441681861877441409-12-26 | Epoch 029 | Train MAE=2.3431 MAPE=0.0641 RMSE=4.9458 | Val MAE=2.7036 RMSE=5.2979 MAPE=0.0742 | LR=0.000557
+EarlyStopping counter: 14 out of 30
+Evaluate best model on test data for horizon 1, Test MAE: 2.1885, Test RMSE: 3.7966, Test MAPE: 0.0535
+Evaluate best model on test data for horizon 2, Test MAE: 2.4671, Test RMSE: 4.5644, Test MAPE: 0.0625
+Evaluate best model on test data for horizon 3, Test MAE: 2.6436, Test RMSE: 5.0942, Test MAPE: 0.0690
+Evaluate best model on test data for horizon 4, Test MAE: 2.7916, Test RMSE: 5.5522, Test MAPE: 0.0749
+Evaluate best model on test data for horizon 5, Test MAE: 2.9079, Test RMSE: 5.8895, Test MAPE: 0.0795
+Evaluate best model on test data for horizon 6, Test MAE: 3.0103, Test RMSE: 6.1797, Test MAPE: 0.0836
+Evaluate best model on test data for horizon 7, Test MAE: 3.0997, Test RMSE: 6.4544, Test MAPE: 0.0872
+Evaluate best model on test data for horizon 8, Test MAE: 3.1793, Test RMSE: 6.6719, Test MAPE: 0.0905
+Evaluate best model on test data for horizon 9, Test MAE: 3.2463, Test RMSE: 6.8578, Test MAPE: 0.0934
+Evaluate best model on test data for horizon 10, Test MAE: 3.3042, Test RMSE: 7.0332, Test MAPE: 0.0956
+Evaluate best model on test data for horizon 11, Test MAE: 3.3589, Test RMSE: 7.1728, Test MAPE: 0.0981
+Evaluate best model on test data for horizon 12, Test MAE: 3.4202, Test RMSE: 7.2777, Test MAPE: 0.1006
+(On average over 12 horizons) Test MAE: 2.97 | Test RMSE: 6.05 | Test MAPE: 8.24% |
+test: 4.333321571350098test: 3.5500051975250244test: 2.4672722816467285test: 2.853006601333618test: 3.3197755813598633test: 3.731299877166748test: 4.527591705322266test: 2.273925304412842test: 2.7119290828704834test: 4.323691368103027test: 5.14370059967041test: 2.54612398147583test: 1.924704670906067test: 1.5588512420654297test: 3.2827844619750977test: 2.559915065765381test: 1.856160283088684test: 1.8631582260131836test: 1.274267554283142test: 2.0824387073516846test: 2.036694288253784test: 2.1430583000183105test: 2.281299114227295test: 2.3537850379943848test: 1.6898350715637207test: 1.9527181386947632test: 2.490952968597412test: 3.3233699798583984test: 3.813778877258301test: 2.9347357749938965test: 2.855285167694092test: 3.044506788253784test: 2.578958034515381test: 3.7159712314605713test: 2.0388998985290527test: 2.7032954692840576test: 3.9860832691192627test: 4.739295482635498test: 2.6442015171051025test: 2.394561290740967test: 0.0test: 5.2426438331604test: 4.5121870040893555test: 1.8535698652267456test: 2.1078133583068848test: 2.42482590675354test: 3.548909902572632test: 2.062711238861084test: 1.8595157861709595test: 1.7859007120132446test: 1.5280474424362183test: 1.5727150440216064test: 2.0075056552886963test: 2.439989805221557609-12-29 | Epoch 030 | Train MAE=2.3152 MAPE=0.0632 RMSE=4.8682 | Val MAE=2.7195 RMSE=5.3987 MAPE=0.0750 | LR=0.000505
+EarlyStopping counter: 15 out of 30
+Evaluate best model on test data for horizon 1, Test MAE: 2.2020, Test RMSE: 3.8681, Test MAPE: 0.0529
+Evaluate best model on test data for horizon 2, Test MAE: 2.4701, Test RMSE: 4.6366, Test MAPE: 0.0617
+Evaluate best model on test data for horizon 3, Test MAE: 2.6429, Test RMSE: 5.1494, Test MAPE: 0.0684
+Evaluate best model on test data for horizon 4, Test MAE: 2.7943, Test RMSE: 5.6152, Test MAPE: 0.0740
+Evaluate best model on test data for horizon 5, Test MAE: 2.9048, Test RMSE: 5.9452, Test MAPE: 0.0785
+Evaluate best model on test data for horizon 6, Test MAE: 3.0010, Test RMSE: 6.2213, Test MAPE: 0.0829
+Evaluate best model on test data for horizon 7, Test MAE: 3.1088, Test RMSE: 6.5330, Test MAPE: 0.0878
+Evaluate best model on test data for horizon 8, Test MAE: 3.1874, Test RMSE: 6.7553, Test MAPE: 0.0913
+Evaluate best model on test data for horizon 9, Test MAE: 3.2533, Test RMSE: 6.9420, Test MAPE: 0.0946
+Evaluate best model on test data for horizon 10, Test MAE: 3.3246, Test RMSE: 7.1397, Test MAPE: 0.0979
+Evaluate best model on test data for horizon 11, Test MAE: 3.3900, Test RMSE: 7.2990, Test MAPE: 0.1008
+Evaluate best model on test data for horizon 12, Test MAE: 3.4492, Test RMSE: 7.4273, Test MAPE: 0.1036
+(On average over 12 horizons) Test MAE: 2.98 | Test RMSE: 6.13 | Test MAPE: 8.29% |
+test: 4.354336261749268test: 3.4976725578308105test: 2.466918468475342test: 2.8434064388275146test: 3.274932861328125test: 3.681840658187866test: 4.5048723220825195test: 2.2427144050598145test: 2.691324234008789test: 4.353865146636963test: 5.073261737823486test: 2.5501952171325684test: 1.920454978942871test: 1.5658904314041138test: 3.280259370803833test: 2.5792970657348633test: 1.8450772762298584test: 1.8592523336410522test: 1.2837165594100952test: 2.097888708114624test: 2.122438669204712test: 2.178619623184204test: 2.404816150665283test: 2.584815502166748test: 1.8512625694274902test: 1.9795312881469727test: 2.524740695953369test: 3.3023149967193604test: 3.698410987854004test: 2.912381172180176test: 2.8552589416503906test: 3.069209337234497test: 2.488971471786499test: 3.7893331050872803test: 2.0254476070404053test: 2.6631407737731934test: 3.9031217098236084test: 4.740654468536377test: 2.6517891883850098test: 2.3902056217193604test: 0.0test: 5.163748264312744test: 4.506812572479248test: 1.853376865386963test: 2.1019725799560547test: 2.4529001712799072test: 3.4834461212158203test: 2.0569682121276855test: 1.8586866855621338test: 1.796191692352295test: 1.6100014448165894test: 1.6077927350997925test: 1.9962046146392822test: 2.441437721252441409-12-32 | Epoch 031 | Train MAE=2.2978 MAPE=0.0625 RMSE=4.8184 | Val MAE=2.7228 RMSE=5.3956 MAPE=0.0737 | LR=0.000453
+EarlyStopping counter: 16 out of 30
+Evaluate best model on test data for horizon 1, Test MAE: 2.1831, Test RMSE: 3.8238, Test MAPE: 0.0519
+Evaluate best model on test data for horizon 2, Test MAE: 2.4608, Test RMSE: 4.6034, Test MAPE: 0.0608
+Evaluate best model on test data for horizon 3, Test MAE: 2.6401, Test RMSE: 5.1341, Test MAPE: 0.0675
+Evaluate best model on test data for horizon 4, Test MAE: 2.7970, Test RMSE: 5.6265, Test MAPE: 0.0738
+Evaluate best model on test data for horizon 5, Test MAE: 2.9080, Test RMSE: 5.9519, Test MAPE: 0.0780
+Evaluate best model on test data for horizon 6, Test MAE: 3.0108, Test RMSE: 6.2423, Test MAPE: 0.0820
+Evaluate best model on test data for horizon 7, Test MAE: 3.1152, Test RMSE: 6.5446, Test MAPE: 0.0865
+Evaluate best model on test data for horizon 8, Test MAE: 3.1960, Test RMSE: 6.7644, Test MAPE: 0.0895
+Evaluate best model on test data for horizon 9, Test MAE: 3.2671, Test RMSE: 6.9514, Test MAPE: 0.0924
+Evaluate best model on test data for horizon 10, Test MAE: 3.3303, Test RMSE: 7.1339, Test MAPE: 0.0951
+Evaluate best model on test data for horizon 11, Test MAE: 3.3913, Test RMSE: 7.2784, Test MAPE: 0.0974
+Evaluate best model on test data for horizon 12, Test MAE: 3.4555, Test RMSE: 7.3813, Test MAPE: 0.0999
+(On average over 12 horizons) Test MAE: 2.98 | Test RMSE: 6.12 | Test MAPE: 8.12% |
+test: 4.2559895515441895test: 3.441591501235962test: 2.4696760177612305test: 2.838738203048706test: 3.297300100326538test: 3.644773483276367test: 4.4591755867004395test: 2.235509157180786test: 2.690962553024292test: 4.325481414794922test: 5.094966888427734test: 2.5242116451263428test: 1.9210749864578247test: 1.5710967779159546test: 3.228726863861084test: 2.5805065631866455test: 1.8328218460083008test: 1.8602137565612793test: 1.3052970170974731test: 2.143589735031128test: 2.0620620250701904test: 2.2035787105560303test: 2.29339599609375test: 2.555591106414795test: 1.7991576194763184test: 2.0010712146759033test: 2.524423122406006test: 3.3015658855438232test: 3.692495584487915test: 2.933483600616455test: 2.8457016944885254test: 3.0554263591766357test: 2.4814672470092773test: 3.7030019760131836test: 2.0303099155426025test: 2.6810193061828613test: 3.983335256576538test: 4.766658782958984test: 2.6733238697052test: 2.3764169216156006test: 0.0test: 5.2437849044799805test: 4.536438941955566test: 1.8542101383209229test: 2.104921340942383test: 2.4484753608703613test: 3.425762891769409test: 2.044652223587036test: 1.8432031869888306test: 1.8009045124053955test: 1.5726709365844727test: 1.6027151346206665test: 2.0026907920837402test: 2.432439804077148409-12-35 | Epoch 032 | Train MAE=2.2803 MAPE=0.0618 RMSE=4.7657 | Val MAE=2.7148 RMSE=5.3911 MAPE=0.0736 | LR=0.000402
+EarlyStopping counter: 17 out of 30
+Evaluate best model on test data for horizon 1, Test MAE: 2.1855, Test RMSE: 3.8338, Test MAPE: 0.0519
+Evaluate best model on test data for horizon 2, Test MAE: 2.4603, Test RMSE: 4.6127, Test MAPE: 0.0610
+Evaluate best model on test data for horizon 3, Test MAE: 2.6335, Test RMSE: 5.1259, Test MAPE: 0.0676
+Evaluate best model on test data for horizon 4, Test MAE: 2.7966, Test RMSE: 5.6430, Test MAPE: 0.0738
+Evaluate best model on test data for horizon 5, Test MAE: 2.9095, Test RMSE: 5.9684, Test MAPE: 0.0782
+Evaluate best model on test data for horizon 6, Test MAE: 2.9987, Test RMSE: 6.2296, Test MAPE: 0.0820
+Evaluate best model on test data for horizon 7, Test MAE: 3.1066, Test RMSE: 6.5400, Test MAPE: 0.0866
+Evaluate best model on test data for horizon 8, Test MAE: 3.1866, Test RMSE: 6.7531, Test MAPE: 0.0897
+Evaluate best model on test data for horizon 9, Test MAE: 3.2433, Test RMSE: 6.9149, Test MAPE: 0.0923
+Evaluate best model on test data for horizon 10, Test MAE: 3.3172, Test RMSE: 7.1225, Test MAPE: 0.0954
+Evaluate best model on test data for horizon 11, Test MAE: 3.3810, Test RMSE: 7.2751, Test MAPE: 0.0976
+Evaluate best model on test data for horizon 12, Test MAE: 3.4387, Test RMSE: 7.3786, Test MAPE: 0.0998
+(On average over 12 horizons) Test MAE: 2.97 | Test RMSE: 6.12 | Test MAPE: 8.13% |
+test: 4.218520641326904test: 3.5016260147094727test: 2.479370594024658test: 2.8493130207061768test: 3.2944424152374268test: 3.645444631576538test: 4.542019367218018test: 2.2456908226013184test: 2.718273639678955test: 4.3250579833984375test: 5.199217319488525test: 2.52105712890625test: 1.9270113706588745test: 1.5670126676559448test: 3.2894318103790283test: 2.61250638961792test: 1.8978517055511475test: 1.8595051765441895test: 1.2935609817504883test: 2.119642972946167test: 2.1567208766937256test: 2.2104921340942383test: 2.3698487281799316test: 2.6932432651519775test: 1.826516032218933test: 2.011569023132324test: 2.5377180576324463test: 3.2308456897735596test: 3.7897379398345947test: 2.9368209838867188test: 2.8635597229003906test: 3.0424439907073975test: 2.4940505027770996test: 3.6396851539611816test: 2.0420737266540527test: 2.7125754356384277test: 3.9426450729370117test: 4.799724578857422test: 2.6443428993225098test: 2.4055123329162598test: 0.0test: 5.204501628875732test: 4.635791778564453test: 1.855573296546936test: 2.112462043762207test: 2.4270730018615723test: 3.491560459136963test: 2.1353869438171387test: 1.8605748414993286test: 1.8017873764038086test: 1.6076229810714722test: 1.6102409362792969test: 1.9922680854797363test: 2.438381910324096709-12-38 | Epoch 033 | Train MAE=2.2573 MAPE=0.0610 RMSE=4.7024 | Val MAE=2.7339 RMSE=5.3695 MAPE=0.0755 | LR=0.000352
+EarlyStopping counter: 18 out of 30
+Evaluate best model on test data for horizon 1, Test MAE: 2.1802, Test RMSE: 3.8150, Test MAPE: 0.0526
+Evaluate best model on test data for horizon 2, Test MAE: 2.4583, Test RMSE: 4.5797, Test MAPE: 0.0619
+Evaluate best model on test data for horizon 3, Test MAE: 2.6412, Test RMSE: 5.1240, Test MAPE: 0.0692
+Evaluate best model on test data for horizon 4, Test MAE: 2.8032, Test RMSE: 5.6126, Test MAPE: 0.0756
+Evaluate best model on test data for horizon 5, Test MAE: 2.9147, Test RMSE: 5.9233, Test MAPE: 0.0799
+Evaluate best model on test data for horizon 6, Test MAE: 3.0164, Test RMSE: 6.2155, Test MAPE: 0.0844
+Evaluate best model on test data for horizon 7, Test MAE: 3.1209, Test RMSE: 6.5166, Test MAPE: 0.0884
+Evaluate best model on test data for horizon 8, Test MAE: 3.1968, Test RMSE: 6.7103, Test MAPE: 0.0914
+Evaluate best model on test data for horizon 9, Test MAE: 3.2661, Test RMSE: 6.9018, Test MAPE: 0.0947
+Evaluate best model on test data for horizon 10, Test MAE: 3.3369, Test RMSE: 7.1112, Test MAPE: 0.0974
+Evaluate best model on test data for horizon 11, Test MAE: 3.3912, Test RMSE: 7.2350, Test MAPE: 0.0996
+Evaluate best model on test data for horizon 12, Test MAE: 3.4642, Test RMSE: 7.3454, Test MAPE: 0.1028
+(On average over 12 horizons) Test MAE: 2.98 | Test RMSE: 6.09 | Test MAPE: 8.31% |
+test: 4.256377220153809test: 3.4477837085723877test: 2.464454412460327test: 2.8269546031951904test: 3.251234769821167test: 3.6078221797943115test: 4.437331199645996test: 2.247138738632202test: 2.697319984436035test: 4.3367695808410645test: 5.149084091186523test: 2.559528350830078test: 1.9168951511383057test: 1.5607625246047974test: 3.2056028842926025test: 2.574387550354004test: 1.8302204608917236test: 1.8545690774917603test: 1.2876678705215454test: 2.174349069595337test: 2.1235146522521973test: 2.2037532329559326test: 2.3761510848999023test: 2.6191155910491943test: 1.8659121990203857test: 2.01134991645813test: 2.530635356903076test: 3.3234639167785645test: 3.7271227836608887test: 2.9279379844665527test: 2.8463797569274902test: 3.053086280822754test: 2.5351755619049072test: 3.7013370990753174test: 2.0286824703216553test: 2.6754915714263916test: 3.9602370262145996test: 4.777908802032471test: 2.681668281555176test: 2.376258134841919test: 0.0test: 5.137270927429199test: 4.561159610748291test: 1.8550465106964111test: 2.102924346923828test: 2.4200868606567383test: 3.4410572052001953test: 2.0932912826538086test: 1.8575820922851562test: 1.7922229766845703test: 1.6061724424362183test: 1.61508047580719test: 1.9918690919876099test: 2.437900304794311509-12-41 | Epoch 034 | Train MAE=2.2381 MAPE=0.0603 RMSE=4.6458 | Val MAE=2.7212 RMSE=5.3939 MAPE=0.0738 | LR=0.000304
+EarlyStopping counter: 19 out of 30
+Evaluate best model on test data for horizon 1, Test MAE: 2.1747, Test RMSE: 3.8039, Test MAPE: 0.0519
+Evaluate best model on test data for horizon 2, Test MAE: 2.4501, Test RMSE: 4.5816, Test MAPE: 0.0610
+Evaluate best model on test data for horizon 3, Test MAE: 2.6335, Test RMSE: 5.1246, Test MAPE: 0.0680
+Evaluate best model on test data for horizon 4, Test MAE: 2.7898, Test RMSE: 5.6061, Test MAPE: 0.0735
+Evaluate best model on test data for horizon 5, Test MAE: 2.8989, Test RMSE: 5.9353, Test MAPE: 0.0779
+Evaluate best model on test data for horizon 6, Test MAE: 3.0020, Test RMSE: 6.2266, Test MAPE: 0.0820
+Evaluate best model on test data for horizon 7, Test MAE: 3.1037, Test RMSE: 6.5128, Test MAPE: 0.0857
+Evaluate best model on test data for horizon 8, Test MAE: 3.1755, Test RMSE: 6.7144, Test MAPE: 0.0887
+Evaluate best model on test data for horizon 9, Test MAE: 3.2459, Test RMSE: 6.8981, Test MAPE: 0.0916
+Evaluate best model on test data for horizon 10, Test MAE: 3.3101, Test RMSE: 7.0795, Test MAPE: 0.0943
+Evaluate best model on test data for horizon 11, Test MAE: 3.3660, Test RMSE: 7.2262, Test MAPE: 0.0967
+Evaluate best model on test data for horizon 12, Test MAE: 3.4285, Test RMSE: 7.3398, Test MAPE: 0.0991
+(On average over 12 horizons) Test MAE: 2.96 | Test RMSE: 6.09 | Test MAPE: 8.09% |
+test: 4.281404972076416test: 3.452561378479004test: 2.4717092514038086test: 2.8307673931121826test: 3.2520222663879395test: 3.6499578952789307test: 4.56496524810791test: 2.2501585483551025test: 2.6740200519561768test: 4.256741523742676test: 5.1520094871521test: 2.520329236984253test: 1.9247788190841675test: 1.5586954355239868test: 3.280834436416626test: 2.5992417335510254test: 1.8693963289260864test: 1.8615704774856567test: 1.2880275249481201test: 2.154731035232544test: 2.118959903717041test: 2.312727928161621test: 2.453732490539551test: 2.761754274368286test: 1.852192759513855test: 2.0966243743896484test: 2.554490089416504test: 3.2246530055999756test: 3.783918619155884test: 2.983396530151367test: 2.839350700378418test: 2.991114616394043test: 2.5280301570892334test: 3.6522934436798096test: 2.0171585083007812test: 2.6574196815490723test: 3.9843757152557373test: 4.850162982940674test: 2.638362407684326test: 2.3711187839508057test: 0.0test: 5.205690860748291test: 4.640910625457764test: 1.8417202234268188test: 2.1025474071502686test: 2.4124112129211426test: 3.4807777404785156test: 2.038201093673706test: 1.8445265293121338test: 1.7912594079971313test: 1.625205159187317test: 1.59958016872406test: 1.9998115301132202test: 2.442669868469238309-12-44 | Epoch 035 | Train MAE=2.2237 MAPE=0.0598 RMSE=4.6063 | Val MAE=2.7332 RMSE=5.3769 MAPE=0.0750 | LR=0.000258
+EarlyStopping counter: 20 out of 30
+Evaluate best model on test data for horizon 1, Test MAE: 2.1866, Test RMSE: 3.8158, Test MAPE: 0.0530
+Evaluate best model on test data for horizon 2, Test MAE: 2.4660, Test RMSE: 4.6056, Test MAPE: 0.0624
+Evaluate best model on test data for horizon 3, Test MAE: 2.6499, Test RMSE: 5.1377, Test MAPE: 0.0691
+Evaluate best model on test data for horizon 4, Test MAE: 2.8099, Test RMSE: 5.6341, Test MAPE: 0.0748
+Evaluate best model on test data for horizon 5, Test MAE: 2.9200, Test RMSE: 5.9479, Test MAPE: 0.0792
+Evaluate best model on test data for horizon 6, Test MAE: 3.0242, Test RMSE: 6.2342, Test MAPE: 0.0832
+Evaluate best model on test data for horizon 7, Test MAE: 3.1318, Test RMSE: 6.5385, Test MAPE: 0.0877
+Evaluate best model on test data for horizon 8, Test MAE: 3.2068, Test RMSE: 6.7414, Test MAPE: 0.0908
+Evaluate best model on test data for horizon 9, Test MAE: 3.2781, Test RMSE: 6.9338, Test MAPE: 0.0937
+Evaluate best model on test data for horizon 10, Test MAE: 3.3532, Test RMSE: 7.1528, Test MAPE: 0.0972
+Evaluate best model on test data for horizon 11, Test MAE: 3.4065, Test RMSE: 7.2824, Test MAPE: 0.0996
+Evaluate best model on test data for horizon 12, Test MAE: 3.4751, Test RMSE: 7.3916, Test MAPE: 0.1024
+(On average over 12 horizons) Test MAE: 2.99 | Test RMSE: 6.12 | Test MAPE: 8.27% |
+test: 4.2527055740356445test: 3.477280855178833test: 2.4654953479766846test: 2.83252215385437test: 3.2278268337249756test: 3.6308000087738037test: 4.544966697692871test: 2.2494049072265625test: 2.6831319332122803test: 4.278266906738281test: 5.185945987701416test: 2.538597822189331test: 1.9279158115386963test: 1.5694600343704224test: 3.3019657135009766test: 2.611650228500366test: 1.8229719400405884test: 1.8591060638427734test: 1.2919799089431763test: 2.113790273666382test: 2.130398988723755test: 2.3215315341949463test: 2.4104373455047607test: 2.7131600379943848test: 1.8356517553329468test: 2.074273109436035test: 2.5665807723999023test: 3.2450196743011475test: 3.7806622982025146test: 2.90449595451355test: 2.8363122940063477test: 3.0460312366485596test: 2.518665075302124test: 3.6319830417633057test: 2.0196611881256104test: 2.6682844161987305test: 3.966977834701538test: 4.852656841278076test: 2.6515328884124756test: 2.368680715560913test: 0.0test: 5.196239471435547test: 4.667051792144775test: 1.852189540863037test: 2.100722074508667test: 2.449890375137329test: 3.4978086948394775test: 2.0466198921203613test: 1.8434873819351196test: 1.7896727323532104test: 1.6058470010757446test: 1.604605793952942test: 1.998070478439331test: 2.441997051239013709-12-46 | Epoch 036 | Train MAE=2.2056 MAPE=0.0592 RMSE=4.5562 | Val MAE=2.7315 RMSE=5.3784 MAPE=0.0744 | LR=0.000214
+EarlyStopping counter: 21 out of 30
+Evaluate best model on test data for horizon 1, Test MAE: 2.1834, Test RMSE: 3.8168, Test MAPE: 0.0520
+Evaluate best model on test data for horizon 2, Test MAE: 2.4563, Test RMSE: 4.5963, Test MAPE: 0.0610
+Evaluate best model on test data for horizon 3, Test MAE: 2.6396, Test RMSE: 5.1283, Test MAPE: 0.0677
+Evaluate best model on test data for horizon 4, Test MAE: 2.8024, Test RMSE: 5.6360, Test MAPE: 0.0745
+Evaluate best model on test data for horizon 5, Test MAE: 2.9147, Test RMSE: 5.9561, Test MAPE: 0.0788
+Evaluate best model on test data for horizon 6, Test MAE: 3.0161, Test RMSE: 6.2380, Test MAPE: 0.0829
+Evaluate best model on test data for horizon 7, Test MAE: 3.1232, Test RMSE: 6.5423, Test MAPE: 0.0875
+Evaluate best model on test data for horizon 8, Test MAE: 3.1996, Test RMSE: 6.7468, Test MAPE: 0.0905
+Evaluate best model on test data for horizon 9, Test MAE: 3.2666, Test RMSE: 6.9263, Test MAPE: 0.0934
+Evaluate best model on test data for horizon 10, Test MAE: 3.3360, Test RMSE: 7.1271, Test MAPE: 0.0966
+Evaluate best model on test data for horizon 11, Test MAE: 3.3932, Test RMSE: 7.2688, Test MAPE: 0.0988
+Evaluate best model on test data for horizon 12, Test MAE: 3.4549, Test RMSE: 7.3717, Test MAPE: 0.1012
+(On average over 12 horizons) Test MAE: 2.98 | Test RMSE: 6.11 | Test MAPE: 8.21% |
+test: 4.245254993438721test: 3.495495319366455test: 2.451819896697998test: 2.835556983947754test: 3.228386878967285test: 3.6741878986358643test: 4.556838035583496test: 2.2437314987182617test: 2.6831586360931396test: 4.290139198303223test: 5.1938066482543945test: 2.520951271057129test: 1.919128179550171test: 1.5607911348342896test: 3.2845873832702637test: 2.579285144805908test: 1.8159873485565186test: 1.857134461402893test: 1.277565836906433test: 2.149564743041992test: 2.0928006172180176test: 2.193831205368042test: 2.3441925048828125test: 2.6056456565856934test: 1.7647628784179688test: 2.0124385356903076test: 2.521541118621826test: 3.270893096923828test: 3.829845905303955test: 2.93351149559021test: 2.841451406478882test: 3.0340471267700195test: 2.530024528503418test: 3.6585633754730225test: 2.0229597091674805test: 2.669689178466797test: 3.9620351791381836test: 4.860302448272705test: 2.626054525375366test: 2.3712048530578613test: 0.0test: 5.219925880432129test: 4.608729362487793test: 1.839246153831482test: 2.0991315841674805test: 2.4183192253112793test: 3.472419261932373test: 2.044424295425415test: 1.85098397731781test: 1.787414312362671test: 1.6220197677612305test: 1.600965142250061test: 1.991355061531067test: 2.438039302825927709-12-49 | Epoch 037 | Train MAE=2.1921 MAPE=0.0586 RMSE=4.5160 | Val MAE=2.7223 RMSE=5.3975 MAPE=0.0750 | LR=0.000174
+EarlyStopping counter: 22 out of 30
+Evaluate best model on test data for horizon 1, Test MAE: 2.1781, Test RMSE: 3.8270, Test MAPE: 0.0527
+Evaluate best model on test data for horizon 2, Test MAE: 2.4571, Test RMSE: 4.6229, Test MAPE: 0.0619
+Evaluate best model on test data for horizon 3, Test MAE: 2.6394, Test RMSE: 5.1516, Test MAPE: 0.0689
+Evaluate best model on test data for horizon 4, Test MAE: 2.7998, Test RMSE: 5.6510, Test MAPE: 0.0752
+Evaluate best model on test data for horizon 5, Test MAE: 2.9115, Test RMSE: 5.9788, Test MAPE: 0.0795
+Evaluate best model on test data for horizon 6, Test MAE: 3.0149, Test RMSE: 6.2607, Test MAPE: 0.0837
+Evaluate best model on test data for horizon 7, Test MAE: 3.1166, Test RMSE: 6.5535, Test MAPE: 0.0880
+Evaluate best model on test data for horizon 8, Test MAE: 3.1935, Test RMSE: 6.7667, Test MAPE: 0.0910
+Evaluate best model on test data for horizon 9, Test MAE: 3.2642, Test RMSE: 6.9467, Test MAPE: 0.0940
+Evaluate best model on test data for horizon 10, Test MAE: 3.3378, Test RMSE: 7.1653, Test MAPE: 0.0973
+Evaluate best model on test data for horizon 11, Test MAE: 3.3947, Test RMSE: 7.3104, Test MAPE: 0.0997
+Evaluate best model on test data for horizon 12, Test MAE: 3.4519, Test RMSE: 7.4007, Test MAPE: 0.1021
+(On average over 12 horizons) Test MAE: 2.98 | Test RMSE: 6.14 | Test MAPE: 8.28% |
+test: 4.280311584472656test: 3.453430414199829test: 2.473120927810669test: 2.844892740249634test: 3.232745409011841test: 3.673415422439575test: 4.538158893585205test: 2.244720458984375test: 2.702301025390625test: 4.335385322570801test: 5.1996049880981445test: 2.535182237625122test: 1.9208316802978516test: 1.5648715496063232test: 3.35878849029541test: 2.5874974727630615test: 1.8276830911636353test: 1.8587006330490112test: 1.291822075843811test: 2.1588940620422363test: 2.077779531478882test: 2.1659820079803467test: 2.4132208824157715test: 2.565030574798584test: 1.8091177940368652test: 1.9943162202835083test: 2.503918170928955test: 3.2825546264648438test: 3.8463644981384277test: 2.9662818908691406test: 2.85249924659729test: 2.992363929748535test: 2.5470218658447266test: 3.680807590484619test: 2.024540662765503test: 2.6602113246917725test: 3.97373104095459test: 4.899928569793701test: 2.622157335281372test: 2.3823928833007812test: 0.0test: 5.204440593719482test: 4.603967666625977test: 1.859774112701416test: 2.105363607406616test: 2.4566869735717773test: 3.496363401412964test: 2.071256637573242test: 1.8479993343353271test: 1.8040989637374878test: 1.6656118631362915test: 1.602639079093933test: 1.9930508136749268test: 2.43831920623779309-12-52 | Epoch 038 | Train MAE=2.1785 MAPE=0.0581 RMSE=4.4790 | Val MAE=2.7313 RMSE=5.4085 MAPE=0.0741 | LR=0.000137
+EarlyStopping: plateau detected at counter 23/30
+Early stopping!
+
+Avg Train: 153.8691s/epoch
+Avg Val  : 6.4188s/epoch
+Best Val : 2.6585
+
+[CAS] Pipeline complete. Saved: experiments/results/walpurgis_METR-LA_20260609_110426/D2STGNN_METR-LA.pt
+Total time: 6485.51s
+[TRAIN] Finished at 12:52:34
+[EVAL] Running evaluation...
+Model: experiments/results/walpurgis_METR-LA_20260609_110426/D2STGNN_METR-LA.pt
+Keys: ['T_i_D_emb', 'D_i_W_emb', 'cascade_weights', 'node_emb_u', 'node_emb_d', '_adj_temperature', 'embedding.weight', 'embedding.bias', 'embed_se.ln.weight', 'embed_se.ln.bias', 'embed_se.excitation.0.weight', 'embed_se.excitation.2.weight', 'layers.0.freq_gate', 'layers.0.estimation_gate.fully_connected_layer_1.weight', 'layers.0.estimation_gate.fully_connected_layer_1.bias', 'layers.0.estimation_gate.fully_connected_layer_2.weight', 'layers.0.estimation_gate.fully_connected_layer_2.bias', 'layers.0.dif_layer.localized_st_conv.fc_list_updt.weight', 'layers.0.dif_layer.localized_st_conv.gcn_updt.weight', 'layers.0.dif_layer.localized_st_conv.gcn_updt.bias', 'layers.0.dif_layer.localized_st_conv.bn.weight', 'layers.0.dif_layer.localized_st_conv.bn.bias', 'layers.0.dif_layer.localized_st_conv.bn.running_mean', 'layers.0.dif_layer.localized_st_conv.bn.running_var', 'layers.0.dif_layer.localized_st_conv.bn.num_batches_tracked', 'layers.0.dif_layer.forecast_branch.pad_bias', 'layers.0.dif_layer.forecast_branch.forecast_fc.weight', 'layers.0.dif_layer.forecast_branch.forecast_fc.bias', 'layers.0.dif_layer.forecast_branch.bn.weight', 'layers.0.dif_layer.forecast_branch.bn.bias', 'layers.0.dif_layer.forecast_branch.bn.running_mean', 'layers.0.dif_layer.forecast_branch.bn.running_var', 'layers.0.dif_layer.forecast_branch.bn.num_batches_tracked', 'layers.0.dif_layer.backcast_branch.weight', 'layers.0.dif_layer.backcast_branch.bias', 'layers.0.dif_layer.residual_decompose.ln.weight', 'layers.0.dif_layer.residual_decompose.ln.bias', 'layers.0.inh_layer.pos_encoder.depth_scale', 'layers.0.inh_layer.pos_encoder.pe', 'layers.0.inh_layer.rnn_layer.gru_cell.weight_ih', 'layers.0.inh_layer.rnn_layer.gru_cell.weight_hh', 'layers.0.inh_layer.rnn_layer.gru_cell.bias_ih', 'layers.0.inh_layer.rnn_layer.gru_cell.bias_hh', 'layers.0.inh_layer.rnn_layer.ln.weight', 'layers.0.inh_layer.rnn_layer.ln.bias', 'layers.0.inh_layer.transformer_layer.res_scale', 'layers.0.inh_layer.transformer_layer.multi_head_self_attention.in_proj_weight', 'layers.0.inh_layer.transformer_layer.multi_head_self_attention.in_proj_bias', 'layers.0.inh_layer.transformer_layer.multi_head_self_attention.out_proj.weight', 'layers.0.inh_layer.transformer_layer.multi_head_self_attention.out_proj.bias', 'layers.0.inh_layer.forecast_block.step_weights', 'layers.0.inh_layer.forecast_block.forecast_fc.weight', 'layers.0.inh_layer.forecast_block.forecast_fc.bias', 'layers.0.inh_layer.backcast_fc.weight', 'layers.0.inh_layer.backcast_fc.bias', 'layers.0.inh_layer.residual_decompose.ln.weight', 'layers.0.inh_layer.residual_decompose.ln.bias', 'layers.0.se_block.ln.weight', 'layers.0.se_block.ln.bias', 'layers.0.se_block.excitation.0.weight', 'layers.0.se_block.excitation.2.weight', 'layers.0.cascade_proj.weight', 'layers.0.cascade_proj.bias', 'layers.1.freq_gate', 'layers.1.estimation_gate.fully_connected_layer_1.weight', 'layers.1.estimation_gate.fully_connected_layer_1.bias', 'layers.1.estimation_gate.fully_connected_layer_2.weight', 'layers.1.estimation_gate.fully_connected_layer_2.bias', 'layers.1.dif_layer.localized_st_conv.fc_list_updt.weight', 'layers.1.dif_layer.localized_st_conv.gcn_updt.weight', 'layers.1.dif_layer.localized_st_conv.gcn_updt.bias', 'layers.1.dif_layer.localized_st_conv.bn.weight', 'layers.1.dif_layer.localized_st_conv.bn.bias', 'layers.1.dif_layer.localized_st_conv.bn.running_mean', 'layers.1.dif_layer.localized_st_conv.bn.running_var', 'layers.1.dif_layer.localized_st_conv.bn.num_batches_tracked', 'layers.1.dif_layer.forecast_branch.pad_bias', 'layers.1.dif_layer.forecast_branch.forecast_fc.weight', 'layers.1.dif_layer.forecast_branch.forecast_fc.bias', 'layers.1.dif_layer.forecast_branch.bn.weight', 'layers.1.dif_layer.forecast_branch.bn.bias', 'layers.1.dif_layer.forecast_branch.bn.running_mean', 'layers.1.dif_layer.forecast_branch.bn.running_var', 'layers.1.dif_layer.forecast_branch.bn.num_batches_tracked', 'layers.1.dif_layer.backcast_branch.weight', 'layers.1.dif_layer.backcast_branch.bias', 'layers.1.dif_layer.residual_decompose.ln.weight', 'layers.1.dif_layer.residual_decompose.ln.bias', 'layers.1.inh_layer.pos_encoder.depth_scale', 'layers.1.inh_layer.pos_encoder.pe', 'layers.1.inh_layer.rnn_layer.gru_cell.weight_ih', 'layers.1.inh_layer.rnn_layer.gru_cell.weight_hh', 'layers.1.inh_layer.rnn_layer.gru_cell.bias_ih', 'layers.1.inh_layer.rnn_layer.gru_cell.bias_hh', 'layers.1.inh_layer.rnn_layer.ln.weight', 'layers.1.inh_layer.rnn_layer.ln.bias', 'layers.1.inh_layer.transformer_layer.res_scale', 'layers.1.inh_layer.transformer_layer.multi_head_self_attention.in_proj_weight', 'layers.1.inh_layer.transformer_layer.multi_head_self_attention.in_proj_bias', 'layers.1.inh_layer.transformer_layer.multi_head_self_attention.out_proj.weight', 'layers.1.inh_layer.transformer_layer.multi_head_self_attention.out_proj.bias', 'layers.1.inh_layer.forecast_block.step_weights', 'layers.1.inh_layer.forecast_block.forecast_fc.weight', 'layers.1.inh_layer.forecast_block.forecast_fc.bias', 'layers.1.inh_layer.backcast_fc.weight', 'layers.1.inh_layer.backcast_fc.bias', 'layers.1.inh_layer.residual_decompose.ln.weight', 'layers.1.inh_layer.residual_decompose.ln.bias', 'layers.1.se_block.ln.weight', 'layers.1.se_block.ln.bias', 'layers.1.se_block.excitation.0.weight', 'layers.1.se_block.excitation.2.weight', 'layers.1.cascade_proj.weight', 'layers.1.cascade_proj.bias', 'layers.2.freq_gate', 'layers.2.estimation_gate.fully_connected_layer_1.weight', 'layers.2.estimation_gate.fully_connected_layer_1.bias', 'layers.2.estimation_gate.fully_connected_layer_2.weight', 'layers.2.estimation_gate.fully_connected_layer_2.bias', 'layers.2.dif_layer.localized_st_conv.fc_list_updt.weight', 'layers.2.dif_layer.localized_st_conv.gcn_updt.weight', 'layers.2.dif_layer.localized_st_conv.gcn_updt.bias', 'layers.2.dif_layer.localized_st_conv.bn.weight', 'layers.2.dif_layer.localized_st_conv.bn.bias', 'layers.2.dif_layer.localized_st_conv.bn.running_mean', 'layers.2.dif_layer.localized_st_conv.bn.running_var', 'layers.2.dif_layer.localized_st_conv.bn.num_batches_tracked', 'layers.2.dif_layer.forecast_branch.pad_bias', 'layers.2.dif_layer.forecast_branch.forecast_fc.weight', 'layers.2.dif_layer.forecast_branch.forecast_fc.bias', 'layers.2.dif_layer.forecast_branch.bn.weight', 'layers.2.dif_layer.forecast_branch.bn.bias', 'layers.2.dif_layer.forecast_branch.bn.running_mean', 'layers.2.dif_layer.forecast_branch.bn.running_var', 'layers.2.dif_layer.forecast_branch.bn.num_batches_tracked', 'layers.2.dif_layer.backcast_branch.weight', 'layers.2.dif_layer.backcast_branch.bias', 'layers.2.dif_layer.residual_decompose.ln.weight', 'layers.2.dif_layer.residual_decompose.ln.bias', 'layers.2.inh_layer.pos_encoder.depth_scale', 'layers.2.inh_layer.pos_encoder.pe', 'layers.2.inh_layer.rnn_layer.gru_cell.weight_ih', 'layers.2.inh_layer.rnn_layer.gru_cell.weight_hh', 'layers.2.inh_layer.rnn_layer.gru_cell.bias_ih', 'layers.2.inh_layer.rnn_layer.gru_cell.bias_hh', 'layers.2.inh_layer.rnn_layer.ln.weight', 'layers.2.inh_layer.rnn_layer.ln.bias', 'layers.2.inh_layer.transformer_layer.res_scale', 'layers.2.inh_layer.transformer_layer.multi_head_self_attention.in_proj_weight', 'layers.2.inh_layer.transformer_layer.multi_head_self_attention.in_proj_bias', 'layers.2.inh_layer.transformer_layer.multi_head_self_attention.out_proj.weight', 'layers.2.inh_layer.transformer_layer.multi_head_self_attention.out_proj.bias', 'layers.2.inh_layer.forecast_block.step_weights', 'layers.2.inh_layer.forecast_block.forecast_fc.weight', 'layers.2.inh_layer.forecast_block.forecast_fc.bias', 'layers.2.inh_layer.backcast_fc.weight', 'layers.2.inh_layer.backcast_fc.bias', 'layers.2.inh_layer.residual_decompose.ln.weight', 'layers.2.inh_layer.residual_decompose.ln.bias', 'layers.2.se_block.ln.weight', 'layers.2.se_block.ln.bias', 'layers.2.se_block.excitation.0.weight', 'layers.2.se_block.excitation.2.weight', 'layers.2.cascade_proj.weight', 'layers.2.cascade_proj.bias', 'layers.3.freq_gate', 'layers.3.estimation_gate.fully_connected_layer_1.weight', 'layers.3.estimation_gate.fully_connected_layer_1.bias', 'layers.3.estimation_gate.fully_connected_layer_2.weight', 'layers.3.estimation_gate.fully_connected_layer_2.bias', 'layers.3.dif_layer.localized_st_conv.fc_list_updt.weight', 'layers.3.dif_layer.localized_st_conv.gcn_updt.weight', 'layers.3.dif_layer.localized_st_conv.gcn_updt.bias', 'layers.3.dif_layer.localized_st_conv.bn.weight', 'layers.3.dif_layer.localized_st_conv.bn.bias', 'layers.3.dif_layer.localized_st_conv.bn.running_mean', 'layers.3.dif_layer.localized_st_conv.bn.running_var', 'layers.3.dif_layer.localized_st_conv.bn.num_batches_tracked', 'layers.3.dif_layer.forecast_branch.pad_bias', 'layers.3.dif_layer.forecast_branch.forecast_fc.weight', 'layers.3.dif_layer.forecast_branch.forecast_fc.bias', 'layers.3.dif_layer.forecast_branch.bn.weight', 'layers.3.dif_layer.forecast_branch.bn.bias', 'layers.3.dif_layer.forecast_branch.bn.running_mean', 'layers.3.dif_layer.forecast_branch.bn.running_var', 'layers.3.dif_layer.forecast_branch.bn.num_batches_tracked', 'layers.3.dif_layer.backcast_branch.weight', 'layers.3.dif_layer.backcast_branch.bias', 'layers.3.dif_layer.residual_decompose.ln.weight', 'layers.3.dif_layer.residual_decompose.ln.bias', 'layers.3.inh_layer.pos_encoder.depth_scale', 'layers.3.inh_layer.pos_encoder.pe', 'layers.3.inh_layer.rnn_layer.gru_cell.weight_ih', 'layers.3.inh_layer.rnn_layer.gru_cell.weight_hh', 'layers.3.inh_layer.rnn_layer.gru_cell.bias_ih', 'layers.3.inh_layer.rnn_layer.gru_cell.bias_hh', 'layers.3.inh_layer.rnn_layer.ln.weight', 'layers.3.inh_layer.rnn_layer.ln.bias', 'layers.3.inh_layer.transformer_layer.res_scale', 'layers.3.inh_layer.transformer_layer.multi_head_self_attention.in_proj_weight', 'layers.3.inh_layer.transformer_layer.multi_head_self_attention.in_proj_bias', 'layers.3.inh_layer.transformer_layer.multi_head_self_attention.out_proj.weight', 'layers.3.inh_layer.transformer_layer.multi_head_self_attention.out_proj.bias', 'layers.3.inh_layer.forecast_block.step_weights', 'layers.3.inh_layer.forecast_block.forecast_fc.weight', 'layers.3.inh_layer.forecast_block.forecast_fc.bias', 'layers.3.inh_layer.backcast_fc.weight', 'layers.3.inh_layer.backcast_fc.bias', 'layers.3.inh_layer.residual_decompose.ln.weight', 'layers.3.inh_layer.residual_decompose.ln.bias', 'layers.3.se_block.ln.weight', 'layers.3.se_block.ln.bias', 'layers.3.se_block.excitation.0.weight', 'layers.3.se_block.excitation.2.weight', 'layers.3.cascade_proj.weight', 'layers.3.cascade_proj.bias', 'layers.4.freq_gate', 'layers.4.estimation_gate.fully_connected_layer_1.weight', 'layers.4.estimation_gate.fully_connected_layer_1.bias', 'layers.4.estimation_gate.fully_connected_layer_2.weight', 'layers.4.estimation_gate.fully_connected_layer_2.bias', 'layers.4.dif_layer.localized_st_conv.fc_list_updt.weight', 'layers.4.dif_layer.localized_st_conv.gcn_updt.weight', 'layers.4.dif_layer.localized_st_conv.gcn_updt.bias', 'layers.4.dif_layer.localized_st_conv.bn.weight', 'layers.4.dif_layer.localized_st_conv.bn.bias', 'layers.4.dif_layer.localized_st_conv.bn.running_mean', 'layers.4.dif_layer.localized_st_conv.bn.running_var', 'layers.4.dif_layer.localized_st_conv.bn.num_batches_tracked', 'layers.4.dif_layer.forecast_branch.pad_bias', 'layers.4.dif_layer.forecast_branch.forecast_fc.weight', 'layers.4.dif_layer.forecast_branch.forecast_fc.bias', 'layers.4.dif_layer.forecast_branch.bn.weight', 'layers.4.dif_layer.forecast_branch.bn.bias', 'layers.4.dif_layer.forecast_branch.bn.running_mean', 'layers.4.dif_layer.forecast_branch.bn.running_var', 'layers.4.dif_layer.forecast_branch.bn.num_batches_tracked', 'layers.4.dif_layer.backcast_branch.weight', 'layers.4.dif_layer.backcast_branch.bias', 'layers.4.dif_layer.residual_decompose.ln.weight', 'layers.4.dif_layer.residual_decompose.ln.bias', 'layers.4.inh_layer.pos_encoder.depth_scale', 'layers.4.inh_layer.pos_encoder.pe', 'layers.4.inh_layer.rnn_layer.gru_cell.weight_ih', 'layers.4.inh_layer.rnn_layer.gru_cell.weight_hh', 'layers.4.inh_layer.rnn_layer.gru_cell.bias_ih', 'layers.4.inh_layer.rnn_layer.gru_cell.bias_hh', 'layers.4.inh_layer.rnn_layer.ln.weight', 'layers.4.inh_layer.rnn_layer.ln.bias', 'layers.4.inh_layer.transformer_layer.res_scale', 'layers.4.inh_layer.transformer_layer.multi_head_self_attention.in_proj_weight', 'layers.4.inh_layer.transformer_layer.multi_head_self_attention.in_proj_bias', 'layers.4.inh_layer.transformer_layer.multi_head_self_attention.out_proj.weight', 'layers.4.inh_layer.transformer_layer.multi_head_self_attention.out_proj.bias', 'layers.4.inh_layer.forecast_block.step_weights', 'layers.4.inh_layer.forecast_block.forecast_fc.weight', 'layers.4.inh_layer.forecast_block.forecast_fc.bias', 'layers.4.inh_layer.backcast_fc.weight', 'layers.4.inh_layer.backcast_fc.bias', 'layers.4.inh_layer.residual_decompose.ln.weight', 'layers.4.inh_layer.residual_decompose.ln.bias', 'layers.4.se_block.ln.weight', 'layers.4.se_block.ln.bias', 'layers.4.se_block.excitation.0.weight', 'layers.4.se_block.excitation.2.weight', 'layers.4.cascade_proj.weight', 'layers.4.cascade_proj.bias', 'depth_gates.0', 'depth_gates.1', 'depth_gates.2', 'depth_gates.3', 'depth_gates.4', 'dynamic_graph_constructor.distance_function.log_sigma', 'dynamic_graph_constructor.distance_function.fc_ts_emb1.weight', 'dynamic_graph_constructor.distance_function.fc_ts_emb1.bias', 'dynamic_graph_constructor.distance_function.fc_ts_emb2.weight', 'dynamic_graph_constructor.distance_function.fc_ts_emb2.bias', 'dynamic_graph_constructor.distance_function.time_slot_embedding.weight', 'dynamic_graph_constructor.distance_function.time_slot_embedding.bias', 'dynamic_graph_constructor.distance_function.proj.weight', 'dynamic_graph_constructor.distance_function.proj.bias', 'dynamic_graph_constructor.distance_function.bn.weight', 'dynamic_graph_constructor.distance_function.bn.bias', 'dynamic_graph_constructor.distance_function.bn.running_mean', 'dynamic_graph_constructor.distance_function.bn.running_var', 'dynamic_graph_constructor.distance_function.bn.num_batches_tracked', 'out_fc_1.weight', 'out_fc_1.bias', 'out_ln.weight', 'out_ln.bias', 'out_fc_2.weight', 'out_fc_2.bias', 'out_shortcut.weight', 'out_shortcut.bias']
+Result written to experiments/results/walpurgis_METR-LA_20260609_110426/result.json
+
+============================================
+ Run complete: walpurgis_METR-LA_20260609_110426
+ Results: experiments/results/walpurgis_METR-LA_20260609_110426/
+============================================

@@ -1,0 +1,8 @@
+{
+  "run_id": "walpurgis_METR-LA_20260609_110426",
+  "dataset": "METR-LA",
+  "gpu": "2",
+  "epochs": 200,
+  "seed": 42,
+  "timestamp": "20260609_110426"
+}
