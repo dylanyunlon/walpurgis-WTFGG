@@ -192,5 +192,87 @@
             "note": "pipeline validated: adaptive_emb_gate learning, cascade diverging from uniform"
         },
         "validation_status": "PASSED"
+    },
+    "SYNTH_M326_revalidation_20260609_180605": {
+        "run_id": "SYNTH_M326_revalidation_20260609_180605",
+        "dataset": "SYNTH",
+        "epochs": 3,
+        "seed": 42,
+        "device": "cpu",
+        "phase": "Phase2",
+        "claude_id": "Claude-2 M326-M350",
+        "MAE": 3.93,
+        "RMSE": 4.89,
+        "MAPE": "6.53%",
+        "best_val_mae": 5.251,
+        "per_horizon": {
+            "h1": {
+                "MAE": 3.3268,
+                "RMSE": 4.1352,
+                "MAPE": 0.052
+            },
+            "h2": {
+                "MAE": 4.1469,
+                "RMSE": 5.2272,
+                "MAPE": 0.0686
+            },
+            "h3": {
+                "MAE": 3.4613,
+                "RMSE": 4.3089,
+                "MAPE": 0.0552
+            },
+            "h4": {
+                "MAE": 3.3078,
+                "RMSE": 4.1224,
+                "MAPE": 0.0533
+            },
+            "h5": {
+                "MAE": 4.16,
+                "RMSE": 5.145,
+                "MAPE": 0.069
+            },
+            "h6": {
+                "MAE": 3.6017,
+                "RMSE": 4.5753,
+                "MAPE": 0.0582
+            },
+            "h7": {
+                "MAE": 4.0088,
+                "RMSE": 4.981,
+                "MAPE": 0.0663
+            },
+            "h8": {
+                "MAE": 4.0822,
+                "RMSE": 5.0659,
+                "MAPE": 0.0689
+            },
+            "h9": {
+                "MAE": 4.7177,
+                "RMSE": 5.8756,
+                "MAPE": 0.0775
+            },
+            "h10": {
+                "MAE": 4.3609,
+                "RMSE": 5.3742,
+                "MAPE": 0.0747
+            },
+            "h11": {
+                "MAE": 3.8938,
+                "RMSE": 4.8707,
+                "MAPE": 0.0662
+            },
+            "h12": {
+                "MAE": 4.12,
+                "RMSE": 5.0454,
+                "MAPE": 0.0731
+            }
+        },
+        "diag": {
+            "adaptive_emb_gate": 0.5749,
+            "cascade_weights": "learning from uniform",
+            "depth_gates": "L0-L4 all ~0.952 (active)",
+            "note": "Phase2 revalidation: all new algorithms confirmed stable"
+        },
+        "validation_status": "PASSED"
     }
 }
