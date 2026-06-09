@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
 prepare_metrla.py — 从原始 metr-la.h5 生成训练用 npz + 邻接矩阵
-依赖: numpy, pandas, h5py, pickle (标准库)
+依赖: numpy, pandas, tables (pytables)
 用法: python prepare_metrla.py [--raw_dir DIR] [--out_dir DIR]
 
 生成:
-  datasets/METR-LA/{train,val,test}.npz   — x:(N,12,207,3) y:(N,12,207,1)
+  datasets/METR-LA/{train,val,test}.npz   — x:(N,12,207,3) y:(N,12,207,3)
   datasets/sensor_graph/adj_mx_la.pkl     — (ids, id2idx, adj_matrix)
 """
 import argparse
@@ -21,18 +21,17 @@ import pandas as pd
 # ── 依赖检测 ──────────────────────────────────────────────
 def check_deps():
     missing = []
-    for mod in ['h5py', 'numpy', 'pandas']:
+    for mod, pkg in [('numpy', 'numpy'), ('pandas', 'pandas'), ('tables', 'tables')]:
         try:
             __import__(mod)
         except ImportError:
-            missing.append(mod)
+            missing.append(pkg)
     if missing:
         print(f"ERROR: Missing packages: {', '.join(missing)}")
         print(f"Fix:   pip install {' '.join(missing)}")
         sys.exit(1)
 
 check_deps()
-import h5py
 
 
 # ── 路径常量 ──────────────────────────────────────────────
@@ -104,41 +103,14 @@ def download(raw_dir, adj_dir):
 
 
 def read_h5(h5_path, adj_dir):
-    """读取 metr-la.h5 中的交通速度数据。
+    """用 pd.read_hdf() 读取 metr-la.h5 (PyTables 格式)。
 
-    pandas HDFStore 的 axis0/axis1 使用 PyTables 特有编码,
-    h5py 无法解码 (TypeError: Unsupported integer size (0))。
-    只读 block0_values (纯浮点矩阵), 其余元数据从外部文件获取:
-      - sensor_ids   <- sensor_ids_la.txt
-      - timestamps   <- 已知起始日期 + 5min 间隔推算
-
-    返回: data (T, N), sensor_ids (list of str), timestamps (datetime64)
+    返回: data (T, N) float32, sensor_ids (list of str), timestamps (datetime64)
     """
-    # 1. 速度数据: block0_values 是标准 float64 数组, h5py 可读
-    with h5py.File(h5_path, 'r') as f:
-        keys = list(f.keys())
-        if not keys:
-            raise ValueError(f'Empty HDF5 file: {h5_path}')
-        grp = f[keys[0]]
-        data = grp['block0_values'][:].astype(np.float32)  # (T, N)
-
-    # 2. sensor IDs: 从下载时已解压的 sensor_ids_la.txt 读取
-    ids_path = os.path.join(adj_dir, 'sensor_ids_la.txt')
-    if not os.path.isfile(ids_path):
-        raise FileNotFoundError(
-            f'Missing {ids_path} — rerun with download step')
-    with open(ids_path) as f:
-        content = f.read().strip()
-    # 格式: 逗号分隔的 sensor ID 在一行里
-    sensor_ids = [s.strip() for s in content.split(',') if s.strip()]
-
-    if len(sensor_ids) != data.shape[1]:
-        raise ValueError(
-            f'sensor_ids count ({len(sensor_ids)}) != data columns ({data.shape[1]})')
-
-    # 3. timestamps: METR-LA 从 2012-03-01 00:00 开始, 每 5 分钟一条
-    start = np.datetime64('2012-03-01T00:00')
-    timestamps = start + np.arange(data.shape[0]) * np.timedelta64(5, 'm')
+    df = pd.read_hdf(h5_path)
+    data = df.values.astype(np.float32)           # (T, N)
+    sensor_ids = [str(c) for c in df.columns]     # 207 sensor IDs
+    timestamps = df.index.values.astype('datetime64[ns]')
 
     print(f'  Loaded: {data.shape[0]} timesteps, {data.shape[1]} sensors')
     print(f'  Range:  {timestamps[0]} ~ {timestamps[-1]}')
