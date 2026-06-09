@@ -59,8 +59,8 @@ class trainer():
         self._steps_per_epoch = optim_args.get('_steps_per_epoch', 1)
 
         # Data augmentation parameters
-        self._node_dropout_rate = optim_args.get('node_dropout_rate', 0.1)
-        self._time_shift_max = optim_args.get('time_shift_max', 2)
+        self._node_dropout_rate = optim_args.get('node_dropout_rate', 0.0)
+        self._time_shift_max = optim_args.get('time_shift_max', 0)
 
         # AdamW optimizer — better weight decay handling than RAdam
         self.optimizer = optim.AdamW(
