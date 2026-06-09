@@ -7,82 +7,131 @@
       "name": "DCRNN",
       "year": 2018,
       "venue": "ICLR",
-      "MAE_15min": 2.77, "MAE_30min": 3.15, "MAE_60min": 3.60,
-      "RMSE_15min": 5.38, "RMSE_30min": 6.45, "RMSE_60min": 7.59,
-      "MAPE_15min": 7.30, "MAPE_30min": 8.80, "MAPE_60min": 10.50,
-      "MAE_avg12": 3.17, "RMSE_avg12": 6.45, "MAPE_avg12": 8.80
+      "MAE_15min": 2.77,
+      "MAE_30min": 3.15,
+      "MAE_60min": 3.6,
+      "RMSE_15min": 5.38,
+      "RMSE_30min": 6.45,
+      "RMSE_60min": 7.59,
+      "MAPE_15min": 7.3,
+      "MAPE_30min": 8.8,
+      "MAPE_60min": 10.5,
+      "MAE_avg12": 3.17,
+      "RMSE_avg12": 6.45,
+      "MAPE_avg12": 8.8
     },
     {
       "name": "Graph WaveNet",
       "year": 2019,
       "venue": "IJCAI",
-      "MAE_15min": 2.69, "MAE_30min": 3.07, "MAE_60min": 3.53,
-      "MAE_avg12": 3.10, "RMSE_avg12": 6.22
+      "MAE_15min": 2.69,
+      "MAE_30min": 3.07,
+      "MAE_60min": 3.53,
+      "MAE_avg12": 3.1,
+      "RMSE_avg12": 6.22
     },
     {
       "name": "AGCRN",
       "year": 2020,
       "venue": "NeurIPS",
-      "MAE_avg12": 3.07, "RMSE_avg12": 6.34, "MAPE_avg12": 9.81
+      "MAE_avg12": 3.07,
+      "RMSE_avg12": 6.34,
+      "MAPE_avg12": 9.81
     },
     {
       "name": "GMAN",
       "year": 2020,
       "venue": "AAAI",
-      "MAE_15min": 2.80, "MAE_30min": 3.12, "MAE_60min": 3.44,
+      "MAE_15min": 2.8,
+      "MAE_30min": 3.12,
+      "MAE_60min": 3.44,
       "MAE_avg12": 3.12
     },
     {
       "name": "STG-NCDE",
       "year": 2022,
       "venue": "AAAI",
-      "MAE_avg12": 2.96, "RMSE_avg12": 6.51, "MAPE_avg12": 9.13
+      "MAE_avg12": 2.96,
+      "RMSE_avg12": 6.51,
+      "MAPE_avg12": 9.13
     },
     {
       "name": "D2STGNN",
       "year": 2022,
       "venue": "VLDB",
-      "MAE_avg12": 3.04, "RMSE_avg12": 6.23, "MAPE_avg12": 8.33,
+      "MAE_avg12": 3.04,
+      "RMSE_avg12": 6.23,
+      "MAPE_avg12": 8.33,
       "note": "our upstream baseline"
     },
     {
       "name": "STEP",
       "year": 2022,
       "venue": "KDD",
-      "MAE_15min": 2.61, "MAE_30min": 2.96, "MAE_60min": 3.37,
+      "MAE_15min": 2.61,
+      "MAE_30min": 2.96,
+      "MAE_60min": 3.37,
       "MAE_avg12": 2.98
     },
     {
       "name": "PDFormer",
       "year": 2023,
       "venue": "AAAI",
-      "MAE_avg12": 2.94, "RMSE_avg12": 6.08, "MAPE_avg12": 8.56
+      "MAE_avg12": 2.94,
+      "RMSE_avg12": 6.08,
+      "MAPE_avg12": 8.56
     },
     {
       "name": "STAEFormer",
       "year": 2023,
       "venue": "CIKM",
-      "MAE_avg12": 2.90, "RMSE_avg12": 5.91, "MAPE_avg12": 8.12,
+      "MAE_avg12": 2.9,
+      "RMSE_avg12": 5.91,
+      "MAPE_avg12": 8.12,
       "note": "vanilla Transformer + spatio-temporal adaptive embedding"
     },
     {
       "name": "TITAN",
       "year": 2024,
       "venue": "arxiv",
-      "MAE_15min": 2.41, "MAE_30min": 2.72, "MAE_60min": 3.08,
-      "MAE_avg12": 2.88, "RMSE_avg12": 5.33,
+      "MAE_15min": 2.41,
+      "MAE_30min": 2.72,
+      "MAE_60min": 3.08,
+      "MAE_avg12": 2.88,
+      "RMSE_avg12": 5.33,
       "note": "heterogeneous mixture of experts; current best known"
     },
     {
       "name": "STLLM-DF",
       "year": 2025,
       "venue": "TR-C",
-      "MAE_15min": 2.61, "MAE_30min": 2.90, "MAE_60min": 3.27,
+      "MAE_15min": 2.61,
+      "MAE_30min": 2.9,
+      "MAE_60min": 3.27,
       "note": "LLM-based; strong on short horizons"
     }
   ],
   "walpurgis_target": {
     "MAE_avg12": "<2.85",
     "rationale": "Beat TITAN (2.88) and STAEFormer (2.90) to claim new SOTA"
+  },
+  "walpurgis_result": {
+    "name": "Walpurgis",
+    "year": 2026,
+    "venue": "under submission",
+    "run_id": "walpurgis_METR-LA_epoch14_best",
+    "MAE_avg12": 2.93,
+    "RMSE_avg12": 5.88,
+    "MAPE_avg12": 8.08,
+    "MAE_h3": 2.6289,
+    "MAE_h6": 2.9532,
+    "MAE_h9": 3.1812,
+    "MAE_h12": 3.3824,
+    "model_params": 2016202,
+    "best_val_mae": 2.6958,
+    "best_epoch": 14,
+    "status": "verified",
+    "source": "walpurgis_metrla_verified.json",
+    "note": "M351-M375: filled from walpurgis_metrla_verified.json (epoch14). Beats PDFormer(2.94) and D2STGNN(3.04). 0.05 above TITAN(2.88)."
   }
 }
