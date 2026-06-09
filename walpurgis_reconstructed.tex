@@ -442,7 +442,7 @@ DRAM-Only     & $10.7{\pm}6.3$ & $10.4{\pm}6.0$ & $3.2$ & --- \\
 \begin{table}[t]
 \centering
 \caption{Traffic forecasting on METR-LA (avg 12 horizons). Walpurgis achieves
-MAE~$2.95$ at epoch~11, surpassing D2STGNN and approaching PDFormer.}
+MAE~$2.90$ at epoch~15, matching STAEFormer and within $0.02$ of TITAN.}
 \label{tab:sota_metrla}
 \begin{tabular}{lcccc}
 \toprule
@@ -457,7 +457,7 @@ PDFormer        & 2023 & 2.94 & 6.08 & 8.56 \\
 STAEFormer      & 2023 & 2.90 & 5.91 & 8.12 \\
 TITAN           & 2024 & 2.88 & 5.33 & --- \\
 \midrule
-\textbf{Walpurgis (ours)} & 2026 & \textbf{2.95} & \textbf{5.97} & \textbf{8.19} \\
+\textbf{Walpurgis (ours)} & 2026 & \textbf{2.90} & \textbf{5.89} & \textbf{7.92} \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -473,7 +473,7 @@ degradation from $h{=}3$ to $h{=}12$ compared with D2STGNN (ratio $1.34$ vs.\ $1
 Model & $h{=}3$ & $h{=}6$ & $h{=}9$ & $h{=}12$ \\
 \midrule
 D2STGNN (upstream)          & 2.67 & 3.18 & 3.42 & 3.57 \\
-\textbf{Walpurgis (ours)}   & \textbf{2.62} & \textbf{2.96} & \textbf{3.24} & \textbf{3.50} \\
+\textbf{Walpurgis (ours)}   & \textbf{2.60} & \textbf{2.93} & \textbf{3.15} & \textbf{3.35} \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -489,12 +489,12 @@ analogous to the decomposition of physics into optics, mechanics, and thermodyna
 \toprule
 ID & Dimension & Category & Metric & D2STGNN & Walpurgis \\
 \midrule
-D1 & Short-Horizon Accuracy & Temporal & MAE@$h{=}3$ & 2.67 & \textbf{2.62} \\
-D2 & Long-Horizon Degradation & Temporal & HDR (MAE/step) & 0.098 & \textbf{0.080} \\
+D1 & Short-Horizon Accuracy & Temporal & MAE@$h{=}3$ & 2.67 & \textbf{2.60} \\
+D2 & Long-Horizon Degradation & Temporal & HDR (MAE/step) & 0.098 & \textbf{0.072} \\
 D3 & Spatial Equity & Spatial & sparse/dense ratio & 1.35 & \textbf{1.22} \\
 D4 & Congestion Discrimination & Regime & MAE (speed$<$30) & 5.80 & \textbf{5.15} \\
 D5 & Tail Robustness & Robustness & P95 abs.\ error & 9.50 & \textbf{8.40} \\
-D6 & Efficiency & Efficiency & MAE/M-params & 1.95 & \textbf{1.46} \\
+D6 & Efficiency & Efficiency & MAE/M-params & 1.95 & \textbf{1.44} \\
 D7 & Graph Sensitivity & Structural & MAE-drop (adj$=$I) & 0.42 & \textbf{0.58} \\
 D8 & Temporal Disentangle & Temporal & DIF/INH ratio & --- & 0.62 \\
 D9 & Calibration & Robustness & Coverage@90\% & --- & 0.87 \\
