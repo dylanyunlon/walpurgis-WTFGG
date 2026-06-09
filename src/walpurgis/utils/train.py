@@ -114,7 +114,7 @@ def data_reshaper(data, device):
             data = data.astype(np.float32)
         if np.isnan(data).any():
             data = np.nan_to_num(data, nan=0.0)
-        data = torch.from_numpy(data).to(device)
+        data = torch.as_tensor(np.asarray(data)).to(device)
     else:
         data    = torch.Tensor(data).to(device)
     return data
