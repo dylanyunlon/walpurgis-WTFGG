@@ -482,11 +482,13 @@ static void partition_and_place(
         part.ts_lo      = lo;
         part.ts_hi      = hi;
 
-        // Create stream on the correct device
+        // Create stream on the correct device (host partitions don't need a stream)
         if (tier_to_gpu(tier) >= 0) {
             CUDA_CHECK(cudaSetDevice(tier_to_gpu(tier)));
+            CUDA_CHECK(cudaStreamCreate(&part.stream));
+        } else {
+            part.stream = nullptr;
         }
-        CUDA_CHECK(cudaStreamCreate(&part.stream));
 
         ps.parts.push_back(std::move(part));
         ++created;
@@ -581,18 +583,18 @@ static QueryResult cross_tier_query(
     };
     std::vector<GatherBuf> gathered(overlap_ids.size());
     std::vector<cudaEvent_t> events(overlap_ids.size());
+    std::vector<bool> needs_sync(overlap_ids.size(), false);
 
     for (size_t gi = 0; gi < overlap_ids.size(); ++gi) {
         auto& p = ps.parts[overlap_ids[gi]];
         gathered[gi].part_idx = overlap_ids[gi];
         gathered[gi].host_edges.resize(p.edge_count);
 
-        CUDA_CHECK(cudaEventCreate(&events[gi]));
-
-        if (tier_to_gpu(p.tier) >= 0) {
+        if (tier_to_gpu(p.tier) >= 0 && p.stream != nullptr) {
             // GPU partition: async D2H
             int dev = tier_to_gpu(p.tier);
             CUDA_CHECK(cudaSetDevice(dev));
+            CUDA_CHECK(cudaEventCreate(&events[gi]));
             CUDA_CHECK(cudaMemcpyAsync(
                 gathered[gi].host_edges.data(),
                 p.dev_ptr,
@@ -600,18 +602,20 @@ static QueryResult cross_tier_query(
                 cudaMemcpyDeviceToHost,
                 p.stream));
             CUDA_CHECK(cudaEventRecord(events[gi], p.stream));
+            needs_sync[gi] = true;
         } else {
-            // Host partition: direct memcpy, record event on device 0 default stream
+            // Host partition: direct memcpy, no CUDA event needed
             memcpy(gathered[gi].host_edges.data(), p.dev_ptr, p.size_bytes);
-            CUDA_CHECK(cudaSetDevice(0));
-            CUDA_CHECK(cudaEventRecord(events[gi]));
+            events[gi] = nullptr;
         }
     }
 
-    // Wait for all transfers
+    // Wait for GPU transfers only
     for (size_t gi = 0; gi < events.size(); ++gi) {
-        CUDA_CHECK(cudaEventSynchronize(events[gi]));
-        cudaEventDestroy(events[gi]);
+        if (needs_sync[gi]) {
+            CUDA_CHECK(cudaEventSynchronize(events[gi]));
+            cudaEventDestroy(events[gi]);
+        }
     }
 
     auto t2 = std::chrono::high_resolution_clock::now();
@@ -748,6 +752,9 @@ static void experiment_migration(HeteroAllocator& alloc) {
 
                 // Measure async migration
                 cudaStream_t stream;
+                int mig_dev = (tier_to_gpu(dst) >= 0) ? tier_to_gpu(dst) :
+                              (tier_to_gpu(src) >= 0) ? tier_to_gpu(src) : 0;
+                CUDA_CHECK(cudaSetDevice(mig_dev));
                 CUDA_CHECK(cudaStreamCreate(&stream));
 
                 CudaTimer timer;
@@ -981,7 +988,12 @@ static void experiment_scaling(HeteroAllocator& alloc) {
             part.ts_hi = edges[end-1].ts_end;
             for (size_t j = i; j < end; ++j)
                 part.ts_hi = std::max(part.ts_hi, edges[j].ts_end);
-            CUDA_CHECK(cudaStreamCreate(&part.stream));
+            if (tier_to_gpu(tier) >= 0) {
+                CUDA_CHECK(cudaSetDevice(tier_to_gpu(tier)));
+                CUDA_CHECK(cudaStreamCreate(&part.stream));
+            } else {
+                part.stream = nullptr;
+            }
             ps.parts.push_back(std::move(part));
         }
 
