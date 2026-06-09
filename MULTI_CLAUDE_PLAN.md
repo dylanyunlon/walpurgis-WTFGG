@@ -74,7 +74,7 @@
    ```
    cd /data/jiacheng/system/cache/temp/atc2026/walpurgis-WTFGG
    git pull origin main
-   GPU=2 EPOCHS=200 bash experiments/auto_experiment.sh
+   nohup bash experiments/run_all.sh &
    ```
 
 验收标准: 训练不再在 Epoch 6 发散, 能跑完 100+ epochs, Val MAE < 3.0
@@ -131,7 +131,17 @@
 ```bash
 cd /data/jiacheng/system/cache/temp/atc2026/walpurgis-WTFGG
 git pull origin main
-GPU=2 EPOCHS=200 bash experiments/auto_experiment.sh
+
+# 标准全流程 (baseline + walpurgis 并行, 自动push)
+nohup bash experiments/run_all.sh &
+
+# 只跑walpurgis (H100)
+GPU=2 EPOCHS=200 bash experiments/run_metrla.sh
+
+# 多种子
+for SEED in 42 123 456; do
+  SEED=$SEED GPU=2 EPOCHS=200 bash experiments/run_all.sh
+done
 ```
 
 ## 关键文件索引
@@ -143,6 +153,7 @@ GPU=2 EPOCHS=200 bash experiments/auto_experiment.sh
 | src/walpurgis/models/trainer.py | 训练循环 + CL + LR |
 | src/walpurgis/configs/METR-LA.yaml | 超参数 |
 | train_walpurgis.py | 训练入口 |
-| experiments/auto_experiment.sh | 自动实验 |
+| experiments/run_all.sh | 全流程实验(训练+评估+push) |
+| experiments/run_metrla.sh | 单次Walpurgis训练 |
 | bench/sota.json | SOTA 对比 |
 | walpurgis_reconstructed.tex | 论文 |
