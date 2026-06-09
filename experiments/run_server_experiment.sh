@@ -50,6 +50,7 @@ echo "[$(date '+%H:%M:%S')] Starting training..."
 WALPURGIS_DEBUG=0 \
 CASCADE_DIAG_LOG="${RESULT_DIR}/diagnostics.jsonl" \
 CUDA_VISIBLE_DEVICES="$GPU" \
+PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
 python3 train_walpurgis.py \
     --dataset "$DATASET" \
     --device cuda:0 \

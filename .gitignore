@@ -46,3 +46,5 @@ data.zip
 checkpoints/
 log/
 logs/
+.claude-hk-config
+submodel_*.txt

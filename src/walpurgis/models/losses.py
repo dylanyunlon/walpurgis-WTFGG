@@ -75,7 +75,7 @@ def masked_mape(preds, labels, null_val=np.nan):
 
 
 def cascade_aware_loss(preds, labels, null_val=np.nan,
-                       base_weight=1.0, horizon_scale=0.08,
+                       base_weight=1.0, horizon_scale=0.12,
                        grad_penalty=0.002):
     """Cascade特有: 级联感知损失
 
