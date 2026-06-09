@@ -24,7 +24,7 @@ model_args:
 optim_args:
   lrate: 0.001
   print_model: False
-  wdecay: 1.0e-4
+  wdecay: 5.0e-4
   eps: 1.0e-8
   lr_schedule: True
   lr_sche_steps: [1, 50, 80, 120, 160]

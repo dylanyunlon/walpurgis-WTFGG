@@ -72,17 +72,18 @@ class trainer():
         self.optimizer = optim.AdamW(
             all_params, lr=self.lrate,
             weight_decay=self.wdecay, eps=self.eps)
-        # CosineAnnealingWarmRestarts — stepped per epoch (not per batch)
+        # CosineAnnealingWarmRestarts — T_0=60 keeps LR high through epoch 30
+        # (previously T_0=30 caused LR to drop to 5e-4 by epoch 15, stalling learning)
         self.lr_scheduler = (
             torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
-                self.optimizer, T_0=30, T_mult=2, eta_min=5e-6
+                self.optimizer, T_0=60, T_mult=2, eta_min=1e-5
             ) if self.if_lr_scheduler else None)
 
         # Loss: primary MAE + auxiliary LogCosh with horizon weighting
         self.loss = masked_mae
         self.cascade_loss = cascade_aware_loss
         self.logcosh_loss = LogCoshHorizonLoss(
-            init_temperature=1.0, horizon_scale=0.08)
+            init_temperature=1.0, horizon_scale=0.12)
         self._use_cascade_loss = True
         self.clip = 5
 
