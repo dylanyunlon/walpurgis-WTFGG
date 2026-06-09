@@ -5,7 +5,7 @@
 #   GPU0 (A6000 48GB) = D2STGNN baseline
 #   GPU1 (A6000 48GB) = 消融实验 (预留)
 #   GPU2 (H100  96GB) = Walpurgis 主实验
-set -eo pipefail
+set -uo pipefail
 
 export CUDA_DEVICE_ORDER=PCI_BUS_ID
 

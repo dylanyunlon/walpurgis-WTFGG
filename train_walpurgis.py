@@ -142,8 +142,6 @@ def run(dataset, device_str='cpu', epochs_override=None,
     # merge training settings
     if 'training' in config:
         optim_args['cl_ramp_mode'] = config['training'].get('cl_ramp_mode', 'sigmoid')
-    elif 'v10_training' in config:
-        optim_args['cl_ramp_mode'] = config['v10_training'].get('cl_ramp_mode', 'sigmoid')
     if epochs_override is not None:
         optim_args['epochs'] = epochs_override
     optim_args['cl_steps'] = (
