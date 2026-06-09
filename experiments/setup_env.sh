@@ -72,7 +72,8 @@ import torch
 print(f'PyTorch {torch.__version__}  CUDA {torch.version.cuda}  Available: {torch.cuda.is_available()}')
 for i in range(torch.cuda.device_count()):
     p = torch.cuda.get_device_properties(i)
-    print(f'  GPU{i}: {p.name}  {p.total_mem/(1024**3):.0f}GB  cc={p.major}.{p.minor}')
+    mem = getattr(p, 'total_memory', None) or getattr(p, 'total_mem', 0)
+    print(f'  GPU{i}: {p.name}  {mem/(1024**3):.0f}GB  cc={p.major}.{p.minor}')
 
 import numpy as np
 for ds in ['METR-LA', 'PEMS-BAY']:
