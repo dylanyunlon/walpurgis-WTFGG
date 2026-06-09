@@ -63,8 +63,9 @@ class trainer():
         self._time_shift_max = optim_args.get('time_shift_max', 0)
 
         # AdamW optimizer — better weight decay handling than RAdam
+        all_params = list(self.model.parameters()) + self.optimizer_extra_params
         self.optimizer = optim.AdamW(
-            self.model.parameters(), lr=self.lrate,
+            all_params, lr=self.lrate,
             weight_decay=self.wdecay, eps=self.eps)
         # CosineAnnealingWarmRestarts — stepped per epoch (not per batch)
         self.lr_scheduler = (
@@ -79,6 +80,11 @@ class trainer():
             init_temperature=1.0, horizon_scale=0.08)
         self._use_cascade_loss = True
         self.clip = 5
+
+        # Learnable horizon weights for data-driven loss adaptation
+        self._learnable_hw = torch.nn.Parameter(
+            torch.ones(optim_args['output_seq_len']))
+        self.optimizer_extra_params = [self._learnable_hw]
 
         # Gradient accumulation
         self._grad_accum_steps = optim_args.get('grad_accum_steps', 1)
@@ -188,7 +194,8 @@ class trainer():
             if self._use_cascade_loss:
                 mae_loss = self.cascade_loss(
                     predict[:, :self.cl_len, :],
-                    real_val_s[:, :self.cl_len, :], 0)
+                    real_val_s[:, :self.cl_len, :], 0,
+                    _learnable_hw=self._learnable_hw)
                 # Auxiliary LogCosh loss for smoother gradients (weighted 0.3)
                 logcosh_loss = self.logcosh_loss(
                     predict[:, :self.cl_len, :],
@@ -238,6 +245,23 @@ class trainer():
                 i, torch.sigmoid(gate_param).item())
 
         current_lr = self.optimizer.param_groups[0]['lr']
+
+        # 每50步打印learnable horizon weights状态 (非debug也打印,关键反馈)
+        if self._global_step % 50 == 0:
+            with torch.no_grad():
+                hw_vals = torch.nn.functional.softplus(self._learnable_hw)
+                hw_norm = hw_vals / (hw_vals.mean() + 1e-8)
+                hw_str = " ".join([f"h{i}={hw_norm[i].item():.3f}" for i in range(min(12, len(hw_norm)))])
+                print(f"[DIAG step={self._global_step}] learnable_hw: {hw_str}", flush=True)
+                # 同时打印per-horizon residual (predict vs real 每个horizon的MAE)
+                if predict.shape[1] >= 2:
+                    per_h_mae = []
+                    for hi in range(predict.shape[1]):
+                        h_mae = torch.abs(predict[:, hi, :] - real_val_s[:, hi, :])
+                        h_mae = h_mae[real_val_s[:, hi, :] != 0].mean().item()
+                        per_h_mae.append(f"h{hi+1}={h_mae:.3f}")
+                    print(f"[DIAG step={self._global_step}] per_horizon_MAE: {' '.join(per_h_mae)}", flush=True)
+
         if _is_debug() and self._global_step % 20 == 0:
             dump_struct_state(
                 f"train_step_{self._global_step}",

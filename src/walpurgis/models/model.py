@@ -222,6 +222,12 @@ class D2STGNN(nn.Module):
         self.out_shortcut = nn.Linear(
             self._forecast_dim, model_args['gap'])
 
+        # Feature Refinement Module: gated 2-layer refinement after cascade aggregation
+        # Reduces residual noise from multi-layer fusion via learned gating
+        self.refine_fc = nn.Linear(self._forecast_dim, self._forecast_dim)
+        self.refine_gate = nn.Linear(self._forecast_dim, self._forecast_dim)
+        self.refine_ln = nn.LayerNorm(self._forecast_dim)
+
         self.reset_parameter()
 
     def reset_parameter(self):
@@ -322,6 +328,12 @@ class D2STGNN(nn.Module):
             cascade_w[i] * cascade_residual_list[i]
             for i in range(self._num_layers))
         forecast_hidden = forecast_hidden + cascade_aggregate
+
+        # Feature Refinement Module: gated refinement reduces cascade noise
+        refine_h = F.gelu(self.refine_fc(forecast_hidden))
+        refine_g = torch.sigmoid(self.refine_gate(forecast_hidden))
+        forecast_hidden = self.refine_ln(forecast_hidden + refine_g * refine_h)
+        _dbg("refine_gate_mean", refine_g.mean(), "model")
 
         # regression layer: GELU + LayerNorm + 残差shortcut
         h = F.gelu(self.out_fc_1(forecast_hidden))

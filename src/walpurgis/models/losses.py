@@ -6,6 +6,7 @@ Cascade losses — 算法改写:
   同时加入gradient-scaled penalty: 梯度大的样本额外惩罚
 """
 import torch
+import torch.nn.functional as F
 import numpy as np
 from .. import _dbg
 
@@ -76,7 +77,8 @@ def masked_mape(preds, labels, null_val=np.nan):
 
 def cascade_aware_loss(preds, labels, null_val=np.nan,
                        base_weight=1.0, horizon_scale=0.12,
-                       grad_penalty=0.002):
+                       grad_penalty=0.002,
+                       _learnable_hw=None):
     """Cascade特有: 级联感知损失
 
     对不同预测horizon施加指数递增权重:
@@ -85,6 +87,8 @@ def cascade_aware_loss(preds, labels, null_val=np.nan,
 
     gradient-scaled penalty: 对残差大的样本施加额外二次惩罚
     penalty系数降低(0.002)以减少早期训练噪声干扰收敛
+
+    _learnable_hw: optional Parameter[T] for data-driven horizon weighting
     """
     if np.isnan(null_val):
         mask = ~torch.isnan(labels)
@@ -107,6 +111,14 @@ def cascade_aware_loss(preds, labels, null_val=np.nan,
         hw = hw / hw.mean()  # 归一化使均值为1
         _horizon_weights_cache[cache_key] = hw.unsqueeze(0).unsqueeze(-1)
     horizon_w = _horizon_weights_cache[cache_key]
+
+    # Data-driven horizon adaptation: blend fixed schedule with learnable weights
+    if _learnable_hw is not None and _learnable_hw.shape[0] >= T:
+        learned_w = F.softplus(_learnable_hw[:T])  # ensure positive
+        learned_w = learned_w / (learned_w.mean() + 1e-8)
+        learned_w = learned_w.unsqueeze(0).unsqueeze(-1)
+        # 70% fixed schedule + 30% learned (stable but adaptive)
+        horizon_w = 0.7 * horizon_w + 0.3 * learned_w.to(horizon_w.device)
 
     # weighted MAE
     weighted_residual = residual * horizon_w
