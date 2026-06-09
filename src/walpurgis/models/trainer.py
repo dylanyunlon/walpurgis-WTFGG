@@ -62,6 +62,11 @@ class trainer():
         self._node_dropout_rate = optim_args.get('node_dropout_rate', 0.0)
         self._time_shift_max = optim_args.get('time_shift_max', 0)
 
+        # Learnable horizon weights — initialized before optimizer to avoid AttributeError
+        self._learnable_hw = torch.nn.Parameter(
+            torch.ones(optim_args['output_seq_len']))
+        self.optimizer_extra_params = [self._learnable_hw]
+
         # AdamW optimizer — better weight decay handling than RAdam
         all_params = list(self.model.parameters()) + self.optimizer_extra_params
         self.optimizer = optim.AdamW(
@@ -80,11 +85,6 @@ class trainer():
             init_temperature=1.0, horizon_scale=0.08)
         self._use_cascade_loss = True
         self.clip = 5
-
-        # Learnable horizon weights for data-driven loss adaptation
-        self._learnable_hw = torch.nn.Parameter(
-            torch.ones(optim_args['output_seq_len']))
-        self.optimizer_extra_params = [self._learnable_hw]
 
         # Gradient accumulation
         self._grad_accum_steps = optim_args.get('grad_accum_steps', 1)
