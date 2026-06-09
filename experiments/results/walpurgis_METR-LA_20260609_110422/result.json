@@ -1,9 +1,0 @@
-{
-  "run_id": "walpurgis_METR-LA_20260609_110422",
-  "test_mae_avg12": 2.9,
-  "test_rmse_avg12": 5.91,
-  "test_mape_avg12": 7.91,
-  "best_val_mae": 2.6585,
-  "epochs_trained": 38,
-  "model_params": 2016202
-}
