@@ -9,7 +9,7 @@
 CXX      := g++
 NVCC     := nvcc
 CXXFLAGS := -std=c++17 -O2 -pthread -Wall
-NVFLAGS  := -std=c++17 -O2 -Xcompiler "-pthread -fopenmp -Wall" -lineinfo
+NVFLAGS  := -std=c++14 -O2 -Xcompiler "-pthread -fopenmp -Wall" -lineinfo
 
 # Detect CUDA version for arch flags
 CUDA_VER := $(shell nvcc --version 2>/dev/null | grep release | sed 's/.*release //' | sed 's/,.*//')
