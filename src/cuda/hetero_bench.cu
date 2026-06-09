@@ -555,21 +555,19 @@ static QueryResult cross_tier_query(
 {
     auto t0 = std::chrono::high_resolution_clock::now();
 
-    // Step 1: Find overlapping partitions
+    // Step 1: Find overlapping partitions (hold lock through gather for concurrent safety)
     std::vector<size_t> overlap_ids;
-    {
-        std::lock_guard<std::mutex> lk(ps.mu);
-        for (size_t i = 0; i < ps.parts.size(); ++i) {
-            auto& p = ps.parts[i];
-            if (p.ts_lo <= ts_hi && p.ts_hi >= ts_lo) {
-                overlap_ids.push_back(i);
-                p.access_count.fetch_add(1, std::memory_order_relaxed);
-                auto now = std::chrono::steady_clock::now().time_since_epoch();
-                p.last_access_ns.store(
-                    static_cast<uint64_t>(
-                        std::chrono::duration_cast<std::chrono::nanoseconds>(now).count()),
-                    std::memory_order_relaxed);
-            }
+    std::lock_guard<std::mutex> lk(ps.mu);
+    for (size_t i = 0; i < ps.parts.size(); ++i) {
+        auto& p = ps.parts[i];
+        if (p.ts_lo <= ts_hi && p.ts_hi >= ts_lo) {
+            overlap_ids.push_back(i);
+            p.access_count.fetch_add(1, std::memory_order_relaxed);
+            auto now = std::chrono::steady_clock::now().time_since_epoch();
+            p.last_access_ns.store(
+                static_cast<uint64_t>(
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(now).count()),
+                std::memory_order_relaxed);
         }
     }
 
@@ -845,7 +843,8 @@ static void experiment_concurrent(PartitionSet& ps) {
                         if (new_ptr) {
                             ps.alloc.copy_sync(DeviceTier::H100_HBM, new_ptr,
                                               p.tier, p.dev_ptr, p.size_bytes);
-                            ps.alloc.deallocate(p.tier, p.dev_ptr, p.size_bytes);
+                            // Don't deallocate old ptr — query threads may still
+                            // be reading it. This is a benchmark; leaked memory is fine.
                             p.dev_ptr = new_ptr;
                             p.tier = DeviceTier::H100_HBM;
                             migrations_done.fetch_add(1, std::memory_order_relaxed);
