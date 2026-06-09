@@ -29,8 +29,10 @@ else
     conda create -n "$CONDA_ENV" python=3.10 -y
 fi
 
+set +u  # conda activate 内部引用未定义变量 PS1
 eval "$(conda shell.bash hook)"
 conda activate "$CONDA_ENV"
+set -u
 
 # ── 3. 依赖安装 ────────────────────────────────────────
 echo "[3/5] Installing dependencies..."
