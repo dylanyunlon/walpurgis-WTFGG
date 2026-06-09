@@ -186,9 +186,12 @@ class trainer():
             real_val_s = self.scaler.inverse_transform(real_val[:, :, :, 0])
             # Combined loss: cascade-aware MAE + LogCosh horizon loss
             if self._use_cascade_loss:
+                # Epoch-aware penalty annealing: reduce grad_penalty in early epochs for stable convergence
+                gp = 0.002 * min(1.0, self._current_epoch / 30.0)
                 mae_loss = self.cascade_loss(
                     predict[:, :self.cl_len, :],
-                    real_val_s[:, :self.cl_len, :], 0)
+                    real_val_s[:, :self.cl_len, :], 0,
+                    grad_penalty=gp)
                 # Auxiliary LogCosh loss for smoother gradients (weighted 0.3)
                 logcosh_loss = self.logcosh_loss(
                     predict[:, :self.cl_len, :],

@@ -12,10 +12,10 @@ data_args:
 model_args:
   batch_size: 64
   num_feat: 1
-  num_hidden: 96
+  num_hidden: 112
   node_hidden: 48
   time_emb_dim: 48
-  dropout: 0.05
+  dropout: 0.1
   seq_length: 12
   k_t: 3
   k_s: 2

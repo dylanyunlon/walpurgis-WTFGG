@@ -237,9 +237,12 @@ class D2STGNN(nn.Module):
             # Adaptive adjacency learning: learnable graph + temperature-scaled softmax
             # Base graph from node embeddings
             raw_adj = torch.mm(E_d, E_u.T)
+            # Symmetrize: traffic graphs are largely bidirectional
+            raw_adj = 0.5 * (raw_adj + raw_adj.T)
             # Learnable temperature for sharper/softer attention
             adj = F.softmax(F.relu(raw_adj) / self._adj_temperature, dim=1)
             static_graph = [adj]
+            _dbg("adj_temperature", self._adj_temperature, "model")
         else:
             static_graph = []
         if self._model_args['dy_graph']:
