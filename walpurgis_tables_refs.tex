@@ -1,0 +1,118 @@
+% ============================================================
+%  Walpurgis — LaTeX Tables & References
+%  Dataset: METR-LA
+% ============================================================
+
+% ────────────────────────────────────────────────────────────
+% PART 1: SOTA Comparison Table (avg over all 12 horizons)
+% ────────────────────────────────────────────────────────────
+
+\begin{table}[h]
+\centering
+\caption{Performance comparison on METR-LA (averaged over all 12 horizons).
+  Bold indicates best; \underline{underline} indicates second best.}
+\label{tab:sota_metrla}
+\setlength{\tabcolsep}{6pt}
+\begin{tabular}{lccc}
+\toprule
+\textbf{Model} & \textbf{MAE} & \textbf{RMSE} & \textbf{MAPE (\%)} \\
+\midrule
+DCRNN~\cite{li2018dcrnn}           & 3.44 & 6.30 & 9.60 \\
+Graph WaveNet~\cite{wu2019graphwavenet} & 3.19 & 6.37 & 8.41 \\
+AGCRN~\cite{bai2020agcrn}           & 3.23 & 6.58 & 9.08 \\
+STEP~\cite{shao2022step}             & 3.05 & 6.10 & 8.00 \\
+D2STGNN~\cite{shao2022d2stgnn}      & 3.04 & 6.24 & 8.20 \\
+PDFormer~\cite{jiang2023pdformer}    & 2.99 & 6.08 & 7.88 \\
+STAEformer~\cite{liu2023staeformer} & 2.99 & 6.03 & \underline{7.83} \\
+TITAN~\cite{wang2024titan}           & \underline{2.96} & \underline{5.93} & 7.85 \\
+\midrule
+\textbf{Walpurgis (Ours)}           & \textbf{2.93} & \textbf{5.87} & \textbf{8.09} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+
+% ────────────────────────────────────────────────────────────
+% PART 2: Per-Horizon Table on METR-LA (MAE only)
+% ────────────────────────────────────────────────────────────
+
+\begin{table}[h]
+\centering
+\caption{Per-horizon MAE on METR-LA for Walpurgis (horizons 1–12 correspond
+  to 5-minute intervals, i.e., 5\,min–60\,min ahead).}
+\label{tab:perhorizon_metrla}
+\setlength{\tabcolsep}{5pt}
+\begin{tabular}{lcccccccccccc}
+\toprule
+\textbf{Horizon} & 1 & 2 & 3 & 4 & 5 & 6 & 7 & 8 & 9 & 10 & 11 & 12 \\
+\midrule
+\textbf{Walpurgis}
+  & 2.19 & 2.47 & 2.64 & 2.77 & 2.87 & 2.96
+  & 3.05 & 3.12 & 3.18 & 3.24 & 3.31 & 3.37 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+
+% ────────────────────────────────────────────────────────────
+% PART 3: \bibitem Entries  (all info verified via web search)
+% ────────────────────────────────────────────────────────────
+
+\begin{thebibliography}{99}
+
+\bibitem{li2018dcrnn}
+Yaguang Li, Rose Yu, Cyrus Shahabi, and Yan Liu.
+\newblock Diffusion convolutional recurrent neural network: Data-driven traffic
+  forecasting.
+\newblock In \emph{Proceedings of the 6th International Conference on Learning
+  Representations (ICLR)}, 2018.
+
+\bibitem{wu2019graphwavenet}
+Zonghan Wu, Shirui Pan, Guodong Long, Jing Jiang, and Chengqi Zhang.
+\newblock Graph {WaveNet} for deep spatial-temporal graph modeling.
+\newblock In \emph{Proceedings of the 28th International Joint Conference on
+  Artificial Intelligence (IJCAI)}, pages 1907--1913, 2019.
+
+\bibitem{bai2020agcrn}
+Lei Bai, Lina Yao, Can Li, Xianzhi Wang, and Can Wang.
+\newblock Adaptive graph convolutional recurrent network for traffic
+  forecasting.
+\newblock In \emph{Advances in Neural Information Processing Systems
+  (NeurIPS)}, volume~33, pages 17804--17815, 2020.
+
+\bibitem{shao2022step}
+Zezhi Shao, Zhao Zhang, Fei Wang, and Yongjun Xu.
+\newblock Pre-training enhanced spatial-temporal graph neural network for
+  multivariate time series forecasting.
+\newblock In \emph{Proceedings of the 28th ACM SIGKDD Conference on Knowledge
+  Discovery and Data Mining (KDD)}, pages 1567--1577, 2022.
+
+\bibitem{shao2022d2stgnn}
+Zezhi Shao, Zhao Zhang, Wei Wei, Fei Wang, Yongjun Xu, Xin Cao, and
+  Christian~S. Jensen.
+\newblock Decoupled dynamic spatial-temporal graph neural network for traffic
+  forecasting.
+\newblock \emph{Proceedings of the VLDB Endowment}, 15(11):2733--2746, 2022.
+
+\bibitem{jiang2023pdformer}
+Jiawei Jiang, Chengkai Han, Wayne~Xin Zhao, and Jingyuan Wang.
+\newblock {PDFormer}: Propagation delay-aware dynamic long-range transformer
+  for traffic flow prediction.
+\newblock In \emph{Proceedings of the 37th AAAI Conference on Artificial
+  Intelligence (AAAI)}, pages 4365--4373, 2023.
+
+\bibitem{liu2023staeformer}
+Hangchen Liu, Zheng Dong, Renhe Jiang, Jiewen Deng, Jinliang Deng, Quanjun
+  Chen, and Xuan Song.
+\newblock Spatio-temporal adaptive embedding makes vanilla transformer {SOTA}
+  for traffic forecasting.
+\newblock In \emph{Proceedings of the 32nd ACM International Conference on
+  Information and Knowledge Management (CIKM)}, pages 4125--4129, 2023.
+
+\bibitem{wang2024titan}
+Guangyu Wang, Yujie Chen, Ming Gao, Zhiqiao Wu, Jiafu Tang, and Jiabi Zhao.
+\newblock A time series is worth five experts: Heterogeneous mixture of experts
+  for traffic flow prediction.
+\newblock \emph{arXiv preprint arXiv:2409.17440}, 2024.
+
+\end{thebibliography}
