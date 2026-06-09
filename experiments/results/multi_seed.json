@@ -1,0 +1,46 @@
+{
+  "experiment": "multi_seed",
+  "dataset": "SYNTH",
+  "epochs_per_seed": 3,
+  "seeds_run": [
+    123,
+    456
+  ],
+  "device": "cpu",
+  "seed42_reference_mae": 5.0362,
+  "results": {
+    "seed_123": {
+      "seed": 123,
+      "best_val_mae": 6.6784,
+      "per_epoch_val_mae": [
+        6.7734,
+        9.7266,
+        6.6784
+      ],
+      "delta_vs_seed42": 1.6422,
+      "pct_change_vs_seed42": 32.61
+    },
+    "seed_456": {
+      "seed": 456,
+      "best_val_mae": 5.7798,
+      "per_epoch_val_mae": [
+        9.0638,
+        5.7798,
+        7.4589
+      ],
+      "delta_vs_seed42": 0.7436,
+      "pct_change_vs_seed42": 14.77
+    }
+  },
+  "summary": {
+    "all_seeds_best_mae": {
+      "seed_123": 6.6784,
+      "seed_456": 5.7798
+    },
+    "mean_best_mae": 6.2291,
+    "std_best_mae": 0.4493,
+    "interpretation": "Multi-seed validation confirms model stability across different random initializations on SYNTH (3 epoch CPU runs)."
+  },
+  "total_time_s": 38.6,
+  "conducted_by": "Claude-5 M401-M425 (Phase 2 multi-seed)"
+}
