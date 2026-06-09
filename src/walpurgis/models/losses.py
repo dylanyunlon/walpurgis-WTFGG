@@ -116,10 +116,10 @@ def cascade_aware_loss(preds, labels, null_val=np.nan,
         torch.isnan(weighted_loss),
         torch.zeros_like(weighted_loss), weighted_loss)
 
-    # gradient-scaled penalty: 大残差额外惩罚
+    # gradient-scaled penalty: 大残差额外惩罚 (clamped for stability)
     with torch.no_grad():
-        residual_std = residual[mask.bool()].std().clamp(min=0.1)
-    penalty = grad_penalty * (residual / residual_std).pow(2)
+        residual_std = residual[mask.bool()].std().clamp(min=0.5)
+    penalty = grad_penalty * (residual / residual_std).clamp(max=5.0).pow(2)
     penalty = penalty * mask
     penalty = torch.where(
         torch.isnan(penalty),

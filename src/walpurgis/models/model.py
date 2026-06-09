@@ -57,7 +57,7 @@ class DecoupleLayer(nn.Module):
         self.estimation_gate = EstimationGate(
             node_emb_dim=model_args['node_hidden'],
             time_emb_dim=model_args['time_emb_dim'],
-            hidden_dim=64)
+            hidden_dim=hidden_dim)
         self.dif_layer = DifBlock(
             hidden_dim, forecast_hidden_dim=fk_dim,
             **model_args)
@@ -176,7 +176,7 @@ class D2STGNN(nn.Module):
         # Cascade特有: 动态深度门控 — 每层一个可学习gate
         # sigmoid输出决定该层的forecast贡献是否被采纳
         self.depth_gates = nn.ParameterList([
-            nn.Parameter(torch.tensor(0.0))
+            nn.Parameter(torch.tensor(2.0))
             for _ in range(self._num_layers)
         ])
 

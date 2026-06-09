@@ -10,7 +10,7 @@ cd "$REPO_DIR"
 
 # ── 参数解析 ────────────────────────────────────────────
 GPU="${GPU:-2}"         # 默认用 H100 NVL (GPU2)
-EPOCHS="${EPOCHS:-100}"
+EPOCHS="${EPOCHS:-200}"
 TAG="${TAG:-walpurgis}"
 DATASET="${DATASET:-METR-LA}"
 SEED="${SEED:-42}"

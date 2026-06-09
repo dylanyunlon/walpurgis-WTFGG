@@ -57,6 +57,9 @@ class trainer():
         self.cl_len = 0 if self.if_cl else self.output_seq_len
         ## warmup
         self.warm_steps = optim_args['warm_steps']
+        # Sigmoid ramp: CL transitions smoothly from full→partial→full
+        self._cl_ramp_mode = optim_args.get('cl_ramp_mode', 'sigmoid')
+        self._steps_per_epoch = optim_args.get('_steps_per_epoch', 1)
 
         # RAdam optimizer (自适应学习率rectification, 无需warmup)
         self.optimizer = optim.RAdam(
@@ -79,6 +82,10 @@ class trainer():
         # Cascade特有: 自适应梯度裁剪参数
         self._agc_clip_factor = 0.01
         self._agc_eps = 1e-3
+
+        # Gradient accumulation
+        self._grad_accum_steps = optim_args.get('grad_accum_steps', 1)
+        self._accum_count = 0
 
         # 诊断工具
         self.perf = PerfTimer()
@@ -104,44 +111,40 @@ class trainer():
     def set_resume_lr_and_cl(self, epoch_num, batch_num):
         if batch_num == 0:
             return
+        # Recompute cl_len using sigmoid ramp (must match train() logic)
+        if batch_num < self.warm_steps:
+            self.cl_len = self.output_seq_len
         else:
-            for _ in range(batch_num):
-                # curriculum learning
-                if _ < self.warm_steps:   # warmupping
-                    self.cl_len = self.output_seq_len
-                elif _ == self.warm_steps:
-                    # init curriculum learning
-                    self.cl_len = 1
-                    for param_group in self.optimizer.param_groups:
-                        param_group["lr"] = self.lrate
-                else:
-                    # begin curriculum learning
-                    if (_ - self.warm_steps) % self.cl_steps == 0 and self.cl_len < self.output_seq_len:
-                        self.cl_len += int(self.if_cl)
-            print("resume training from epoch{0}, where learn_rate={1} and curriculum learning length={2}".format(epoch_num, self.lrate, self.cl_len))
+            progress = min((batch_num - self.warm_steps) / max(self.cl_steps, 1), 1.0)
+            sigmoid_val = 1.0 / (1.0 + np.exp(-8.0 * (progress - 0.5)))
+            self.cl_len = max(1, int(1 + sigmoid_val * (self.output_seq_len - 1)))
+        print("resume training from epoch{0}, where learn_rate={1} and curriculum learning length={2}".format(epoch_num, self.lrate, self.cl_len))
 
     def train(self, input, real_val, **kwargs):
         self.model.train()
-        self.optimizer.zero_grad()
+        # Gradient accumulation: only zero_grad at accumulation boundary
+        self._accum_count += 1
+        if self._accum_count == 1:
+            self.optimizer.zero_grad()
         self.perf.start("forward")
 
         output = self.model(input)
         output = output.transpose(1, 2)
         self.perf.stop("forward")
 
-        # curriculum learning
-        if kwargs['batch_num'] < self.warm_steps:   # warmupping
+        # curriculum learning: sigmoid ramp (smooth transition)
+        batch_num = kwargs['batch_num']
+        if batch_num < self.warm_steps:
+            # warmup phase: train on full sequence
             self.cl_len = self.output_seq_len
-        elif kwargs['batch_num'] == self.warm_steps:
-            # init curriculum learning
-            self.cl_len = 1
-            for param_group in self.optimizer.param_groups:
-                param_group["lr"] = self.lrate
-            print("======== Start curriculum learning... reset the learning rate to {0}. ========".format(self.lrate))
         else:
-            # begin curriculum learning
-            if (kwargs['batch_num'] - self.warm_steps) % self.cl_steps == 0 and self.cl_len <= self.output_seq_len:
-                self.cl_len += int(self.if_cl)
+            # CL phase: sigmoid ramp from 1 → output_seq_len
+            # progress goes from 0 to 1 over cl_steps
+            progress = min((batch_num - self.warm_steps) / max(self.cl_steps, 1), 1.0)
+            # sigmoid curve centered at 0.5 progress, steepness=8
+            sigmoid_val = 1.0 / (1.0 + np.exp(-8.0 * (progress - 0.5)))
+            # map sigmoid [0,1] → cl_len [1, output_seq_len]
+            self.cl_len = max(1, int(1 + sigmoid_val * (self.output_seq_len - 1)))
 
         # scale data and calculate loss
         self.perf.start("loss")
@@ -167,19 +170,24 @@ class trainer():
             depth_reg = depth_reg + torch.sigmoid(gate_param)
         depth_reg = depth_reg * 0.001  # 正则化系数
 
-        loss = mae_loss + depth_reg
+        loss = (mae_loss + depth_reg) / self._grad_accum_steps
         self.perf.stop("loss")
         self.perf.start("backward")
         loss.backward()
 
-        # Cascade特有: 自适应梯度裁剪
-        self._adaptive_gradient_clip()
+        # Only step optimizer every _grad_accum_steps
+        if self._accum_count >= self._grad_accum_steps:
+            # Cascade特有: 自适应梯度裁剪
+            self._adaptive_gradient_clip()
+            # gradient clip (传统clip也保留作为安全网)
+            if self.clip is not None:
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.clip)
+            self.optimizer.step()
+            # Step LR scheduler
+            if self.lr_scheduler is not None:
+                self.lr_scheduler.step(batch_num / self._steps_per_epoch)
+            self._accum_count = 0
         self.perf.stop("backward")
-
-        # gradient clip (传统clip也保留作为安全网)
-        if self.clip is not None:
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.clip)
-        self.optimizer.step()
 
         # 诊断: 追踪深度门控
         for i, gate_param in enumerate(self.model.depth_gates):
