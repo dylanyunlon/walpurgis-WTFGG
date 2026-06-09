@@ -1,4 +1,0 @@
-============================================
- D2STGNN Baseline on METR-LA
-============================================
-rm: cannot remove 'experiments/baselines/d2stgnn/datasets': Is a directory

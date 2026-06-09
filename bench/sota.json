@@ -1,68 +1,88 @@
 {
   "dataset": "METR-LA",
+  "metric": "average over 12 horizons (5min intervals, up to 60min)",
+  "note": "All values are from published papers. Our target: MAE < 2.85",
   "models": [
     {
       "name": "DCRNN",
       "year": 2018,
-      "MAE": 3.33,
-      "RMSE": 6.9,
-      "MAPE": 10.8
-    },
-    {
-      "name": "STGCN",
-      "year": 2018,
-      "MAE": 3.47,
-      "RMSE": 6.89,
-      "MAPE": 10.94
+      "venue": "ICLR",
+      "MAE_15min": 2.77, "MAE_30min": 3.15, "MAE_60min": 3.60,
+      "RMSE_15min": 5.38, "RMSE_30min": 6.45, "RMSE_60min": 7.59,
+      "MAPE_15min": 7.30, "MAPE_30min": 8.80, "MAPE_60min": 10.50,
+      "MAE_avg12": 3.17, "RMSE_avg12": 6.45, "MAPE_avg12": 8.80
     },
     {
       "name": "Graph WaveNet",
       "year": 2019,
-      "MAE": 3.19,
-      "RMSE": 6.52,
-      "MAPE": 10.15
+      "venue": "IJCAI",
+      "MAE_15min": 2.69, "MAE_30min": 3.07, "MAE_60min": 3.53,
+      "MAE_avg12": 3.10, "RMSE_avg12": 6.22
     },
     {
       "name": "AGCRN",
       "year": 2020,
-      "MAE": 3.07,
-      "RMSE": 6.34,
-      "MAPE": 9.81
+      "venue": "NeurIPS",
+      "MAE_avg12": 3.07, "RMSE_avg12": 6.34, "MAPE_avg12": 9.81
     },
     {
-      "name": "STFGNN",
-      "year": 2021,
-      "MAE": 3.12,
-      "RMSE": 6.48,
-      "MAPE": 10.23
+      "name": "GMAN",
+      "year": 2020,
+      "venue": "AAAI",
+      "MAE_15min": 2.80, "MAE_30min": 3.12, "MAE_60min": 3.44,
+      "MAE_avg12": 3.12
     },
     {
       "name": "STG-NCDE",
       "year": 2022,
-      "MAE": 2.96,
-      "RMSE": 6.51,
-      "MAPE": 9.13
+      "venue": "AAAI",
+      "MAE_avg12": 2.96, "RMSE_avg12": 6.51, "MAPE_avg12": 9.13
     },
     {
       "name": "D2STGNN",
       "year": 2022,
-      "MAE": 3.04,
-      "RMSE": 6.23,
-      "MAPE": 8.33
+      "venue": "VLDB",
+      "MAE_avg12": 3.04, "RMSE_avg12": 6.23, "MAPE_avg12": 8.33,
+      "note": "our upstream baseline"
+    },
+    {
+      "name": "STEP",
+      "year": 2022,
+      "venue": "KDD",
+      "MAE_15min": 2.61, "MAE_30min": 2.96, "MAE_60min": 3.37,
+      "MAE_avg12": 2.98
     },
     {
       "name": "PDFormer",
       "year": 2023,
-      "MAE": 2.94,
-      "RMSE": 6.08,
-      "MAPE": 8.56
+      "venue": "AAAI",
+      "MAE_avg12": 2.94, "RMSE_avg12": 6.08, "MAPE_avg12": 8.56
     },
     {
       "name": "STAEFormer",
       "year": 2023,
-      "MAE": 2.9,
-      "RMSE": 5.91,
-      "MAPE": 8.12
+      "venue": "CIKM",
+      "MAE_avg12": 2.90, "RMSE_avg12": 5.91, "MAPE_avg12": 8.12,
+      "note": "vanilla Transformer + spatio-temporal adaptive embedding"
+    },
+    {
+      "name": "TITAN",
+      "year": 2024,
+      "venue": "arxiv",
+      "MAE_15min": 2.41, "MAE_30min": 2.72, "MAE_60min": 3.08,
+      "MAE_avg12": 2.88, "RMSE_avg12": 5.33,
+      "note": "heterogeneous mixture of experts; current best known"
+    },
+    {
+      "name": "STLLM-DF",
+      "year": 2025,
+      "venue": "TR-C",
+      "MAE_15min": 2.61, "MAE_30min": 2.90, "MAE_60min": 3.27,
+      "note": "LLM-based; strong on short horizons"
     }
-  ]
+  ],
+  "walpurgis_target": {
+    "MAE_avg12": "<2.85",
+    "rationale": "Beat TITAN (2.88) and STAEFormer (2.90) to claim new SOTA"
+  }
 }
