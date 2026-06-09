@@ -51,8 +51,23 @@ TEST_RATIO  = 0.2
 def download(raw_dir, adj_dir):
     """下载并解压原始 METR-LA 数据"""
     h5_path = os.path.join(raw_dir, 'metr-la.h5')
-    if os.path.isfile(h5_path) and os.path.getsize(h5_path) > 1_000_000:
-        print('  metr-la.h5 already exists, skipping download')
+    ids_path = os.path.join(adj_dir, 'sensor_ids_la.txt')
+    dist_path = os.path.join(adj_dir, 'distances_la.csv')
+
+    # 检查旧路径 (之前的 bash 脚本写到 src/walpurgis/datasets/sensor_graph/)
+    old_adj_dir = os.path.join(os.path.dirname(raw_dir), 'sensor_graph')
+    for fname in ['sensor_ids_la.txt', 'distances_la.csv', 'sensor_locations_la.csv']:
+        dst = os.path.join(adj_dir, fname)
+        old = os.path.join(old_adj_dir, fname)
+        if not os.path.isfile(dst) and os.path.isfile(old):
+            import shutil
+            shutil.copy2(old, dst)
+            print(f'  Migrated {fname} from old path')
+
+    # 全部文件就位则跳过
+    if (os.path.isfile(h5_path) and os.path.getsize(h5_path) > 1_000_000
+            and os.path.isfile(ids_path) and os.path.isfile(dist_path)):
+        print('  All source files present, skipping download')
         return h5_path
 
     zip_path = '/tmp/metrla_download.zip'
@@ -88,37 +103,43 @@ def download(raw_dir, adj_dir):
     return os.path.join(raw_dir, 'metr-la.h5')
 
 
-def read_h5(h5_path):
-    """用 h5py 读取 pandas HDFStore 格式的 metr-la.h5
-    返回: data (T, N), sensor_ids (list of str)
+def read_h5(h5_path, adj_dir):
+    """读取 metr-la.h5 中的交通速度数据。
+
+    pandas HDFStore 的 axis0/axis1 使用 PyTables 特有编码,
+    h5py 无法解码 (TypeError: Unsupported integer size (0))。
+    只读 block0_values (纯浮点矩阵), 其余元数据从外部文件获取:
+      - sensor_ids   <- sensor_ids_la.txt
+      - timestamps   <- 已知起始日期 + 5min 间隔推算
+
+    返回: data (T, N), sensor_ids (list of str), timestamps (datetime64)
     """
+    # 1. 速度数据: block0_values 是标准 float64 数组, h5py 可读
     with h5py.File(h5_path, 'r') as f:
-        # pandas HDFStore 的内部结构: /key/axis0 (index), /axis1 (columns), /block0_values
         keys = list(f.keys())
-        if len(keys) == 0:
+        if not keys:
             raise ValueError(f'Empty HDF5 file: {h5_path}')
         grp = f[keys[0]]
-
-        # sensor ids from axis1
-        axis1_raw = grp['axis1'][:]
-        sensor_ids = []
-        for x in axis1_raw:
-            if isinstance(x, bytes):
-                sensor_ids.append(x.decode())
-            elif isinstance(x, (np.integer, np.floating, int, float)):
-                sensor_ids.append(str(int(x)))
-            else:
-                sensor_ids.append(str(x))
-
-        # traffic speed data
         data = grp['block0_values'][:].astype(np.float32)  # (T, N)
 
-        # timestamps from axis0 (for day-of-week calculation)
-        axis0_raw = grp['axis0'][:]
-        # pandas stores datetime as nanosecond int64
-        timestamps = axis0_raw.astype('datetime64[ns]')
+    # 2. sensor IDs: 从下载时已解压的 sensor_ids_la.txt 读取
+    ids_path = os.path.join(adj_dir, 'sensor_ids_la.txt')
+    if not os.path.isfile(ids_path):
+        raise FileNotFoundError(
+            f'Missing {ids_path} — rerun with download step')
+    with open(ids_path) as f:
+        sensor_ids = [line.strip() for line in f if line.strip()]
+
+    if len(sensor_ids) != data.shape[1]:
+        raise ValueError(
+            f'sensor_ids count ({len(sensor_ids)}) != data columns ({data.shape[1]})')
+
+    # 3. timestamps: METR-LA 从 2012-03-01 00:00 开始, 每 5 分钟一条
+    start = np.datetime64('2012-03-01T00:00')
+    timestamps = start + np.arange(data.shape[0]) * np.timedelta64(5, 'm')
 
     print(f'  Loaded: {data.shape[0]} timesteps, {data.shape[1]} sensors')
+    print(f'  Range:  {timestamps[0]} ~ {timestamps[-1]}')
     return data, sensor_ids, timestamps
 
 
@@ -222,7 +243,7 @@ def main():
 
     # Step 2: Adjacency matrix
     print('[2/3] Adjacency matrix...')
-    data, sensor_ids, timestamps = read_h5(h5_path)
+    data, sensor_ids, timestamps = read_h5(h5_path, args.adj_dir)
     build_adj(sensor_ids, args.adj_dir)
 
     # Step 3: Train/val/test NPZ
