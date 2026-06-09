@@ -238,6 +238,9 @@ def run(dataset, device_str='cpu', epochs_override=None,
 
             train_time.append(time.time() - t_train)
 
+            # Step LR scheduler once per epoch (not per batch)
+            engine.step_lr_scheduler(epoch)
+
             t_val = time.time()
             mvalid_loss, mvalid_mape, mvalid_rmse = \
                 engine.eval(

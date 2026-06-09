@@ -198,6 +198,9 @@ class D2STGNN(nn.Module):
         self.node_emb_d = nn.Parameter(
             torch.empty(self._num_nodes, self._node_dim))
 
+        # Adaptive adjacency learning: learnable temperature for static graph
+        self._adj_temperature = nn.Parameter(torch.tensor(1.0))
+
         # 输出头: GELU + LayerNorm + 残差shortcut (Cascade特有)
         self.out_fc_1 = nn.Linear(
             self._forecast_dim, self._output_hidden)
@@ -220,8 +223,12 @@ class D2STGNN(nn.Module):
         E_d = inputs['node_embedding_u']
         E_u = inputs['node_embedding_d']
         if self._model_args['sta_graph']:
-            static_graph = [F.softmax(
-                F.relu(torch.mm(E_d, E_u.T)), dim=1)]
+            # Adaptive adjacency learning: learnable graph + temperature-scaled softmax
+            # Base graph from node embeddings
+            raw_adj = torch.mm(E_d, E_u.T)
+            # Learnable temperature for sharper/softer attention
+            adj = F.softmax(F.relu(raw_adj) / self._adj_temperature, dim=1)
+            static_graph = [adj]
         else:
             static_graph = []
         if self._model_args['dy_graph']:

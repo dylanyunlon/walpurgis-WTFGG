@@ -43,12 +43,12 @@ class Forecast(nn.Module):
         predict = predict.transpose(0, 1)
         predict = self.forecast_fc(predict)
 
-        # Cascade特有: apply learnable step weights (softmax-normalized)
+        # Cascade特有: per-step horizon weights using sigmoid (independent, no competition)
         total_steps = predict.shape[1]
-        w = torch.softmax(self.step_weights[:total_steps], dim=0)
+        w = torch.sigmoid(self.step_weights[:total_steps])
         # Reshape for broadcasting: [1, steps, 1, 1]
         w = w.view(1, -1, 1, 1)
-        predict = predict * w * total_steps  # scale to preserve magnitude
+        predict = predict * w
 
         if _CAS_DBG:
             print(f"[CAS:forecast@inh_forecast] steps={predict.shape[1]} "

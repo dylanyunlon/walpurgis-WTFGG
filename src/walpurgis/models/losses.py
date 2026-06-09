@@ -75,8 +75,8 @@ def masked_mape(preds, labels, null_val=np.nan):
 
 
 def cascade_aware_loss(preds, labels, null_val=np.nan,
-                       base_weight=1.0, horizon_scale=0.1,
-                       grad_penalty=0.005):
+                       base_weight=1.0, horizon_scale=0.08,
+                       grad_penalty=0.002):
     """Cascade特有: 级联感知损失
 
     对不同预测horizon施加指数递增权重:
@@ -84,7 +84,7 @@ def cascade_aware_loss(preds, labels, null_val=np.nan,
     远期horizon(更难)获得指数级更高权重, 迫使模型关注长程预测质量
 
     gradient-scaled penalty: 对残差大的样本施加额外二次惩罚
-    penalty系数适度降低(0.005)以减少早期训练噪声
+    penalty系数降低(0.002)以减少早期训练噪声干扰收敛
     """
     if np.isnan(null_val):
         mask = ~torch.isnan(labels)
