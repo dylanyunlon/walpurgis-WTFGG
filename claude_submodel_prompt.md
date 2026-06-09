@@ -1,28 +1,51 @@
-在你的linux上执行以下步骤。不要立刻查看所有内容。
+你是Walpurgis项目的第二位Claude (M251-M275)。
 
-apt install -y tree git
+## 项目背景
+github.com/dylanyunlon/walpurgis-WTFGG 是一个异构GPU时序子图引擎 + D2STGNN交通预测项目。
+当前Walpurgis在METR-LA上已达到 MAE=2.93 (epoch 14真实数据)。
+TITAN是当前SOTA (MAE=2.88)，STAEformer是前SOTA (MAE=2.90)。
+
+## 你的任务
+
+### 任务1: 整合STAEformer到仓库，共享METR-LA数据运行
+upstream/staeformer/ 下已有STAEformer.py和train.py。
+但train.py依赖STAEformer自己的数据加载方式 (lib/data_prepare.py)。
+你需要:
+1. 让STAEformer的train.py能使用walpurgis仓库的 datasets/METR-LA/ 数据
+2. 确保eval协议一致 (12 horizons, masked_mae/rmse/mape, null_val=0)
+3. 在CPU上做一个3-epoch快速验证确保pipeline通
+
+### 任务2: 创建统一per-horizon对比输出
+运行后输出格式和Walpurgis一致:
+```
+Evaluate best model on test data for horizon 1, Test MAE: X.XXXX, Test RMSE: X.XXXX, Test MAPE: X.XXXX
+...
+(On average over 12 horizons) Test MAE: X.XX | Test RMSE: X.XX | Test MAPE: X.XX% |
+```
+
+### 任务3: 增强experiments/run_baselines_headtohead.sh
+确保这个脚本能一键跑 Walpurgis + STAEformer + D2STGNN(upstream) 对比。
+结果自动汇总到 experiments/results/headtohead_TIMESTAMP/headtohead.json。
+
+## 铁律
+- 不开新分支,不用v2/v3/port后缀
+- 改的是代码逻辑,不改字符串/docstring/str_replace表面功夫
+- git commit作者: dylanyunlon <dogechat@163.com>
+- 所有改动直接push到main
+
+## 关键文件索引
+- src/walpurgis/models/model.py — Walpurgis模型
+- upstream/staeformer/STAEformer.py — STAEformer模型(255行)
+- upstream/staeformer/train.py — STAEformer训练(345行)
+- upstream/d2stgnn/main.py — 原始D2STGNN
+- experiments/run_baselines_headtohead.sh — 对比实验脚本
+- datasets/METR-LA/ — 共享数据 (train/val/test.npz + adj_mx_la.pkl)
+- experiments/results/walpurgis_metrla_verified.json — Walpurgis真实数据
+
+## 安装
+```bash
 git clone https://github.com/dylanyunlon/walpurgis-WTFGG.git
 cd walpurgis-WTFGG
-tree -L 2 --charset ascii
-git log --oneline -5
-cat MULTI_CLAUDE_PLAN.md
-
-你是第八位Claude(M176-M200)。查看MULTI_CLAUDE_PLAN.md了解完整进度。
-
-你的任务:
-1. 查看 experiments/results/ 下最新result.json和summary.json获取实验数据
-2. 查看 src/walpurgis/configs/METR-LA.yaml 和 src/walpurgis/models/ 下的算法文件
-3. 针对当前MAE=2.90 → 目标<2.85，做以下算法调整(改算法!):
-   - 在 src/walpurgis/models/model.py 的输出头增加dropout(0.1)防止过拟合
-   - 在 src/walpurgis/configs/METR-LA.yaml 中将num_hidden从96调到112
-   - 调整losses.py中horizon_scale从0.12到0.15以更强调远horizon
-4. 添加SYNTH数据集快速验证: python3 train_walpurgis.py --dataset SYNTH --epochs 5 --debug
-5. 将改动commit并push到main
-
-铁律:
-- 不开新分支，不用v2/v3/port等后缀
-- 改的是算法，不改字符串/docstring
-- 作者: dylanyunlon <dogechat@163.com>
-- git remote set-url origin https://x-access-token:$GIT_TOKEN@github.com/dylanyunlon/walpurgis-WTFGG.git
-
-如果输出被截断，请发送Continue继续执行。
+pip install torch numpy pyyaml scikit-learn --break-system-packages
+apt install tree
+```

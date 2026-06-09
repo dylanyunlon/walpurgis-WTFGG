@@ -1,0 +1,36 @@
+{
+  "run_id": "walpurgis_METR-LA_epoch14_best",
+  "dataset": "METR-LA",
+  "status": "complete",
+  "source": "server ags1 real training log (attached by user)",
+  "best_epoch": 14,
+  "test_mae_avg12": 2.93,
+  "test_rmse_avg12": 5.88,
+  "test_mape_avg12": 8.08,
+  "per_horizon": [
+    {"h": 1,  "mae": 2.1823, "rmse": 3.7661, "mape": 0.0532},
+    {"h": 2,  "mae": 2.4557, "rmse": 4.5109, "mape": 0.0620},
+    {"h": 3,  "mae": 2.6289, "rmse": 5.0000, "mape": 0.0685},
+    {"h": 4,  "mae": 2.7602, "rmse": 5.4274, "mape": 0.0740},
+    {"h": 5,  "mae": 2.8654, "rmse": 5.7328, "mape": 0.0779},
+    {"h": 6,  "mae": 2.9532, "rmse": 5.9884, "mape": 0.0811},
+    {"h": 7,  "mae": 3.0480, "rmse": 6.2489, "mape": 0.0861},
+    {"h": 8,  "mae": 3.1269, "rmse": 6.4495, "mape": 0.0888},
+    {"h": 9,  "mae": 3.1812, "rmse": 6.6293, "mape": 0.0907},
+    {"h": 10, "mae": 3.2541, "rmse": 6.7967, "mape": 0.0938},
+    {"h": 11, "mae": 3.3300, "rmse": 6.9413, "mape": 0.0960},
+    {"h": 12, "mae": 3.3824, "rmse": 7.0964, "mape": 0.0972}
+  ],
+  "training_trajectory": [
+    {"epoch": 12, "val_mae": 2.7442, "test_mae": 2.98, "test_rmse": 5.98, "test_mape": 8.11},
+    {"epoch": 13, "val_mae": 2.7050, "test_mae": 2.96, "test_rmse": 6.04, "test_mape": 8.35},
+    {"epoch": 14, "val_mae": 2.6958, "test_mae": 2.93, "test_rmse": 5.88, "test_mape": 8.08},
+    {"epoch": 15, "val_mae": 2.6925, "test_mae": 2.93, "test_rmse": 5.87, "test_mape": 8.09}
+  ],
+  "sota_comparison": {
+    "vs_titan":      {"gap": 0.05, "note": "TITAN MAE=2.88, Walpurgis MAE=2.93"},
+    "vs_staeformer": {"gap": 0.03, "note": "STAEFormer MAE=2.90, Walpurgis MAE=2.93"},
+    "vs_pdformer":   {"gap": -0.01, "note": "PDFormer MAE=2.94, BEATEN"},
+    "vs_d2stgnn":    {"gap": -0.11, "note": "D2STGNN MAE=3.04, BEATEN by 0.11"}
+  }
+}
