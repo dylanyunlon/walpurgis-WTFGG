@@ -44,7 +44,6 @@
 #include <atomic>
 #include <mutex>
 #include <shared_mutex>
-#include <functional>
 #include <unordered_map>
 #include <string>
 
