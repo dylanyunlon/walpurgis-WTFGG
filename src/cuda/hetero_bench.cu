@@ -125,6 +125,43 @@ struct Partition {
     Partition()
         : id(0), tier(DeviceTier::HOST_DRAM), dev_ptr(nullptr),
           size_bytes(0), edge_count(0), ts_lo(0), ts_hi(0), stream(nullptr) {}
+
+    // Move constructor (std::atomic is not movable, so load+store manually)
+    Partition(Partition&& o) noexcept
+        : id(o.id), tier(o.tier), dev_ptr(o.dev_ptr),
+          size_bytes(o.size_bytes), edge_count(o.edge_count),
+          ts_lo(o.ts_lo), ts_hi(o.ts_hi), stream(o.stream) {
+        access_count.store(o.access_count.load(std::memory_order_relaxed),
+                           std::memory_order_relaxed);
+        last_access_ns.store(o.last_access_ns.load(std::memory_order_relaxed),
+                             std::memory_order_relaxed);
+        o.dev_ptr = nullptr;
+        o.stream  = nullptr;
+    }
+
+    Partition& operator=(Partition&& o) noexcept {
+        if (this != &o) {
+            id          = o.id;
+            tier        = o.tier;
+            dev_ptr     = o.dev_ptr;
+            size_bytes  = o.size_bytes;
+            edge_count  = o.edge_count;
+            ts_lo       = o.ts_lo;
+            ts_hi       = o.ts_hi;
+            stream      = o.stream;
+            access_count.store(o.access_count.load(std::memory_order_relaxed),
+                               std::memory_order_relaxed);
+            last_access_ns.store(o.last_access_ns.load(std::memory_order_relaxed),
+                                 std::memory_order_relaxed);
+            o.dev_ptr = nullptr;
+            o.stream  = nullptr;
+        }
+        return *this;
+    }
+
+    // Delete copy (atomic members are non-copyable)
+    Partition(const Partition&)            = delete;
+    Partition& operator=(const Partition&) = delete;
 };
 
 // ════════════════════════════════════════════════════════════════════════════
