@@ -1,487 +1,176 @@
-# Walpurgis-WTFGG 多Claude协作开发计划
-# =========================================
-# 总体目标: 对upstream D2STGNN代码进行大规模算法改写(~20%),
-# 每个walpurgis变体都包含独立的算法修改。
-# 规则: 直接push到main分支, 不开新分支, 不加v2/v3/port后缀
-# Git author: dylanyunlon <dogechat@163.com>
-# =========================================
+# Walpurgis Multi-Claude Development Plan
+
+> 目标: METR-LA 上超越 TITAN (MAE 2.52@h3) 和 STAEFormer (MAE 2.90 avg)
+>
+> 服务器: ags1 — 2×A6000 (48GB) + 1×H100 NVL (96GB)
+>
+> 仓库: github.com/dylanyunlon/walpurgis-WTFGG (main 分支, 不开新分支)
 
 ## 里程碑分配
 
-### 第一位Claude (当前，已完成): M001-M003
-- M001: ✅ 创建 walpurgis_zenith 完整变体 (37个文件)
-  - SpectralDecayGate, LayerAttentionAggregator
-  - GELU输出头, OneCycleLR, temporal_smoothness
-  - 完整诊断工具链
-- M002: ✅ SYNTH数据集smoke test通过 (MAE 20→5.7)
-- M003: ✅ Push到main, 调度子Claude任务
-
-### 第二位Claude (Opus 4.6): M004-M007
-- M004: 拉取 dylanyunlon/claude-hk-config 同步cookie
-- M005: 对 walpurgis_aurora 变体进行算法改写
-  - 改动方向: 注意力机制重新设计
-  - Multi-Scale Temporal Attention (替代单一GRU)
-  - Gated Fusion替代简单的残差加法
-  - 自适应图正则化 (spectral graph regularizer)
-- M006: aurora变体SYNTH test通过
-- M007: Push到main
-
-### 第三位Claude (Opus 4.6): M008-M011
-- M008: 拉取最新main + claude-hk-config
-- M009: 对 walpurgis_eclipse 变体进行算法改写
-  - 改动方向: 时间序列分解增强
-  - Learnable Wavelet Decomposition (替代固定FFT)
-  - Cross-Attention between diffusion/inherent branches
-  - Gradient-aware loss weighting
-- M010: eclipse变体SYNTH test通过
-- M011: Push到main
-
-### 第四位Claude (Opus 4.6): M012-M015
-- M012: 拉取最新main + claude-hk-config
-- M013: 对 walpurgis_equinox 变体进行算法改写
-  - 改动方向: 图结构学习
-  - Differentiable Graph Sampling (Gumbel-Softmax)
-  - Node-adaptive positional encoding
-  - Contrastive regularization on graph embeddings
-- M014: equinox变体SYNTH test通过
-- M015: Push到main
-
-### 第五位Claude (Opus 4.6): M016-M019
-- M016: 拉取最新main + claude-hk-config
-- M017: 对 walpurgis_solstice 变体进行算法改写
-  - 改动方向: 损失函数和训练策略
-  - Multi-horizon adaptive loss (per-step weighting)
-  - Stochastic Weight Averaging (SWA) 
-  - Progressive training (easy→hard sample curriculum)
-- M018: solstice变体SYNTH test通过
-- M019: Push到main
-
-### 第六位Claude (Opus 4.6): M020-M023
-- M020: 拉取最新main + claude-hk-config
-- M021: 对 walpurgis_nebula 变体进行算法改写
-  - 改动方向: 模型架构创新
-  - Mixture-of-Experts routing in DecoupleLayer
-  - Reversible Residual connections (内存优化)
-  - Learned input augmentation (noise injection schedule)
-- M022: nebula变体SYNTH test通过
-- M023: Push到main, 整体集成测试
-
-## 关键规则 (所有子Claude必须遵守):
-1. 改的是算法，不是字符串/docstring/str_replace
-2. 直接push到main，不开新分支，不加v2/v3/port后缀
-3. git author: dylanyunlon <dogechat@163.com>
-4. GitHub token: <GH_TOKEN_FROM_ENV>
-5. 先拉取 dylanyunlon/claude-hk-config 同步cookie
-6. 每个变体必须通过SYNTH smoke test才能push
-7. 参考 walpurgis_zenith 的文件结构和诊断工具模式
-
-## 对话链接 (claude.hk.cn)
-
-| Claude | 变体 | 对话链接 |
-|--------|------|----------|
-| #2 | aurora | https://claude.hk.cn/chat/9f55a2fc-f9e0-4e5b-8703-3caa01cc27a8 |
-| #3 | eclipse | https://claude.hk.cn/chat/69feb941-5eb7-458f-91a3-eb365e01dc73 |
-| #4 | equinox | https://claude.hk.cn/chat/2e987d0d-69f9-4910-b370-7a515d8a3f55 |
-| #5 | solstice | https://claude.hk.cn/chat/bd9cde7a-a626-4a9c-b249-e978ae5a131e |
-| #6 | nebula | https://claude.hk.cn/chat/c410f422-5548-472c-8369-88cac822618a |
-
-所有子Claude已于 2026-06-08 01:52-01:54 UTC dispatch。
-如果某个子Claude被截断，在对应对话中发送 "Continue" 即可。
-
-### 第七位Claude (当前, Opus 4.6): M024-M027 ✅
-- M024: ✅ Clone仓库, 分析upstream全部47个文件
-- M025: ✅ 创建 walpurgis_vortex 完整变体 (33文件, 2286行)
-  - EMA动量融合门控 (dif/inh分支指数移动平均混合)
-  - 随机深度 (stochastic depth, 线性增长跳过概率)
-  - 温度缩放聚合 (可学习temperature softmax加权)
-  - Mish+GroupNorm输出头 + 双路输出(主+辅助gradient-detach)
-  - CosineAnnealingWarmRestarts调度器
-  - 梯度噪声注入 + Huber-MAE自适应混合损失
-  - 完整诊断: struct dump / activation probe / grad histogram / LR tracker
-- M026: ✅ SYNTH smoke test通过 (MAE 14.2→11.5, 3 epochs)
-- M027: ✅ Push到main, 调度子Claude
-
-### 第八位Claude (sub-Claude, Opus 4.6): M028-M031
-- M028: Clone仓库, 拉取claude-hk-config
-- M029: 创建 walpurgis_cascade 变体
-  - 改动方向: 级联残差学习 + 动态深度选择
-  - Cascade residual: 每层输出不仅传下一层,也直接跳连到输出
-  - Dynamic depth: 可学习的门控决定推理时用几层
-  - Squeeze-and-Excitation通道注意力
-- M030: cascade变体SYNTH test通过
-- M031: Push到main
-
-### 第九位Claude (sub-Claude, Opus 4.6): M032-M035
-- M032: Clone仓库, 拉取claude-hk-config
-- M033: 创建 walpurgis_rift 变体
-  - 改动方向: 分裂重组注意力 + 频域增强
-  - Split-Recombine: 将hidden分成K组独立处理后重组
-  - Frequency-enhanced: FFT域特征与时域特征concat
-  - Polynomial decay learning rate
-- M034: rift变体SYNTH test通过
-- M035: Push到main
-
-### 第十位Claude (sub-Claude, Opus 4.6): M036-M039
-- M036: Clone仓库, 拉取claude-hk-config
-- M037: 创建 walpurgis_prism 变体
-  - 改动方向: 多视角融合 + 对比学习
-  - Multi-view: 空间/时间/频率三视角独立编码后融合
-  - Contrastive loss: 相邻节点embedding对比正则
-  - Mixup数据增强
-- M038: prism变体SYNTH test通过
-- M039: Push到main
-
-### 第十一位Claude (sub-Claude, Opus 4.6): M040-M043
-- M040: Clone仓库, 拉取claude-hk-config ✅
-- M041: 创建 walpurgis_helix 变体 ✅ (35 files, 2643 lines)
-  - 改动方向: 螺旋卷积 + 自适应图稀疏化
-  - Helix conv: 交替的升维-降维螺旋结构
-  - Adaptive sparsification: top-k图过滤
-  - Label smoothing loss
-  - 额外改动: 螺旋位置编码, GELU残差分解, 对称图归一化, GRU残差连接, 螺旋warm-up, Fibonacci种子, 动量EarlyStopping
-- M042: helix变体SYNTH test通过 ✅ (3 epochs, val MAE 22.5→13.2)
-- M043: Push到main ✅
-
-### 第十二位Claude (sub-Claude, Opus 4.6): M044-M047
-- M044: ✅ Clone仓库, 安装依赖
-- M045: ✅ 创建 walpurgis_flux 变体 (33个文件)
-  - 改动方向: 流式推理 + 渐进式解码
-  - Streaming inference: 滑动窗口因果截取 + 可学习衰减权重
-  - Progressive decode: 粗→细两阶段预测头(SiLU+LayerNorm)
-  - Focal MAE loss: 对hard samples加权(gamma=2.0, alpha=0.75)
-  - CausalConvEmbedding: 因果Conv1d替代线性嵌入
-  - ExponentialDecayPE: 指数衰减位置编码
-  - ChunkedCausalAttention: 分块因果注意力(chunk_size=4)
-  - StreamGRU: GRU with forget bias=1.5
-  - 对称图归一化 D^{-1/2}AD^{-1/2}
-  - 温度调控软门控掩码(可学习temperature)
-  - ExponentialLR(gamma=0.95) + 线性warmup ramp
-  - PCG32种子生成 + EMA梯度方向EarlyStopping
-  - 渐进式shuffle(粗→细粒度)
-  - 完整诊断: StreamWindowTracker / ProgressiveDecodeTracker / struct dump
-- M046: ✅ SYNTH smoke test通过 (MAE 36→13.9, 3 epochs, 17s)
-- M047: ✅ Push到main
-
-## 第七位Claude (vortex) 调度的对话链接
-
-| Claude | 变体 | 对话链接 |
-|--------|------|----------|
-| #8 | cascade | https://claude.hk.cn/chat/9664099f-e46d-4f58-9d1e-564eb763c103 |
-| #9 | rift | https://claude.hk.cn/chat/0e821113-11d2-4154-83e1-6ee39bf738c0 |
-| #10 | prism | https://claude.hk.cn/chat/ff934f03-c0ae-4020-9d13-63749f2de0ac |
-
-所有子Claude于 2026-06-08 03:18-03:22 UTC dispatch。
-如果某个子Claude被截断，在对应对话中发送 "Continue" 即可。
-| #11 | helix | https://claude.hk.cn/chat/0ed1b3b0-5985-4b5f-a121-ebd09ba1088f |
-| #12 | flux | https://claude.hk.cn/chat/8a2b9fc1-0554-41f6-83bf-e9d945dc10a7 |
-
-## 第七位Claude (vortex) 重新调度 — 2026-06-08 03:40 UTC
-(旧session的对话因cookie轮换失效, 以下为当前有效对话)
-
-| Claude | 变体 | 对话链接 |
-|--------|------|----------|
-| #8 | cascade | https://claude.hk.cn/chat/3e7f3c83-a61e-48ac-81de-76a6bf6c06a0 |
-| #9 | rift | https://claude.hk.cn/chat/11118eb2-2f1c-44be-8184-223fe8af2534 |
-| #10 | prism | https://claude.hk.cn/chat/3cb06f90-6d7f-451f-9855-aa402e876956 |
-| #11 | helix | https://claude.hk.cn/chat/59ac7332-89de-4a37-ac1c-92ced2047059 |
-| #12 | flux | https://claude.hk.cn/chat/7476c3a5-c876-4f23-b3ea-778828bab755 |
-
-如果被截断, 在对应对话中发送 "Continue" 即可。
-
-## 最终状态总结
-
-### 第七位Claude (管理者): M024-M027 ✅ COMPLETE
-- 创建 walpurgis_vortex (33文件, 2286行)
-- SYNTH test通过 (MAE 14.2→11.5)
-- 调度5个子Claude (#8-#12)
-- 持续监控 + 自动发送Continue保持loop
-
-### 第八位Claude: M028-M031 ✅ COMPLETE  
-- 创建 walpurgis_cascade (33文件, 2506行)
-- SE通道注意力、级联残差、动态深度门控
-
-### 第九位Claude: M032-M035 ✅ COMPLETE
-- 创建 walpurgis_rift (32文件, 1993行)
-- Split-Recombine分组、FFT频域concat、多项式衰减LR
-
-### 第十位Claude: M036-M039 ✅ COMPLETE
-- 创建 walpurgis_prism (33文件, 2548行)
-- 三视角融合、对比学习正则、Mixup增强
-
-### 第十一位Claude: M040-M043 ✅ COMPLETE
-- 创建 walpurgis_helix (33文件, 2247行)
-- 螺旋卷积升降维、top-k图稀疏化、标签平滑
-
-### 第十二位Claude: M044-M047 ✅ COMPLETE
-- 创建 walpurgis_flux (33文件, 3023行)
-- 因果窗口流式推理、粗细渐进解码、Focal loss
-
-所有变体已push到main, git author = dylanyunlon <dogechat@163.com>
-
----
-
-## 第三轮调度 (2026-06-08)
-
-### 第十三位Claude (管理者/开发者): M048 ✅ COMPLETE
-- 创建 walpurgis_meridian (40文件, 2290行)
-- 算法: bilinear EstimationGate + Mish, gated ResidualDecomp, Lanczos spectral filter + GLU,
-  cosine similarity DynGraph, adaptive soft-threshold mask, symmetric normalizer,
-  HighwayGRU + FrequencyPE + RelPosTransformer, GEGLU output + softmax aggregation,
-  focal loss with annealing, AdamW + ReduceLROnPlateau, trend-aware EarlyStopping
-- SYNTH test通过 (MAE=3.35, RMSE=4.80, MAPE=4.89%)
-- Commit: f0e7326, push成功
-
-### 第十四位Claude (我自己): M049 ✅ COMPLETE
-- 变体: walpurgis_penumbra (半影)
-- 算法: squeeze-excitation gate, PowerNorm+Swish decomp, Chebyshev polynomial+SpectralNorm conv,
-  Mahalanobis distance, Bernoulli mask, Sinkhorn normalizer, MinGRU+cross-attention,
-  EMA decay aggregation, log-cosh loss, Adan+OneCycleLR
-- 完成: penumbra pushed to main (4f314eb)
-- Prompt: /tmp/subclaude_prompt_penumbra.txt
-
-### 第十五位Claude (Opus 4.6): M050 ⏳ PENDING
-- 变体: walpurgis_corona (日冕)
-- 算法: gated attention pooling+SiLU, EMA decomp, attention-weighted graph conv,
-  learned metric embedding, top-k sparse mask, alternating normalizer,
-  LSTM+RoPE, gated residual aggregation, quantile loss, RAdam+CosineAnnealing
-- Prompt: /tmp/subclaude_prompt_corona.txt
-
-### 第十六位Claude (Opus 4.6): M051 ⏳ PENDING
-- 变体: walpurgis_umbra (本影)
-- 算法: MoE gating, Haar wavelet decomp, random walk diffusion+restart,
-  hyperbolic Poincaré distance, differentiable top-k, PageRank normalizer,
-  Mamba SSM+ALiBi, DenseNet skip connections, adaptive Huber loss, LAMB+polynomial decay
-- Prompt: /tmp/subclaude_prompt_umbra.txt
-
-### 配额状态
-- ORG1: 6bbaaedb... (59/60已用, 恢复时间: 2026-06-08 15:08:01 CST)
-- ORG2: 9b279708... (共享配额, 同上)
-- 计划: 配额恢复后依次调度M049→M050→M051
-
-## 第四轮计划 (M052-M055)
-
-### 第十七位Claude (Opus 4.6): M052 ⏳ QUEUED
-- 变体: walpurgis_perihelion (近日点)
-- 算法: cross-attention gate, FFT band-pass decomp, GraphSAGE+JK conv,
-  MINE mutual information distance, Gumbel-softmax mask, attention normalizer,
-  Flash-chunk Transformer+SwiGLU, stochastic depth, Linex loss, AdaFactor+inverse sqrt
-- Prompt: /tmp/subclaude_prompt_perihelion.txt
-
-### 第十八位Claude (Opus 4.6): M053 ⏳ QUEUED
-- 变体: walpurgis_aphelion (远日点)
-- 算法: hypernetwork gate, VMD decomp, GAT v2+edge features,
-  SimCLR contrastive adjacency, entropy-regularized mask, wavelet normalizer,
-  Retention network+cross-scale fusion, FPN multi-scale output, tilted ERM loss, Sophia+exp decay
-
-### 第十九位Claude (Opus 4.6): M054 ⏳ QUEUED
-- 变体: walpurgis_parallax (视差)
-- 算法: Bayesian MC-dropout gate, STL LOESS decomp, MixHop multi-res GCN,
-  kernel density distance, REINFORCE importance mask, spectral clustering normalizer,
-  xLSTM+positional interpolation, mixture output router, Cauchy loss, Prodigy optimizer
-
-### 第二十位Claude (Opus 4.6): M055 ⏳ QUEUED
-- 变体: walpurgis_transit (凌日)
-- 算法: neural ODE gate, Hilbert-Huang decomp, APPNP propagation,
-  Wasserstein distance, attention sparsification mask, heat kernel normalizer,
-  Griffin RG-LRU+ConvNeXt, iterative refinement output, Huberized quantile loss, Shampoo optimizer
-
-## ⚠️ Cookie状态 (2026-06-08 07:35 UTC)
-- cookie已失效: "当前的车已失效，请换车继续使用"
-- 需要用户更新 dylanyunlon/claude-hk-config 中的cookie
-- M050-M055 等待cookie更新后调度
-
-## 当前调度计划 (cookie恢复后)
-第一位Claude (我): M049 ✅ penumbra COMPLETE
-第二位Claude: M050 corona → /tmp/subclaude_prompt_corona.txt
-第三位Claude: M051 umbra → /tmp/subclaude_prompt_umbra.txt  
-第四位Claude: M052 perihelion → /tmp/subclaude_prompt_perihelion.txt
-第五位Claude: M053 aphelion → /tmp/subclaude_prompt_aphelion.txt
-第六位Claude: M054 parallax → /tmp/subclaude_prompt_parallax.txt
-第七位Claude: M055 transit → /tmp/subclaude_prompt_transit.txt
-
-## ============================================
-## 新一轮调度 (2026-06-08, Claude #1 第二批)
-## ============================================
-
-### 第一位Claude (我, 本轮): M056-M058 ✅ COMPLETE
-- M056: ✅ 创建 walpurgis_corona 完整变体 (38个文件, 10处算法改写)
-  - Gated Attention Pooling + SiLU gate
-  - EMA-based residual decomposition
-  - Attention-weighted graph conv
-  - Learned metric embedding + cosine similarity + temperature
-  - Top-k sparse mask
-  - Alternating row-col normalizer
-  - LSTMCell + RoPE rotary position encoding
-  - Gated residual aggregation (sigmoid gates per layer)
-  - Quantile loss (multi-quantile regression)
-  - RAdam + CosineAnnealingWarmRestarts
-- M057: ✅ SYNTH smoke test通过 (MAE 21.99→10.34, 3 epochs)
-- M058: ✅ Push到main + 清理根目录clutter (21 files removed)
-
-### 第二位Claude (Opus 4.6): M059-M061 — walpurgis_aphelion (远日点)
-- M059: clone repo + 拉取 claude-hk-config 同步cookie
-- M060: 创建 walpurgis_aphelion 变体, 10处算法改写 (参考corona模式)
-  - hypernetwork gate, VMD decomp, GAT v2, SimCLR contrastive adj,
-    entropy-regularized mask, wavelet normalizer, Retention network,
-    FPN output, tilted ERM loss, Sophia optimizer
-- M061: SYNTH smoke test通过 + push到main
-
-### 第三位Claude (Opus 4.6): M062-M064 — walpurgis_perihelion 算法补强
-- 需要检查现有perihelion是否有真正的算法改写, 如果没有则重建
-
-### 第四位Claude (Opus 4.6): M065-M067 — walpurgis_umbra 算法补强
-- 同上
-
-### 第五位Claude (Opus 4.6): M068-M070 — walpurgis_parallax 算法补强
-- 同上
-
-### 第六位Claude (Opus 4.6): M071-M073 — walpurgis_transit 算法补强
-- 同上
-
-## ⚠️ Cookie状态检查
-- cookie来源: dylanyunlon/claude-hk-config (raw_curl.txt)
-- ORG: b3012e8c-5f6b-49b1-a0f5-824ba5bac509
-- 注意: 同一个cookie同时只能有一个对话活跃, 多个Claude同时用会冲突!
-- 建议: 串行调度, 一个Claude完成后再派下一个
-
----
-## Phase 2: SOTA实验运行 (M074-M103)
-> 第一位Claude (当前): 创建cathexis + 调度pipeline
-> 目标: 在METR-LA/PEMS-BAY上超越STAEFormer MAE=2.90
-
-### 第一位Claude: M074-M078 — cathexis变体 + 实验pipeline (✅ 已完成)
-- M074: ✅ 创建walpurgis_cathexis — 10项算法改写
-  1. Bilinear + SiLU estimation gate
-  2. AdaIN residual decomposition
-  3. GATv2-style per-hop attention graph conv
-  4. Exponential kernel distance (learned bandwidth)
-  5. Bernoulli soft gating mask
-  6. Doubly-stochastic Sinkhorn normalizer
-  7. Mamba-SSM + SwishGLU inherent
-  8. Exponential recency weighted aggregation
-  9. Asymmetric Winsorized loss
-  10. GradCentralized AdamW + WarmupCosineAnnealing
-- M075: ✅ SYNTH smoke test通过 (CPU, 3 epochs)
-- M076: ✅ 创建server_setup.sh + run_experiment.sh (自动训练+评估+push)
-- M077: ✅ 创建MULTI_CLAUDE_DISPATCH.md + subclaude_gpu_experiment.md
-- M078: ✅ Push到main
-
-### 第二位Claude (Opus 4.6 medium): M079-M083 — METR-LA实验
-- M079: 拉取dylanyunlon/claude-hk-config同步cookie
-- M080: GPU服务器conda环境配置 (复用walpurgis env)
-- M081: 下载METR-LA数据集 (207 nodes, DCRNN格式)
-- M082: ./run_experiment.sh cathexis METR-LA cuda:0 80 (3 seeds)
-- M083: push结果, 更新comparison_table.tex
-
-### 第三位Claude (Opus 4.6 medium): M084-M088 — PEMS-BAY + 多变体对比
-- M084: 下载PEMS-BAY数据集 (325 nodes)
-- M085: ./run_experiment.sh cathexis PEMS-BAY cuda:0 80
-- M086: ./run_experiment.sh corona METR-LA cuda:0 80
-- M087: ./run_experiment.sh zenith METR-LA cuda:0 80
-- M088: 汇总三变体结果
-
-### 第四位Claude (Opus 4.6 medium): M089-M093 — 超参数调优
-- M089: 分析初始METR-LA结果
-- M090: 调lr/batch_size/hidden_dim/dropout
-- M091: 最优配置重训 (3 seeds)
-- M092: 运行10维评估 (bench/walpurgis_eval.py)
-- M093: push最终结果
-
-### 第五位Claude (Opus 4.6 medium): M094-M098 — upstream baseline + tex表格
-- M094: 运行upstream D2STGNN在METR-LA (验证baseline)
-- M095: 运行upstream D2STGNN在PEMS-BAY
-- M096: 生成完整comparison_table.tex
-- M097: 更新tex Section 5 (Evaluation)
-- M098: push论文就绪tex
-
-### 第六位Claude (Opus 4.6 medium): M099-M103 — 消融实验 + 最终验证
-- M099: cathexis消融实验 (逐一禁用10个改写)
-- M100: 生成ablation_table.tex
-- M101: D7 (Graph Sensitivity) + D10 (Stability) 评估
-- M102: 仓库最终清理
-- M103: 论文数据验证 + push
-
----
-## Phase 3: 真实SOTA对比实验 (M104-M139)
-> 目标: 在GPU服务器上运行所有高潜力变体(cascade/nebula/prism/flux/reverie)
-> 对METR-LA/PEMS-BAY跑完整实验, 超越STAEFormer MAE=2.90
-> 实验结果自动push到git, 子Claude拉取后填入tex表格
-
-### SOTA目标:
-- METR-LA: STAEFormer MAE=2.90, RMSE=5.91, MAPE=8.12%
-- 我们的目标: MAE < 2.85, RMSE < 5.80
-
-### 第一位Claude (当前, Opus 4.6): M104-M109 — reverie变体 + 实验架构 ✅
-- M104: ✅ 创建walpurgis_reverie — 10项算法改写 (已通过SYNTH)
-- M105: ✅ 清理bench后缀文件 (v10_theory, benchmark_v2)
-- M106: ✅ 创建gpu_experiment.sh (GPU服务器实验+自动push)
-- M107: ✅ 创建METR-LA/PEMS-BAY configs
-- M108: ✅ Push到main
-- M109: ✅ 编写子Claude dispatch prompt + M编号规划
-
-### 第二位Claude (Opus 4.6 medium): M110-M115 — METR-LA数据集准备+cascade实验
-- M110: git pull main, 检查GPU环境 (lscpu/nvidia-smi)
-- M111: 下载METR-LA数据集 (raw → generate_training_data.py)
-- M112: 下载PEMS-BAY数据集
-- M113: conda activate walpurgis (或新建)
-- M114: bash gpu_experiment.sh cascade METR-LA cuda:0 80
-- M115: push结果到main
-
-### 第三位Claude (Opus 4.6 medium): M116-M121 — nebula+prism实验
-- M116: git pull main
-- M117: bash gpu_experiment.sh nebula METR-LA cuda:0 80
-- M118: bash gpu_experiment.sh prism METR-LA cuda:0 80
-- M119: bash gpu_experiment.sh nebula PEMS-BAY cuda:0 80
-- M120: bash gpu_experiment.sh prism PEMS-BAY cuda:0 80
-- M121: push所有结果
-
-### 第四位Claude (Opus 4.6 medium): M122-M127 — flux+reverie+upstream baseline
-- M122: git pull main
-- M123: bash gpu_experiment.sh flux METR-LA cuda:0 80
-- M124: bash gpu_experiment.sh reverie METR-LA cuda:0 80
-- M125: 运行upstream D2STGNN baseline (验证D2STGNN MAE=3.04)
-- M126: bash gpu_experiment.sh flux PEMS-BAY cuda:0 80
-- M127: push所有结果
-
-### 第五位Claude (Opus 4.6 medium): M128-M133 — 结果汇总+tex表格
-- M128: git pull main, 收集所有结果summary.json
-- M129: 生成comparison_table.tex (所有变体 vs SOTA)
-- M130: 确定最优变体, 超参数微调 (lr/dropout/hidden_dim)
-- M131: 最优变体3-seed重训 (统计稳定性)
-- M132: 生成ablation_table.tex
-- M133: push论文就绪tex + 最终数据
-
-### 第六位Claude (Opus 4.6 medium): M134-M139 — 论文集成+最终验证
-- M134: git pull main, 验证所有实验可复现
-- M135: 更新walpurgis_reconstructed.tex Section 5
-- M136: 生成per-horizon分析图 (15min/30min/60min)
-- M137: 仓库最终清理 (删除SYNTH临时文件/pt权重)
-- M138: README更新 (实验复现步骤)
-- M139: 最终push, 论文数据锁定
-
-## 关键协调机制:
-- gpu_experiment.sh: 实验完成自动push results到git
-- 每个子Claude先 git pull main 获取最新代码和数据
-- 结果存储在 output/results_<variant>_<dataset>/summary.json
-- 子Claude通过 GH_TOKEN env var 访问仓库
-- conda环境: walpurgis (如已存在则复用)
-
-## Phase 3 子Claude对话链接
-
-| Task | 里程碑 | 任务内容 | 对话链接 |
-|------|--------|----------|----------|
-| 1 | M110-M115 | cascade METR-LA | https://claude.hk.cn/chat/74057259-21a0-4bfe-9cc7-6010df444ddd |
-| 2 | M116-M121 | nebula+prism METR-LA | https://claude.hk.cn/chat/cd24cc43-1400-4d8e-ac4c-257b344d9662 |
-| 3 | M122-M127 | flux+reverie+baseline | https://claude.hk.cn/chat/40d0a013-b59f-4b0c-80e3-9c05ced3dd31 |
-| 4 | M128-M133 | 结果汇总+tex表格 | https://claude.hk.cn/chat/f4d530ef-feda-46eb-9fff-8d965efc9726 |
-| 5 | M134-M139 | 论文集成+清理 | https://claude.hk.cn/chat/8f9d819e-298f-4459-9c45-74400fb12e45 |
-
-所有子Claude于 $(date -u +"%Y-%m-%d %H:%M UTC") dispatch完成。
-模型: claude-opus-4-6 | Effort: medium
-如被截断, 在对应对话中发送Continue。
-
-### 执行顺序 (串行, 避免cookie冲突):
-1. 先在服务器执行 server_run_all.sh 跑完所有实验
-2. 或按Task 1→2→3顺序, 每个Claude生成的脚本在服务器上执行
-3. Task 4 (汇总) 在所有实验完成后执行
-4. Task 5 (论文集成) 最后执行
+### 第一位 Claude (M100-M109) ✅ 完成
+**任务: 项目审计 + 实验基础设施**
+
+| ID | 内容 | 状态 |
+|----|------|------|
+| M100 | 项目架构审查, SOTA 差距分析 | ✅ |
+| M101 | 清理仓库: 删除旧变体后缀/stale checkpoints/logs | ✅ |
+| M102 | 修复 METR-LA config: epochs 3→100, patience 15 | ✅ |
+| M103 | 创建 experiments/ 实验流水线 (setup/run/eval/push) | ✅ |
+| M104 | 更新 .gitignore, README, 本计划文档 | ✅ |
+| M105 | 创建基线对比脚本 (D2STGNN upstream + STAEFormer) | ✅ |
+| M106 | Git push 所有清理和基础设施 | ✅ |
+| M107-M109 | 预留 | - |
+
+### 第二位 Claude (M110-M119)
+**任务: 在服务器上实际运行实验, 获取基线数据**
+
+关键指令:
+1. `git pull origin main` 拉取最新代码
+2. `bash experiments/setup_env.sh` 配置环境
+3. `bash experiments/run_baselines.sh --model d2stgnn --gpu 0` 跑 D2STGNN 基线
+4. 验证 METR-LA 数据正确加载 (207 nodes, 34272 timesteps)
+5. 确认 upstream D2STGNN 基线在 METR-LA 上复现 MAE ≈ 3.04
+
+| ID | 内容 |
+|----|------|
+| M110 | 服务器环境配置, conda activate, 数据下载 |
+| M111 | 运行 upstream D2STGNN 基线, 100 epochs, 验证 MAE≈3.04 |
+| M112 | 运行 Walpurgis (Cascade变体) 100 epochs on METR-LA |
+| M113 | 对比 Cascade vs D2STGNN baseline, 诊断差距 |
+| M114 | 结果 JSON push 到 experiments/results/ |
+| M115-M119 | 预留 |
+
+### 第三位 Claude (M120-M129)
+**任务: 算法改进 — 修复 mode collapse, 提升到 baseline 水平**
+
+根据第二位 Claude 的诊断数据, 修改核心算法:
+- `src/walpurgis/models/model.py` — 模型架构调整
+- `src/walpurgis/models/losses.py` — 损失函数修复
+- `src/walpurgis/models/trainer.py` — 训练策略优化
+
+重点修改方向 (根据 variant_analysis.json 排名):
+1. **Cascade SE+Dense skip** — 已实现, 需调参
+2. **损失函数**: Huber+LogCosh→纯 MAE (upstream 使用 masked_mae)
+3. **学习率**: 对齐 upstream 的 MultiStepLR schedule
+4. **Curriculum learning**: 正确实现 (upstream 有, 当前可能 broken)
+
+| ID | 内容 |
+|----|------|
+| M120 | 分析 M112 的训练日志, 定位 mode collapse 根因 |
+| M121 | 修复损失函数: 从 Cascade loss 回退到 masked_mae |
+| M122 | 对齐 upstream 训练策略 (lr_schedule, curriculum) |
+| M123 | 运行修复后的模型 100ep, 目标 MAE < 3.10 |
+| M124 | Push 修复代码 + 结果 |
+| M125-M129 | 预留 |
+
+### 第四位 Claude (M130-M139)
+**任务: 算法创新 — 超越 D2STGNN baseline**
+
+在 M120-M124 的稳定基础上, 逐一引入创新:
+1. SE channel attention (验证有效再保留)
+2. Dense cascade connections (验证有效再保留)
+3. Dynamic depth gating (验证有效再保留)
+4. 每加一个改动跑一次实验, 只保留有效的
+
+目标: **MAE < 2.96** (超越 STG-NCDE)
+
+| ID | 内容 |
+|----|------|
+| M130 | +SE attention 消融实验 |
+| M131 | +Dense cascade 消融实验 |
+| M132 | +Dynamic depth 消融实验 |
+| M133 | 组合最优改动, 100ep 训练 |
+| M134 | Push 结果 + 更新 comparison_table |
+| M135-M139 | 预留 |
+
+### 第五位 Claude (M140-M149)
+**任务: 冲击 SOTA — 超越 STAEFormer**
+
+目标: **MAE < 2.90** (METR-LA avg)
+
+在 M130 的最优组合上, 尝试高潜力改动:
+- Multi-view fusion (Prism 变体思路)
+- Fourier positional encoding
+- 更深的 submodule 重写
+- 多 seed 验证稳定性
+
+| ID | 内容 |
+|----|------|
+| M140 | 引入 Fourier/sin-cos 时间编码 |
+| M141 | 引入 multi-scale feature fusion |
+| M142 | 多 seed (42/137/271) 验证 |
+| M143 | 100ep 全量训练, 最终数据 |
+| M144 | Push SOTA 结果 |
+| M145-M149 | 预留 |
+
+### 第六位 Claude (M150-M159)
+**任务: 论文 TeX 填充 + PEMS-BAY 实验**
+
+1. 将 experiments/results/ 中的数据填入 tex
+2. 在 PEMS-BAY 上复现 (证明泛化性)
+3. 完成 comparison table, 消融实验表
+4. 生成 training curve 图
+
+| ID | 内容 |
+|----|------|
+| M150 | PEMS-BAY 实验 (100ep) |
+| M151 | 更新 walpurgis_reconstructed.tex 中的实验数据 |
+| M152 | 生成 comparison_table.tex (与 TITAN/STAEFormer/D2STGNN) |
+| M153 | 生成消融实验表 (ablation study) |
+| M154 | 生成 training curve 图 |
+| M155-M159 | 预留 |
+
+## 服务器操作规范
+
+### Git 工作流
+```bash
+# 每次开始前
+git pull origin main
+
+# 工作完成后
+git add -A
+git commit -m "M1XX: 简要描述"
+git push origin main
+```
+
+### GPU 分配
+| GPU | 型号 | 显存 | 用途 |
+|-----|------|------|------|
+| 0 | A6000 | 48GB | 基线实验 / 消融实验 |
+| 1 | A6000 | 48GB | 基线实验 / 消融实验 |
+| 2 | H100 NVL | 96GB | 主实验 (Walpurgis) |
+
+### Conda 环境
+```bash
+conda activate walpurgis
+# 或 conda activate base (如果 base 已有 pytorch)
+```
+
+### 关键路径
+```
+src/walpurgis/models/model.py    — 模型架构 (改这里)
+src/walpurgis/models/losses.py   — 损失函数 (改这里)
+src/walpurgis/models/trainer.py  — 训练循环 (改这里)
+src/walpurgis/configs/METR-LA.yaml — 超参数配置
+train_walpurgis.py               — 训练入口
+experiments/results/              — 实验结果 (自动 push)
+```
+
+### 不要做的事
+- ❌ 开新分支 (只用 main)
+- ❌ 创建带后缀的目录 (walpurgis_xxx, v2, port 等)
+- ❌ 改 docstring / str_replace 字符串
+- ❌ 在 SYNTH 上做实验 (只用 METR-LA / PEMS-BAY)
+- ❌ 训练少于 50 epochs
+
+## SOTA 参考数据 (METR-LA, Average across horizons)
+
+| Model | Year | MAE | RMSE | MAPE |
+|-------|------|-----|------|------|
+| TITAN | 2024 | 2.88 | — | — |
+| STAEFormer | 2023 | 2.90 | 5.91 | 8.12% |
+| PDFormer | 2023 | 2.94 | 6.08 | 8.56% |
+| STG-NCDE | 2022 | 2.96 | 6.51 | 9.13% |
+| D2STGNN | 2022 | 3.04 | 6.23 | 8.33% |
+| **Walpurgis (目标)** | **2026** | **< 2.85** | **< 5.80** | **< 8.00%** |

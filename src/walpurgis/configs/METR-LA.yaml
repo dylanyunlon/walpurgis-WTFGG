@@ -33,8 +33,8 @@ optim_args:
   cl_epochs: 6
   output_seq_len: 12
   warm_epochs: 5
-  epochs: 3
-  patience: 100
+  epochs: 100
+  patience: 15
   seq_length: 12
 v10_adj_preprocess:
   rbf_kernel: True

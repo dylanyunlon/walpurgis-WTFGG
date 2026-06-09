@@ -1,20 +1,49 @@
-# Binaries
-philemon_bench
-philemon_fast
-philemon_data_gen
-fig4_only
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
 
-# Extracted data demo
-data_demo/
+# Model checkpoints (tracked via experiments/results/ json only)
+*.pt
+*.pth
+*.pkl
+!datasets/sensor_graph/*.pkl
+!datasets/SYNTH/*.pkl
+
+# Data (too large for git)
+*.h5
+*.hdf5
+*.npz
+!datasets/SYNTH/*.npz
+datasets/METR-LA/
+datasets/PEMS-BAY/
+datasets/PEMS04/
+datasets/PEMS08/
+
+# Experiment logs (results json is tracked, raw logs are not)
+experiments/results/*/train.log
+experiments/results/*/eval.log
+experiments/baselines/
+
+# Build artifacts
+*.o
+*.so
+*.a
+build/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
 
 # OS
 .DS_Store
-*.o
-*.d
-__pycache__/
-*.pyc
+Thumbs.db
 
-# Regeneratable outputs
-output/dataloader_*.pkl
-src/walpurgis_nightfall/output/
-src/walpurgis_nightfall/datasets_ext/
+# Old artifacts
+data.zip
+checkpoints/
+log/
+logs/

@@ -1,4 +1,0 @@
-model: D2STGNN
-dataset: SYNTH
-start: 20260605_101523
-variant: nightfall
