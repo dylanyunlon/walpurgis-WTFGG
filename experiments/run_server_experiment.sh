@@ -9,8 +9,11 @@ REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_DIR"
 
 # ── Git凭证 ──
-export GIT_TOKEN="${GIT_TOKEN}"
-git remote set-url origin "https://x-access-token:${GIT_TOKEN}@github.com/dylanyunlon/walpurgis-WTFGG.git" 2>/dev/null || true
+export GIT_TOKEN="${GIT_TOKEN:-}"
+
+if [ -n "$GIT_TOKEN" ]; then
+    git remote set-url origin "https://x-access-token:${GIT_TOKEN}@github.com/dylanyunlon/walpurgis-WTFGG.git" 2>/dev/null || true
+fi
 
 # ── 拉取最新代码 ──
 echo "[$(date '+%H:%M:%S')] Pulling latest..."
