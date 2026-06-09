@@ -1,0 +1,52 @@
+{
+  "experiment": "ablation",
+  "dataset": "SYNTH",
+  "epochs_per_config": 3,
+  "seed": 42,
+  "device": "cpu",
+  "baseline_mae": 5.0362,
+  "configs": {
+    "baseline": {
+      "best_val_mae": 5.0362,
+      "per_epoch_val_mae": [
+        14.2621,
+        5.0362,
+        6.5582
+      ]
+    },
+    "no_adp_emb": {
+      "best_val_mae": 5.278,
+      "per_epoch_val_mae": [
+        12.9479,
+        5.8446,
+        5.278
+      ],
+      "delta_vs_baseline": 0.2418,
+      "pct_change": 4.8
+    },
+    "no_temp_attn": {
+      "best_val_mae": 6.2779,
+      "per_epoch_val_mae": [
+        24.1313,
+        6.2779,
+        6.8799
+      ],
+      "delta_vs_baseline": 1.2417,
+      "pct_change": 24.66
+    }
+  },
+  "summary": {
+    "adaptive_emb_contribution": {
+      "delta_mae": 0.2418,
+      "pct_change": 4.8,
+      "interpretation": "positive = adaptive_emb helps reduce MAE"
+    },
+    "temporal_attn_contribution": {
+      "delta_mae": 1.2417,
+      "pct_change": 24.66,
+      "interpretation": "positive = temporal_attn helps reduce MAE"
+    }
+  },
+  "total_time_s": 43.8,
+  "conducted_by": "Claude-4 M376-M400 (Phase 2 ablation)"
+}
