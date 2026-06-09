@@ -822,7 +822,7 @@ static void experiment_concurrent(PartitionSet& ps) {
         // Migration thread: continuously promote hottest DRAM partitions to H100
         std::thread migrator([&]() {
             while (!stop_migration.load(std::memory_order_acquire)) {
-                std::lock_guard<std::mutex> lk(ps.mu);
+                std::unique_lock<std::mutex> lk(ps.mu);
                 for (auto& p : ps.parts) {
                     if (p.tier == DeviceTier::HOST_DRAM &&
                         p.access_count.load(std::memory_order_relaxed) > 5) {
