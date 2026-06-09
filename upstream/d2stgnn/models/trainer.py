@@ -2,8 +2,13 @@
 import numpy as np
 import torch
 import torch.optim as optim
-from torchinfo.torchinfo import summary
-from sklearn.metrics import mean_absolute_error
+try:
+    from torchinfo.torchinfo import summary
+except ImportError:
+    summary = None
+def mean_absolute_error(y_true, y_pred):
+    import numpy as _np
+    return _np.mean(_np.abs(_np.asarray(y_true) - _np.asarray(y_pred)))
 
 from utils.train import data_reshaper, save_model
 from .losses import masked_mae, masked_rmse, masked_mape, metric

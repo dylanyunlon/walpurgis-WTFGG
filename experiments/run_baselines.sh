@@ -35,10 +35,8 @@ run_d2stgnn() {
     local BDIR="$BASELINES_DIR/d2stgnn"
     mkdir -p "$BDIR"
 
-    # 复制 upstream 代码到工作区
-    if [ ! -f "$BDIR/main.py" ]; then
-        cp -r upstream/d2stgnn/* "$BDIR/"
-    fi
+    # 每次从 upstream 同步最新代码
+    cp -r upstream/d2stgnn/* "$BDIR/"
 
     # 确保数据链接
     ln -sf "$REPO_DIR/datasets" "$BDIR/datasets" 2>/dev/null || true

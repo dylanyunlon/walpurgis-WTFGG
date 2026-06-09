@@ -13,7 +13,10 @@ from models.losses import *
 from models import trainer
 from models.model import D2STGNN
 import yaml
-import setproctitle
+try:
+    import setproctitle
+except ImportError:
+    setproctitle = None
 
 def main(**kwargs):
     set_config(0)
@@ -39,7 +42,8 @@ def main(**kwargs):
     model_name      = config['start_up']['model_name']
 
     model_name      = config['start_up']['model_name']
-    setproctitle.setproctitle("{0}.{1}@S22".format(model_name, dataset_name))
+    if setproctitle:
+        setproctitle.setproctitle("{0}.{1}@S22".format(model_name, dataset_name))
 
 # ========================== load dataset, adjacent matrix, node embeddings ====================== #
     if load_pkl:
