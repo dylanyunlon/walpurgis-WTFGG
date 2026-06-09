@@ -212,22 +212,15 @@ class D2STGNN(nn.Module):
         # Adaptive adjacency learning: learnable temperature for static graph
         self._adj_temperature = nn.Parameter(torch.tensor(1.0))
 
-        # 输出头: GELU + LayerNorm + Dropout + 残差shortcut (Cascade特有)
+        # 输出头: GELU + LayerNorm + 残差shortcut (Cascade特有)
         self.out_fc_1 = nn.Linear(
             self._forecast_dim, self._output_hidden)
         self.out_ln = nn.LayerNorm(self._output_hidden)
-        self.out_dropout = nn.Dropout(p=0.1)
         self.out_fc_2 = nn.Linear(
             self._output_hidden, model_args['gap'])
         # 残差shortcut: forecast_dim -> gap 直连
         self.out_shortcut = nn.Linear(
             self._forecast_dim, model_args['gap'])
-
-        # Feature Refinement Module: gated 2-layer refinement after cascade aggregation
-        # Reduces residual noise from multi-layer fusion via learned gating
-        self.refine_fc = nn.Linear(self._forecast_dim, self._forecast_dim)
-        self.refine_gate = nn.Linear(self._forecast_dim, self._forecast_dim)
-        self.refine_ln = nn.LayerNorm(self._forecast_dim)
 
         self.reset_parameter()
 
@@ -330,17 +323,10 @@ class D2STGNN(nn.Module):
             for i in range(self._num_layers))
         forecast_hidden = forecast_hidden + cascade_aggregate
 
-        # Feature Refinement Module: gated refinement reduces cascade noise
-        refine_h = F.gelu(self.refine_fc(forecast_hidden))
-        refine_g = torch.sigmoid(self.refine_gate(forecast_hidden))
-        forecast_hidden = self.refine_ln(forecast_hidden + refine_g * refine_h)
-        _dbg("refine_gate_mean", refine_g.mean(), "model")
-
-        # regression layer: GELU + LayerNorm + Dropout(0.1) + 残差shortcut
+        # regression layer: GELU + LayerNorm + 残差shortcut
         h = F.gelu(self.out_fc_1(forecast_hidden))
         # LayerNorm在最后一维
         h = self.out_ln(h)
-        h = self.out_dropout(h)
         main_out = self.out_fc_2(F.gelu(h))
         # 残差shortcut
         shortcut = self.out_shortcut(forecast_hidden)

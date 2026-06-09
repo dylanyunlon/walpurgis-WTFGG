@@ -62,28 +62,21 @@ class trainer():
         self._node_dropout_rate = optim_args.get('node_dropout_rate', 0.0)
         self._time_shift_max = optim_args.get('time_shift_max', 0)
 
-        # Learnable horizon weights — initialized before optimizer to avoid AttributeError
-        self._learnable_hw = torch.nn.Parameter(
-            torch.ones(optim_args['output_seq_len']))
-        self.optimizer_extra_params = [self._learnable_hw]
-
         # AdamW optimizer — better weight decay handling than RAdam
-        all_params = list(self.model.parameters()) + self.optimizer_extra_params
         self.optimizer = optim.AdamW(
-            all_params, lr=self.lrate,
+            self.model.parameters(), lr=self.lrate,
             weight_decay=self.wdecay, eps=self.eps)
-        # CosineAnnealingWarmRestarts — T_0=60 keeps LR high through epoch 30
-        # (previously T_0=30 caused LR to drop to 5e-4 by epoch 15, stalling learning)
+        # CosineAnnealingWarmRestarts — stepped per epoch (not per batch)
         self.lr_scheduler = (
             torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
-                self.optimizer, T_0=60, T_mult=2, eta_min=1e-5
+                self.optimizer, T_0=30, T_mult=2, eta_min=5e-6
             ) if self.if_lr_scheduler else None)
 
         # Loss: primary MAE + auxiliary LogCosh with horizon weighting
         self.loss = masked_mae
         self.cascade_loss = cascade_aware_loss
         self.logcosh_loss = LogCoshHorizonLoss(
-            init_temperature=1.0, horizon_scale=0.12)
+            init_temperature=1.0, horizon_scale=0.08)
         self._use_cascade_loss = True
         self.clip = 5
 
@@ -195,8 +188,7 @@ class trainer():
             if self._use_cascade_loss:
                 mae_loss = self.cascade_loss(
                     predict[:, :self.cl_len, :],
-                    real_val_s[:, :self.cl_len, :], 0,
-                    _learnable_hw=self._learnable_hw)
+                    real_val_s[:, :self.cl_len, :], 0)
                 # Auxiliary LogCosh loss for smoother gradients (weighted 0.3)
                 logcosh_loss = self.logcosh_loss(
                     predict[:, :self.cl_len, :],
@@ -247,14 +239,9 @@ class trainer():
 
         current_lr = self.optimizer.param_groups[0]['lr']
 
-        # 每50步打印learnable horizon weights状态 (非debug也打印,关键反馈)
+        # 每50步打印per-horizon MAE (关键反馈)
         if self._global_step % 50 == 0:
             with torch.no_grad():
-                hw_vals = torch.nn.functional.softplus(self._learnable_hw)
-                hw_norm = hw_vals / (hw_vals.mean() + 1e-8)
-                hw_str = " ".join([f"h{i}={hw_norm[i].item():.3f}" for i in range(min(12, len(hw_norm)))])
-                print(f"[DIAG step={self._global_step}] learnable_hw: {hw_str}", flush=True)
-                # 同时打印per-horizon residual (predict vs real 每个horizon的MAE)
                 if predict.shape[1] >= 2:
                     per_h_mae = []
                     for hi in range(predict.shape[1]):

@@ -12,7 +12,7 @@ data_args:
 model_args:
   batch_size: 64
   num_feat: 1
-  num_hidden: 112
+  num_hidden: 96
   node_hidden: 48
   time_emb_dim: 48
   dropout: 0.05
@@ -24,7 +24,7 @@ model_args:
 optim_args:
   lrate: 0.001
   print_model: False
-  wdecay: 5.0e-4
+  wdecay: 1.0e-4
   eps: 1.0e-8
   lr_schedule: True
   lr_sche_steps: [1, 50, 80, 120, 160]
