@@ -191,7 +191,9 @@ class trainer():
                 mae_loss = self.cascade_loss(
                     predict[:, :self.cl_len, :],
                     real_val_s[:, :self.cl_len, :], 0,
-                    grad_penalty=gp)
+                    grad_penalty=gp,
+                    _use_uncertainty=True,
+                    _current_epoch=self._current_epoch)
                 # Auxiliary LogCosh loss for smoother gradients (weighted 0.3)
                 logcosh_loss = self.logcosh_loss(
                     predict[:, :self.cl_len, :],
@@ -252,6 +254,32 @@ class trainer():
                         h_mae = h_mae[real_val_s[:, hi, :] != 0].mean().item()
                         per_h_mae.append(f"h{hi+1}={h_mae:.3f}")
                     print(f"[DIAG step={self._global_step}] per_horizon_MAE: {' '.join(per_h_mae)}", flush=True)
+
+        # ═══ 增强诊断: 每200步打印完整数据状态快照 ═══
+        if self._global_step % 200 == 0:
+            with torch.no_grad():
+                # 模型组件状态
+                if hasattr(self.model, 'adp_gate'):
+                    adp_gate_val = torch.sigmoid(self.model.adp_gate).item()
+                    print(f"[DIAG step={self._global_step}] adaptive_emb_gate={adp_gate_val:.4f}", flush=True)
+                if hasattr(self.model, 'adaptive_embedding'):
+                    adp_norm = self.model.adaptive_embedding.norm().item()
+                    print(f"[DIAG step={self._global_step}] adaptive_emb_norm={adp_norm:.4f}", flush=True)
+                if hasattr(self.model, '_adj_temperature'):
+                    adj_temp = self.model._adj_temperature.item()
+                    print(f"[DIAG step={self._global_step}] adj_temperature={adj_temp:.4f}", flush=True)
+                # 深度门状态
+                gate_vals = [f"L{i}={torch.sigmoid(g).item():.3f}" for i, g in enumerate(self.model.depth_gates)]
+                print(f"[DIAG step={self._global_step}] depth_gates: {' '.join(gate_vals)}", flush=True)
+                # cascade权重
+                cw = torch.nn.functional.softmax(self.model.cascade_weights, dim=0)
+                cw_str = ' '.join([f"L{i}={cw[i].item():.3f}" for i in range(len(cw))])
+                print(f"[DIAG step={self._global_step}] cascade_weights: {cw_str}", flush=True)
+                # 预测值分布
+                print(f"[DIAG step={self._global_step}] predict: min={predict.min().item():.2f} max={predict.max().item():.2f} mean={predict.mean().item():.2f} std={predict.std().item():.2f}", flush=True)
+                print(f"[DIAG step={self._global_step}] real_val: min={real_val_s.min().item():.2f} max={real_val_s.max().item():.2f} mean={real_val_s.mean().item():.2f}", flush=True)
+                # 学习率
+                print(f"[DIAG step={self._global_step}] lr={current_lr:.6f} epoch={self._current_epoch}", flush=True)
 
         if _is_debug() and self._global_step % 20 == 0:
             dump_struct_state(

@@ -144,6 +144,40 @@ class DecoupleLayer(nn.Module):
                 cascade_residual)
 
 
+class TemporalCrossAttention(nn.Module):
+    """输出头时序自注意力 — 从STAEformer的alternating T/S attention移植
+    在cascade聚合后，对时间维度做single-head self-attention
+    捕获输出序列内部的时序依赖（e.g. 第3步和第6步的关联）
+    """
+    def __init__(self, dim, num_heads=2, dropout=0.1):
+        super().__init__()
+        self.num_heads = num_heads
+        self.head_dim = dim // num_heads
+        self.scale = self.head_dim ** -0.5
+        self.qkv = nn.Linear(dim, 3 * dim, bias=False)
+        self.out_proj = nn.Linear(dim, dim)
+        self.ln = nn.LayerNorm(dim)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x):
+        # x: [B, T, N, D] — 对T维度做self-attention
+        B, T, N, D = x.shape
+        residual = x
+        x = self.ln(x)
+        # reshape: 合并B和N → [B*N, T, D]
+        x_flat = x.permute(0, 2, 1, 3).reshape(B * N, T, D)
+        qkv = self.qkv(x_flat).reshape(B * N, T, 3, self.num_heads, self.head_dim)
+        qkv = qkv.permute(2, 0, 3, 1, 4)  # [3, B*N, heads, T, head_dim]
+        q, k, v = qkv[0], qkv[1], qkv[2]
+        attn = (q @ k.transpose(-2, -1)) * self.scale
+        attn = attn.softmax(dim=-1)
+        attn = self.dropout(attn)
+        out = (attn @ v).transpose(1, 2).reshape(B * N, T, D)
+        out = self.out_proj(out)
+        out = out.reshape(B, N, T, D).permute(0, 2, 1, 3)  # [B, T, N, D]
+        return residual + out
+
+
 class D2STGNN(nn.Module):
     def __init__(self, **model_args):
         super().__init__()
@@ -159,6 +193,7 @@ class D2STGNN(nn.Module):
         self._k_s = model_args['k_s']
         self._k_t = model_args['k_t']
         self._num_layers = 5
+        self._seq_length = model_args['seq_length']
 
         model_args['use_pre'] = False
         model_args['dy_graph'] = True
@@ -172,6 +207,19 @@ class D2STGNN(nn.Module):
         # Cascade特有: embedding后的SE通道注意力
         self.embed_se = SqueezeExcitation(
             self._hidden_dim, reduction=4)
+
+        # ═══ 从STAEformer移植: 自适应时空嵌入 ═══
+        # learnable [L, N, d_adp] 参数 — STAEformer的核心创新
+        # 捕获每个时间步、每个节点的独特模式
+        # 原始STAEformer用d_adp=80，我们按比例缩放到hidden_dim的1/4
+        self._adp_emb_dim = max(self._hidden_dim // 4, 8)
+        self.adaptive_embedding = nn.init.xavier_uniform_(
+            nn.Parameter(torch.empty(
+                self._seq_length, self._num_nodes, self._adp_emb_dim)))
+        # 投影到hidden_dim并融合
+        self.adp_proj = nn.Linear(self._adp_emb_dim, self._hidden_dim, bias=False)
+        # 融合门控: 控制adaptive embedding的注入强度
+        self.adp_gate = nn.Parameter(torch.tensor(0.3))
 
         # time embedding
         self.T_i_D_emb = nn.Parameter(
@@ -221,6 +269,13 @@ class D2STGNN(nn.Module):
         # 残差shortcut: forecast_dim -> gap 直连
         self.out_shortcut = nn.Linear(
             self._forecast_dim, model_args['gap'])
+
+        # ═══ 从STAEformer移植: 输出头时序自注意力 ═══
+        # 在cascade聚合后、regression前插入temporal cross-attention
+        # 捕获输出序列步之间的依赖关系
+        self.output_temporal_attn = TemporalCrossAttention(
+            self._forecast_dim, num_heads=2,
+            dropout=model_args.get('dropout', 0.1))
 
         self.reset_parameter()
 
@@ -297,6 +352,20 @@ class D2STGNN(nn.Module):
         history_data, _ = self.embed_se(history_data)
         dataflow_checkpoint("model.post_embed_se", history_data)
 
+        # ═══ 自适应时空嵌入注入 (从STAEformer移植) ═══
+        # adaptive_embedding: [L, N, d_adp] → 投影到 [L, N, hidden_dim]
+        B = history_data.shape[0]
+        L_actual = history_data.shape[1]
+        adp_emb = self.adaptive_embedding[:L_actual]  # 截断到实际长度
+        adp_feat = self.adp_proj(adp_emb)  # [L, N, hidden_dim]
+        adp_feat = adp_feat.unsqueeze(0).expand(B, -1, -1, -1)  # [B, L, N, hidden_dim]
+        # 门控注入: 用sigmoid gate控制adaptive embedding的影响
+        gate_val = torch.sigmoid(self.adp_gate)
+        history_data = history_data + gate_val * adp_feat
+        _dbg("adaptive_emb.gate", gate_val, "model")
+        _dbg("adaptive_emb.feat_norm", adp_feat.detach().norm(), "model")
+        dataflow_checkpoint("model.post_adaptive_emb", history_data)
+
         dif_forecast_hidden_list = []
         inh_forecast_hidden_list = []
         cascade_residual_list = []
@@ -325,6 +394,13 @@ class D2STGNN(nn.Module):
             cascade_w[i] * cascade_residual_list[i]
             for i in range(self._num_layers))
         forecast_hidden = forecast_hidden + cascade_aggregate
+
+        # ═══ 输出头时序自注意力 (从STAEformer移植) ═══
+        # 在regression前，对forecast_hidden的时间维度做self-attention
+        # 捕获输出序列步间的依赖
+        forecast_hidden = self.output_temporal_attn(forecast_hidden)
+        _dbg("output_temporal_attn.out_norm",
+             forecast_hidden.detach().norm(), "model")
 
         # regression layer: GELU + LayerNorm + 残差shortcut
         h = F.gelu(self.out_fc_1(forecast_hidden))

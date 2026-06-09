@@ -147,3 +147,72 @@ cat experiments/results/summary.json
 | experiments/run_server_experiment.sh | 服务器全流程实验 |
 | bench/sota.json | SOTA 对比 |
 | walpurgis_reconstructed.tex | 论文 |
+
+---
+
+## Phase 2: SOTA冲刺 (M301-M450)
+
+### 第一位 Claude (M301-M325) ✅ 已完成
+**角色**: 算法移植 — 从TITAN/STAEformer鲁迅式拿法
+- 从STAEformer移植: 自适应时空嵌入 (learnable [L,N,d] embedding)
+- 从TITAN移植: PSD不确定性感知损失加权
+- 从STAEformer移植: 输出头时序自注意力 (TemporalCrossAttention)
+- 增强运行时诊断: 每200步打印完整模型状态
+- SYNTH数据集端到端验证通过
+- 创建Phase 2全部子Claude任务文件
+
+### 第二位 Claude (M326-M350) — 待执行
+**角色**: 服务器METR-LA完整实验
+- SYNTH快速验证 → METR-LA 200 epoch完整训练
+- 观察adaptive_emb_gate / uncertainty_mean诊断
+- 多种子评估 (42, 123, 456)
+- 任务文件: tasks/task_claude2_M326_M350.md
+
+### 第三位 Claude (M351-M375) — 待执行
+**角色**: TeX数据填充
+- 提取实验结果 → 填入论文表格
+- 更新SOTA对比表 + per-horizon表
+- 确保pdflatex编译通过
+- 任务文件: tasks/task_claude3_M351_M375.md
+
+### 第四位 Claude (M376-M400) — 待执行
+**角色**: 消融实验
+- 逐个关闭: adaptive_emb / uncertainty / temporal_attn / SE / cascade
+- 记录每个配置的MAE变化
+- 填入论文消融表
+- 任务文件: tasks/task_claude4_M376_M400.md
+
+### 第五位 Claude (M401-M425) — 待执行
+**角色**: 多种子 + 超参搜索
+- 三种子完整评估
+- 如MAE>2.85: 尝试num_hidden=128 / horizon_scale=0.20 / dropout=0.15
+- 任务文件: tasks/task_claude5_M401_M425.md
+
+### 第六位 Claude (M426-M450) — 待执行
+**角色**: 论文最终收尾
+- 汇总所有数据 → 完善tex
+- pdflatex编译验证
+- 最终commit + push
+- 任务文件: tasks/task_claude6_M426_M450.md
+
+---
+
+## Phase 2 算法改动总结
+
+### 改动1: 自适应时空嵌入 (from STAEformer)
+**文件**: src/walpurgis/models/model.py
+**原理**: 可学习的 [L, N, d_adp] 参数矩阵，每个时间步每个节点有独立的嵌入向量。
+通过门控 (sigmoid gate) 注入到embedding后的特征中。
+**预期效果**: 捕获节点特异性的时序模式，STAEformer论文显示该组件贡献~0.1 MAE。
+
+### 改动2: PSD不确定性感知损失加权 (from TITAN)
+**文件**: src/walpurgis/models/losses.py
+**原理**: 对label序列做时间差分 → 计算变异系数(CV) → 高CV=可预测，低CV=不确定。
+不确定样本降权40%，防止模型被噪声样本带偏。epoch<20不启用。
+**预期效果**: 更稳定的训练，减少远horizon过拟合噪声。
+
+### 改动3: 输出头时序自注意力 (from STAEformer)
+**文件**: src/walpurgis/models/model.py (TemporalCrossAttention class)
+**原理**: 在cascade聚合后、regression前，对时间维度做2-head self-attention。
+捕获输出序列步间的依赖关系（e.g. h3和h6的关联）。
+**预期效果**: 更一致的多步预测，减少远horizon退化。
