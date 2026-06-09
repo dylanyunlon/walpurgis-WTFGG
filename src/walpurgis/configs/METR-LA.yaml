@@ -10,12 +10,12 @@ data_args:
   adj_data_path: datasets/sensor_graph/adj_mx_la.pkl
   adj_type: doubletransition
 model_args:
-  batch_size: 32
+  batch_size: 64
   num_feat: 1
-  num_hidden: 32
-  node_hidden: 10
-  time_emb_dim: 10
-  dropout: 0.08
+  num_hidden: 64
+  node_hidden: 32
+  time_emb_dim: 32
+  dropout: 0.05
   seq_length: 12
   k_t: 3
   k_s: 2
