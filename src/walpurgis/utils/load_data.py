@@ -35,6 +35,11 @@ class StandardScaler():
         return (data - self.mean) / self.std
 
     def inverse_transform(self, data):
+        import torch
+        if isinstance(data, torch.Tensor):
+            std = torch.tensor(self.std, device=data.device, dtype=data.dtype)
+            mean = torch.tensor(self.mean, device=data.device, dtype=data.dtype)
+            return (data * std) + mean
         return (data * self.std) + self.mean
 
 
