@@ -44,7 +44,7 @@ echo "============================================"
 # ── 激活 conda ──────────────────────────────────────────
 set +u
 eval "$(conda shell.bash hook)" 2>/dev/null || true
-conda activate walpurgis 2>/dev/null || true
+conda activate walking3 2>/dev/null || true
 set -u
 
 # ── 检查数据 ────────────────────────────────────────────

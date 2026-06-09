@@ -4,7 +4,7 @@
 # 服务器: 2x A6000 (48GB) + 1x H100 NVL (96GB), EPYC 9354, CUDA 11.5+
 set -euo pipefail
 
-CONDA_ENV="${CONDA_ENV:-walpurgis}"
+CONDA_ENV="${CONDA_ENV:-walking3}"
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
 echo "============================================"
@@ -20,33 +20,17 @@ nvidia-smi --query-gpu=index,name,memory.total --format=csv,noheader 2>/dev/null
 echo "CUDA toolkit: $(nvcc --version 2>/dev/null | tail -1 || echo 'not found')"
 echo "Driver: $(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1 || echo 'N/A')"
 
-# ── 2. Conda 环境 ──────────────────────────────────────
-echo "[2/5] Conda environment '$CONDA_ENV'..."
-if conda info --envs 2>/dev/null | grep -qw "$CONDA_ENV"; then
-    echo "  Reusing existing environment"
-else
-    echo "  Creating new environment..."
-    conda create -n "$CONDA_ENV" python=3.10 -y
-fi
-
-set +u  # conda activate 内部引用未定义变量 PS1
+# ── 2. 激活已有 conda 环境 ─────────────────────────────
+echo "[2/4] Activating conda '$CONDA_ENV'..."
+set +u
 eval "$(conda shell.bash hook)"
 conda activate "$CONDA_ENV"
 set -u
+echo "  Python: $(python3 --version)"
+echo "  PyTorch: $(python3 -c 'import torch; print(torch.__version__)' 2>/dev/null || echo 'missing')"
 
-# ── 3. 依赖安装 ────────────────────────────────────────
-echo "[3/5] Installing dependencies..."
-# 检测最高可用 CUDA 版本 (driver 550 支持 CUDA 12.4)
-CUDA_TAG="cu121"
-if python3 -c "import torch; print(torch.__version__)" 2>/dev/null | grep -q "2\."; then
-    echo "  PyTorch already installed: $(python3 -c 'import torch; print(torch.__version__)')"
-else
-    pip install torch==2.3.1 torchvision torchaudio --index-url "https://download.pytorch.org/whl/${CUDA_TAG}"
-fi
-pip install -q numpy scipy pandas pyyaml setproctitle matplotlib tensorboard scikit-learn h5py tables 2>&1 | tail -3
-
-# ── 4. 下载数据 ────────────────────────────────────────
-echo "[4/5] Preparing datasets..."
+# ── 3. 下载数据 ────────────────────────────────────────
+echo "[3/4] Preparing datasets..."
 cd "$REPO_DIR"
 
 # METR-LA
@@ -64,8 +48,8 @@ else
     echo "  PEMS-BAY: download needed (see README)"
 fi
 
-# ── 5. 验证 ────────────────────────────────────────────
-echo "[5/5] Verification..."
+# ── 4. 验证 ────────────────────────────────────────────
+echo "[4/4] Verification..."
 python3 -c "
 import torch, numpy, scipy, yaml
 print(f'PyTorch {torch.__version__}  CUDA {torch.version.cuda}  Available: {torch.cuda.is_available()}')
