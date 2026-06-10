@@ -9,6 +9,19 @@
   - `tensor/dist_tensor.py` — WholeGraph 分布式张量/embedding 接口
   - `tensor/dist_matrix.py` — WholeGraph 分布式稀疏矩阵接口 (COO/CSC)
   - `tensor/utils.py` — WG 张量创建辅助函数
+## migrate dd543dc: Heterogeneous Link Prediction Example for cuGraph-PyG
+
+- **Upstream commit**: dd543dc (cugraph-gnn, NVIDIA)
+- **Commit message**: `Heterogeneous Link Prediction Example for cuGraph-PyG`
+- **Upstream diff** (10 files changed):
+  - `python/cugraph-pyg/cugraph_pyg/examples/taobao_mnmg.py` — 新增 541 行（初版异构链路预测示例）
+  - `python/cugraph-pyg/cugraph_pyg/sampler/sampler.py` — 六处修复（input_type/input_index/edge_label/vertex_types）
+  - `python/cugraph-pyg/cugraph_pyg/sampler/sampler_utils.py` — 移除 neg_sample 中错误的 all_reduce
+  - `python/cugraph-pyg/cugraph_pyg/loader/neighbor_loader.py` — dict → numpy fanout 转换
+  - `python/cugraph-pyg/cugraph_pyg/loader/link_neighbor_loader.py` — dict → numpy fanout 转换
+  - `python/cugraph-pyg/cugraph_pyg/data/graph_store.py` — `_numeric_edge_types` 类型注解精化
+  - `conda/environments/*.yaml` + `dependencies.yaml` — ogb 依赖 + pytorch <2.6a0 上限（临时兼容）
+  - `python/cugraph-pyg/cugraph_pyg/tests/loader/test_neighbor_loader_mg.py` — 修复测试缺失 destroy_process_group
 
 - **Walpurgis 迁移状态**:
 
@@ -132,6 +145,118 @@
 - `GraphBroadcaster` dataclass 替代 rgcn 中 4 段混合 print+assignment
 - `_dbg()` 统一调试出口，替代散落 `print(..., flush=True)` 裸调
 - `acc_val / acc_test` 零除防御（eval loader 为空时返回 0.0）
+  | `taobao_mnmg.py` | 全新文件（初版，无 EdgeShuffler/timing） | **超前迁移**：Walpurgis 已包含 EdgeShuffler + DataPreprocessor + perf_counter 全链路 |
+  | `sampler.py` — input_type canonical tuple | 边采样路径保留完整 (src,rel,dst) | **新增迁移** → `InputTypeResolver` 封装决策 |
+  | `sampler.py` — input_index 负数过滤 | 过滤 `< 0` 标记，分离 num_pos/num_neg | **新增迁移** → `NegativeSeedFilter` 封装 |
+  | `sampler.py` — edge_label 构建 | 三路径：negsampling/input_label/None | **新增迁移** → `EdgeLabelBuilder` 封装 |
+  | `sampler.py` — sample_from_edges input_label | 传入 `index.label` | **新增迁移** → `LabelPassthrough` 语义 |
+  | `sampler.py` — vertex_types 参数 | `sorted(_num_vertices().keys())` 传入 Reader | **新增迁移** → `VertexTypeRegistry` 语义 |
+  | `sampler_utils.py` — 移除 all_reduce | neg_sample 本地化 | **新增迁移** → `NegSampleLocalizer` 封装 |
+  | `neighbor_loader.py` + `link_neighbor_loader.py` | dict → numpy fanout 转换 | **新增迁移** → `FanoutConverter` 封装，消除重复 |
+  | `graph_store.py` — 类型注解 | `Tuple[List, ...]` → `Tuple[List[Tuple[str,str,str]], ...]` | 纯注解改进，无运行时影响，已知晓 |
+  | conda/yaml/dependencies | pytorch <2.6a0 + ogb 临时兼容 | 不迁移（Walpurgis 无 conda 环境文件） |
+  | 测试文件 | `destroy_process_group` + 去掉 skip | 不迁移（Walpurgis 测试体系独立） |
+
+- **核心修复详解（sampler.py 六处）**:
+
+  **修复 A — input_type 降维 Bug**:
+  ```python
+  # 旧代码（dd543dc 之前）:
+  input_type = pyg_can_etype[2]       # 永远是 str（"item"）
+
+  # 新代码（dd543dc）:
+  if "edge_inverse" in raw_sample_data:
+      input_type = pyg_can_etype       # 边采样：完整 (src, rel, dst) tuple
+  else:
+      input_type = pyg_can_etype[2]   # 节点采样：str
+  ```
+  边采样时 input_type 降维为 str → PyG 当作节点采样 → edge_label_index 索引错误节点。
+  模型能运行，AUC 静默损坏（约 0.50～0.52），用户以为模型差。
+
+  **修复 B — input_index 负数标记未过滤**:
+  ```python
+  # 旧代码: input_index 含 pylibcugraph 负采样标记（< 0）
+  # → Python tensor[-1] = tensor[N-1]（最后节点），不报错，梯度方向随机
+
+  # 新代码: 过滤后只保留正样本索引
+  input_index_pos = input_index_raw[input_index_raw >= 0]
+  ```
+
+  **修复 C — edge_label 永远 None**:
+  ```python
+  # 旧代码: metadata = (input_index, edge_inverse, None, None)
+  # 新代码: metadata = (input_index, edge_inverse, edge_label, None)
+  # edge_label 由 EdgeLabelBuilder 的三路径逻辑构建
+  ```
+
+  **修复 D — all_reduce 引入的多 GPU 负采样 Bug**:
+  ```python
+  # 旧代码（sampler_utils.py）:
+  if graph_store.is_multi_gpu:
+      num_neg_global = torch.tensor([num_neg], device="cuda")
+      torch.distributed.all_reduce(num_neg_global, op=ReduceOp.SUM)
+      num_neg = int(num_neg_global)   # 全局总量，world_size 倍膨胀
+  # pylibcugraph.negative_sampling(..., num_neg, ...)
+
+  # 新代码: 直接用本地 num_neg，无 all_reduce
+  ```
+  多 GPU（8卡）时每 rank 生成 8 倍负样本，正负样本比 1:8 → AUC 趋向随机基线。
+  同时 all_reduce 在边稀疏 rank 触发死锁（NCCL 10 分钟超时 abort）。
+
+  **修复 E — dict 形式 num_neighbors 不支持**:
+  ```python
+  # 旧代码: num_neighbors（dict）直接传入底层 → TypeError
+  # 新代码: 按 sorted_keys 顺序转换为 flat numpy int32 array
+  # layout: na[hop * num_types + type_idx] = fanout
+  ```
+  所有异构图用户传 dict 形式 num_neighbors（PyG 推荐写法）均触发此 bug。
+
+- **Knuth 审查**:
+  1. **diff 对比源**:
+
+     | 上游 dd543dc | Walpurgis 迁移 |
+     |---|---|
+     | `input_type = pyg_can_etype if "edge_inverse" else pyg_can_etype[2]` | `InputTypeResolver.resolve()` 封装，断点打印决策路径 |
+     | `input_index_raw[input_index_raw >= 0]` 散落三行 | `NegativeSeedFilter.split()` 返回 `(pos_index, num_neg)`，断点打印过滤统计 |
+     | if-elif-else edge_label 三路径内联 | `EdgeLabelBuilder.build()` 命名三路径，断点打印构建来源 |
+     | 两处重复 dict→numpy 转换（neighbor/link_neighbor loader）| `FanoutConverter.convert()` 消除重复，断点打印 sorted_keys + na array |
+     | all_reduce 直接删除，无注释 | `NegSampleLocalizer.local_count()` 命名\"为什么不需要 all_reduce\"，含详细注释 |
+
+  2. **用户角度 bug**:
+     - **100% 触发**: 异构图用户传 `num_neighbors=dict`（PyG 官方推荐写法），
+       TypeError 崩溃，错误指向 cuGraph 内部，用户不知 dict 不被支持。
+     - **静默 AUC 损坏**: `input_type` 降维 + `input_index` 含负数 → 模型训练不崩溃，
+       AUC 约 0.50，用户误以为任务难、模型差，实为数据路由错误。
+     - **多 GPU 负采样膨胀**: `world_size=8` 时负样本 8x → 正负比 1:8 → 模型偏向\"全负\"。
+     - **NCCL 死锁**: 稀疏图某 rank 本地边=0 跳过 neg_sample，
+       all_reduce 挂起，10 分钟超时 abort，无法从 checkpoint 恢复。
+
+  3. **系统角度安全**:
+     - `pylibcugraph.negative_sampling` 是 rank-local 函数（接受 resource_handle 非 communicator），
+       all_reduce 引入隐式同步语义，破坏本地性保证，制造死锁风险。
+     - `input_index` 负数作 tensor 索引：Python 语义（从末尾倒数）vs 业务语义（无效标记），
+       完全相反，PyTorch 不抛异常，属\"API 语义陷阱\"（semantic trap）。
+     - `FanoutConverter` 的 fanout layout 依赖 `_numeric_edge_types` 返回的 sorted_keys
+       与 cuGraph 内部顺序一致；`sorted()` 基于 Python tuple 字典序，确定性有保证，
+       但需注意多 rank 边类型注册顺序必须完全相同，否则 fanout 解释错误 → DDP 梯度对齐失败。
+
+### Walpurgis 迁移位置
+
+**文件: `src/walpurgis/dataloader/hetero_link_pred_fixes.py`** — 新增
+
+**迁移要点**:
+- `InputTypeResolver`: 封装\"边采样 vs 节点采样\" input_type 决策，`resolve()` 静态方法
+- `NegativeSeedFilter`: 封装 input_index 负数过滤，`split()` 返回 `(pos_index, num_neg)`
+- `EdgeLabelBuilder`: 封装三路径 edge_label 构建，`build()` 静态方法
+- `FanoutConverter`: 封装 dict → numpy fanout 转换，消除 neighbor/link_neighbor loader 重复
+- `NegSampleLocalizer`: 命名\"不需要 all_reduce\"的语义，`local_count()` 静态方法
+- 5 类断点调试 print，`WALPURGIS_DEBUG=1` 控制，覆盖全链路:
+  `INPUT_TYPE`: 决策路径（边 vs 节点）+ pyg_can_etype
+  `NEG_FILTER`: 过滤前后 seed 数 + min/max 值域
+  `EDGE_LABEL`: 构建路径（negsampling/input_label/None）+ shape
+  `FANOUT`: sorted_keys 顺序 + 逐 hop/type 填充 + 最终 na array
+  `NEG_SAMPLE`: 本地 num_neg + 不 all_reduce 的原因说明
+
 ## migrate c07eea7: [FEA] New MovieLens Example, Add Timing to Taobao
 
 - **Upstream commit**: c07eea7 (cugraph-gnn, NVIDIA)
