@@ -2367,3 +2367,74 @@ if d > 0:           # 整除时 d==0，跳过切片，保留完整 perm
 - `IterGuard`: 封装 max_iter 截断逻辑，`should_stop(i)` 可单元测试，TODO 注明分布式一致性隐患
 - `safe_loss_item()`: `loss.detach()` + 值域断言 `[0, +inf)`，NaN/Inf 立即 `RuntimeError`
 - `_dbg()`: `WALPURGIS_DEBUG=1` 调试出口，覆盖全链路断点 print
+
+## migrate 18222fa: Remove inheritance from deprecated unary_function
+
+- **Upstream commit**: 18222fa (cugraph-gnn, NVIDIA, 2025-11-10)
+- **Commit message**: `Remove inheritance from deprecated unary_function`
+- **Upstream diff** (1 file changed, 4 insertions, 7 deletions):
+  - `cpp/src/wholememory_ops/register.hpp`:
+    - 版权年从 2024 → 2025
+    - `one_wmt_hash`: 移除 `: public std::unary_function<wholememory_dtype_t, std::size_t>`
+    - `two_wmt_hash`: 移除 `: public std::unary_function<std::tuple<dtype,dtype>, std::size_t>`
+    - `three_wmt_hash`: 移除跨行三行 `: public std::unary_function<tuple<dtype,dtype,dtype>, size_t>`
+    - `operator()` 签名与哈希逻辑完全不变，只去掉继承，无功能差异
+
+- **Knuth 审查**:
+  1. **diff 对比源**:
+     | 上游 18222fa | Walpurgis 迁移 |
+     |---|---|
+     | `struct one_wmt_hash {` 裸 struct，无标记 | `// [WMT-HASH-POLICY]` 注释标记，grep 可定位 |
+     | `return static_cast<size_t>(k)` 裸 cast | 同 + `_WMT_DBG_HASH_1(k)` 断点宏前置 |
+     | REGISTER 宏内 `emplace` 直接调用 | `fprintf(stderr, "[WALPURGIS][REGISTER_N]...")` 断点 print |
+     | `static_cast<size_t>(k)` 无类型宽度保证 | `static_assert(sizeof(dtype) <= sizeof(size_t))` 防截断 |
+     | `#include <functional>` 隐式依赖（旧版） | 移除后 `<unordered_map>` 已足够，include 更干净 |
+
+  2. **用户角度 bug**:
+     - `std::unary_function` 在 C++17 被彻底移除（不只是弃用）。
+       编译器升到 GCC 13 / Clang 16 + `-std=c++17` 后，
+       包含旧版 register.hpp 的翻译单元**直接编译失败**，
+       错误信息指向 `<functional>` 内部模板实例化，
+       与 register.hpp 的业务逻辑毫无关联，难以定位。
+     - 新代码无继承依赖，`-std=c++11/14/17/20` 均合法通过。
+     - `WHOLEMEMORY_DT_COUNT` 枚举值将来若超过 `size_t` 上界（理论上），
+       旧 `static_cast<size_t>(k)` 静默截断产生哈希碰撞，
+       `unordered_map::find` 返回错误条目，`DISPATCH_*` 宏触发
+       `WHOLEMEMORY_CHECK_NOTHROW` 失败但报错键值已错位，
+       `static_assert` 在编译期暴露此风险。
+
+  3. **系统角度安全**:
+     - `std::unary_function` 提供 `argument_type` / `result_type` 两个 typedef，
+       `std::unordered_map` 的 Hash named requirement **不需要**这两个 typedef，
+       继承纯属历史包袱（C++98 时代 `std::bind1st`/`bind2nd` 需要）。
+       移除后不影响 `unordered_map` 任何功能路径。
+     - `__attribute__((constructor))` 注册函数在动态链接时自动调用，
+       若注册过程抛异常（`WHOLEMEMORY_FAIL_NOTHROW` 调用 `abort`），
+       整个进程在 `main()` 之前终止。
+       `static_assert` 在编译期而非运行期拦截 dtype 宽度问题，
+       避免 `.so` 加载时 abort 难以定位根因。
+     - 三个 `fprintf(stderr, "[WALPURGIS][REGISTER_N]...")` 断点 print
+       在 `WALPURGIS_DEBUG_HASH` 未定义时由预处理器消除，
+       生产路径零开销，不改变分发表注册时序和内存布局。
+
+### Walpurgis 迁移位置
+
+**文件: `src/wholememory_ops/register.hpp`** — 新增
+
+**迁移要点**:
+- `one_wmt_hash` / `two_wmt_hash` / `three_wmt_hash`: 移除 `std::unary_function` 继承，`operator()` 逻辑原样保留
+- `[WMT-HASH-POLICY]` 注释标记三个 hash functor，统一 grep 入口
+- `_WMT_DBG_HASH_{1,2,3}` 宏：`WALPURGIS_DEBUG_HASH=1` 时 `fprintf(stderr)` 打印 dtype 入参，追踪 lookup miss
+- `[断点]` 注释标注每个调试打印位置，方便阅读时定位
+- `REGISTER_DISPATCH_{ONE,TWO,THREE}_TYPES` 宏内增加 `static_assert(sizeof(dtype) <= sizeof(size_t))` 防截断
+- 注册 helper `Register##NAME##Map{1,2,3}FuncHelper0` 内增加 `fprintf` 断点，打印每个 dtype 注册事件
+- 文件头部设计注释（鲁迅拿法）：参照 slab_allocator.hpp 风格，标注上游改写原因、cppreference 参考、Hash named requirement 依据
+
+**改写 20%（鲁迅拿法）**:
+- `[WMT-HASH-POLICY]` 标记 + 文件头 design rationale 注释替代裸 struct 定义
+- `_WMT_DBG_HASH_{1,2,3}` 条件编译调试宏替代上游无调试能力
+- `REGISTER_DISPATCH_*` 宏内 `fprintf` 断点 print 替代裸 emplace
+- `static_assert` 编译期 dtype 宽度防御替代裸 cast
+- 注释标注 `std::unary_function` 弃用原因 + C++17 删除时间线
+
+---
