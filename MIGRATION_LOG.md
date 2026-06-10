@@ -1,4 +1,103 @@
 
+## migrate 7ea1138: [BUG] Fix Weights Issue in Negative Sampling
+
+- **Upstream commit**: 7ea1138 (cugraph-gnn, alexbarghi-nv, 2026-04-08, PR #447)
+- **Commit message**: `[BUG] Fix Weights Issue in Negative Sampling`
+- **Upstream diff** (1 file changed, 13 insertions, 8 deletions):
+  - `python/cugraph-pyg/cugraph_pyg/sampler/sampler_utils.py` — `neg_sample()`:
+    将 `src_weight / dst_weight` 的补零 concat 从 `if not is_homogeneous:` 块外
+    移入 `if input_type[0] != input_type[2]:` 子块内；
+    删除 `elif src_weight is None and dst_weight is None: vertices = None` 死代码分支。
+
+- **Bug 根因**:
+  `neg_sample()` 在异构图场景下，对所有异构路径（包括 src==dst 同类型节点）
+  无条件执行 weight 的补零 concat：
+  ```python
+  src_weight = torch.concat([src_weight, torch.zeros(num_dst_nodes, ...)])
+  dst_weight = torch.concat([torch.zeros(num_src_nodes, ...), dst_weight])
+  ```
+  而这两行位于 `if input_type[0] != input_type[2]:` 块之外，
+  导致 src==dst 类型（如 author→author）的场景下 weight 被错误扩展：
+  - 修复前: `src_weight.shape = [num_src + num_dst]`（多了 num_dst 个无意义的零）
+  - 修复后: `src_weight.shape = [num_src]`（正确，与 vertices 对应）
+  pylibcugraph 负采样引擎按 vertices 偏移索引 weight，weight 长度不匹配时
+  越界访问，采出不存在的节点 ID，结果静默错误（无 exception，但负样本无效）。
+  删除的 `elif src_weight is None and dst_weight is None: vertices = None` 分支
+  是死代码——src_weight/dst_weight 在此之前已被 `ones()` 填充，永远不为 None。
+
+### Walpurgis 迁移位置
+
+**文件: `src/walpurgis/models/neg_sampler_weights.py`** — 新增
+
+**迁移要点**:
+- `NegSampleWeightPlan`: 值对象，携带 (vertices, src_weight, dst_weight,
+  src_dst_same_type, is_homogeneous) 五元状态，`validate()` 检查 shape 一致性
+  并精确诊断 7ea1138 bug（若 src_weight.shape = num_src+num_dst 则打印 BUG 提示）
+- `WeightAligner._pad_src_for_dst` / `_pad_dst_for_src`: 对称静态方法，
+  封装 7ea1138 修复后仅在 src!=dst 分支执行的补零 concat 操作
+- `WeightAligner._is_dead_branch()`: 文档化 7ea1138 删除的 `elif` 死代码路径，
+  防御性检查（若意外到达则打印 ERROR）
+- `NegSampleWeightBuilder.build()`: 顶层决策入口，三分支:
+  `_build_hetero_src_ne_dst` / `_build_hetero_src_eq_dst` / `_build_homo`
+- `prepare_neg_sample_weights()`: 便利函数，对应 neg_sample() 调用点
+
+**改写20%（鲁迅拿法）**:
+- `NegSampleWeightPlan` 值对象替代 Python 中 vertices/src_weight/dst_weight 三个散落局部变量
+- `WeightAligner._pad_src_for_dst` / `_pad_dst_for_src` 命名对称方法替代 Python inline concat
+- `_build_hetero_src_ne_dst` / `_build_hetero_src_eq_dst` / `_build_homo` 三个分支各自命名
+  （Python 是匿名 if/else）
+- `NegSampleWeightPlan.validate()` 独立可测的 shape 检查 + 7ea1138 bug 精确诊断
+  （Python 无此检查，越界静默失败）
+- 全链路5个 `WALPURGIS_DEBUG=1` 断点 print:
+  1. `prepare_neg_sample_weights` 入口: is_homo + input_type + num_src/dst
+  2. `NegSampleWeightBuilder.build`: 分支选择
+  3. `_pad_src_for_dst` / `_pad_dst_for_src`: concat 前后 shape（仅 src!=dst 分支）
+  4. `_build_hetero_src_eq_dst`: "weight UNCHANGED ← correct post-7ea1138" 标记
+  5. `NegSampleWeightPlan.validate()`: shape 一致性检查结果
+
+### 质量审查（Knuth 标准）
+
+**1. diff 对比源**
+
+| 上游 7ea1138 | Walpurgis 迁移 |
+|---|---|
+| `src_weight = concat([src_weight, zeros(num_dst)])` 移入 `if src_type!=dst_type:` | `WeightAligner._pad_src_for_dst()` 仅在 `_build_hetero_src_ne_dst()` 中调用 |
+| `dst_weight = concat([zeros(num_src), dst_weight])` 同上 | `WeightAligner._pad_dst_for_src()` 同上 |
+| `else: vertices = offset(arange(num_src))` 不修改 weight | `_build_hetero_src_eq_dst()` 中 `src_weight=src_weight`（不变）+ debug print 标注 |
+| 删除 `elif src_weight is None and dst_weight is None: vertices = None` | `WeightAligner._is_dead_branch()` 文档化此死代码 + 防御性 ERROR print |
+| `else: vertices = arange(num_src)` 同构路径 | `_build_homo()` 中 `arange(num_src_nodes)` |
+| 无 validate 逻辑 | `NegSampleWeightPlan.validate()` 检查三种路径的 shape 不变量 |
+
+**2. 用户角度 bug 排查**
+
+- **Bug 1 (静默错误负样本)**: src==dst 路径下 weight 被错误扩展，pylibcugraph 采样引擎
+  按 weight 偏移索引节点，weight 长度 2x 导致越界，采出不存在 ID（如图有 N 节点但
+  采到 N~2N 的 ID）。用户看到的现象是链接预测/图学习性能莫名偏低，难以关联到权重 bug。
+  `WALPURGIS_DEBUG=1` 时 `validate()` 立即打印 `"检测到 7ea1138 修复前的 bug! src_weight 被错误 concat"`。
+- **Bug 2 (死代码路径激活)**: 若未来代码重构导致 src_weight/dst_weight 未被 ones() 填充
+  就到达分支决策，`_is_dead_branch()` 打印 ERROR 提示，避免 vertices=None 被静默传入
+  pylibcugraph（Python 里 `None` 会触发 cupy.asarray(None) 引发难以定位的 TypeError）。
+- **Bug 3 (validate 精确诊断)**: `validate()` 区分三种 shape 错误:
+  (a) 7ea1138 修复前 bug（sw_len == num_src + num_dst）打印专属 BUG 信息；
+  (b) 其他 shape 不匹配打印通用 mismatch；
+  (c) 正常情况无输出。
+
+**3. 系统角度**
+
+- **类型安全**: `NegSampleWeightPlan` 是 `@dataclass`，字段类型明确；`validate()` 用
+  `_len()` helper 兼容 torch.Tensor / list / ndarray，不依赖 torch.numel() 是否可用。
+- **内存安全**: `WeightAligner._pad_src_for_dst` / `_pad_dst_for_src` 每次返回新 tensor，
+  不修改输入（与上游 `torch.concat([...])` 语义一致，不是 in-place 操作）。
+  `_build_hetero_src_eq_dst` 的 `src_weight=src_weight`（直接引用）是有意设计：
+  src_weight 已是正确大小的 ones/用户提供 tensor，plan 不拷贝，caller 拥有所有权。
+- **并发安全**: 所有 builder 方法为 `@staticmethod`，无共享可变状态，
+  多 DataLoader worker 可安全并发调用 `prepare_neg_sample_weights()`。
+- **性能**: 仅 src!=dst 分支执行两次 `torch.concat`（与上游完全一致）；
+  validate() 仅调用 `numel()` / `len()`（O(1)），在热路径可通过 `WALPURGIS_DEBUG`
+  门控的方式屏蔽。
+
+---
+
 ## migrate 89c9e8d: [BUG] Pin CPU Memory Instead of Copying to Device
 
 - **Upstream commit**: 89c9e8d (cugraph-gnn, NVIDIA, 2025-07-25)
