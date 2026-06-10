@@ -36,6 +36,49 @@
 - `DistTensorScatter` / `DistEmbeddingScatter` 分离可测接口（Python 是 __setitem__ 内联）
 - 全链路6个 `WALPURGIS_DEBUG=1` 断点 print，覆盖: 进入guard → dtype转换 → pin决策 →
   pin完成 → scatter触发 → scatter完成
+## migrate 824a809: fix mnnvl issue with using nvlink clique uuid
+
+- **Upstream commit**: 824a809 (cugraph-gnn, NVIDIA, 2024-08-19)
+- **Commit message**: `fix mnnvl issue with using nvlink clique uuid`
+- **Upstream diff** (1 file changed, 13 insertions, 7 deletions):
+  - `cpp/src/wholememory/communicator.cpp`:
+    - 新增 `#include <string>`
+    - `std::set<int> clique_ids{}` → `std::set<std::string> clique_uuids{}`
+    - `clique_ids.insert(cliqueId)` →
+      `clique_uuids.insert(std::string(reinterpret_cast<const char*>(clusterUuid), NVML_GPU_FABRIC_UUID_LEN))`
+    - `clique_num = clique_ids.size()` → `clique_num = clique_uuids.size()`
+    - 提取本 rank 的 `std::string uuid` 局部变量
+    - `for (auto clique_id : clique_ids)` → `for (auto clique_uuid : clique_uuids)`
+    - `if (clique_id == ri.fabric_info.cliqueId)` → `if (clique_uuid == uuid)` (字符串比较替代整数比较)
+
+- **Bug 根因**:
+  MNNVL (Multi-Node NVLink) 多 fabric 拓扑下，`cliqueId` 是 per-fabric 局部整数，
+  不同物理 clique 可能被 NVML 分配相同 int 值。将 int cliqueId 存入 `std::set<int>`
+  会导致跨 fabric 的不同 clique 被视为同一 clique: `clique_num` 偏少, `clique_id` 赋值错误
+  → MNNVL 通信拓扑错误，AllGather/AllReduce 路由到错误 clique。
+  修复: 改用 `clusterUuid` (128-bit binary blob，NVML 保证全局唯一) 作 set 键。
+
+### Walpurgis 迁移位置
+
+**文件: `src/walpurgis/models/nvlink_clique.py`** — 新增
+
+**迁移要点**:
+- `CliqueUUID`: 封装 `std::string(reinterpret_cast<const char*>(clusterUuid), LEN)` 为 Python bytes 对象，
+  加 `hex_str` 属性方便调试打印，加 `is_zero()` 对应 C++ 零 UUID 检查
+- `CliqueRegistry`: 合并 C++ 两段逻辑 (先 `set.insert` 全部 → 再 `for` 遍历找 id)
+  为单一 `dict[CliqueUUID, int]`，插入即分配 id，O(1) 查找
+- `WalpurgisCliqueInfo`: 对应 `wm_comm->clique_info` 结构体字段，加 `validate()` 后置校验
+- `exchange_rank_clique_info()`: 对应 `exchange_rank_info()` 中 clique 相关逻辑，
+  输入 rank uuid 列表，输出 `WalpurgisCliqueInfo`
+- `pre_824a809_buggy_exchange()`: 仅用于回归对比，演示 int cliqueId 碰撞 bug
+
+**改写20%（鲁迅拿法）**:
+- `CliqueUUID` 对象替代 C++ `std::string` 二进制 blob，加 `hex_str`/`short_hex` 调试属性
+- `CliqueRegistry` dict 插入即分配 id，消除 C++ 二次 for 遍历 O(N→1)
+- `sorted_id()` 提供与 C++ `std::set` 字典序完全对齐的 id，同时保留默认插入顺序路径
+- `WalpurgisCliqueInfo.validate()` 在 `clique_id`/`clique_num` 赋值后做后置校验（C++ 无）
+- `pre_824a809_buggy_exchange()` 隔离旧 bug 路径，可用于回归测试证明 int 碰撞场景
+- 全链路 `WALPURGIS_DEBUG=1` 断点 print，每个 uuid 插入/查找/赋值均打印 hex 摘要
 
 ### 质量审查（Knuth 标准）
 
@@ -72,6 +115,33 @@
   多 DataLoader worker 可安全并发调用。
 - **性能**: pin_memory() 在热路径（每次 __setitem__），但仅在 `not val.is_cuda`
   时执行，已在 GPU 的 tensor 零开销。dtype 转换同原逻辑，不增加额外操作。
+| 上游 824a809 | Walpurgis 迁移 |
+|---|---|
+| `std::set<int> clique_ids{}` → `std::set<std::string> clique_uuids{}` | `CliqueRegistry._uuid_to_id: Dict[CliqueUUID, int]` 替代 `std::set` |
+| `clique_ids.insert(cliqueId)` → `clique_uuids.insert(std::string(clusterUuid, LEN))` | `registry.insert(CliqueUUID(rank_uuids[r]))` |
+| `clique_num = clique_uuids.size()` | `clique_info.clique_num = registry.clique_num()` |
+| `std::string uuid = std::string(ri.fabric_info.clusterUuid, LEN)` | `self_uuid = CliqueUUID(rank_uuids[world_rank])` |
+| `for (auto clique_uuid : clique_uuids) { if (clique_uuid == uuid) clique_id = id; id++; }` | `registry.sorted_id(self_uuid)` O(1) 查找 |
+| `#include <string>` | Python bytes 内置，无需 import |
+
+**2. 用户角度 bug 排查**
+
+- **Bug 1 (clique_id 赋值错误)**: pre-824a809 多 fabric 下 int cliqueId 碰撞，`clique_id` 赋值到错误 id。
+  `pre_824a809_buggy_exchange()` 可复现此 bug，`exchange_rank_clique_info()` 对比结果即可验证修复。
+- **Bug 2 (clique_num 偏少)**: int cliqueId 碰撞导致 set 大小偏小，`clique_num` 错误。
+  `CliqueRegistry.dump()` 打印全部 uuid 及其 id，可直观确认去重是否正确。
+- **Bug 3 (MNNVL 通信拓扑错误)**: clique_id 错误 → AllReduce 路由到错误 NVLink clique → 性能骤降或挂死。
+  `WalpurgisCliqueInfo.validate()` 在赋值后立即校验 `clique_id ∈ [0, clique_num)`，提前发现。
+- **调试路径**: `WALPURGIS_DEBUG=1` 时每个 rank 的 uuid hex + clique_id 赋值过程全打印，
+  对比多 rank 日志可直接确认 uuid 去重是否符合预期。
+
+**3. 系统角度**
+
+- **类型安全**: `CliqueUUID.__eq__/__hash__` 基于 bytes，dict/set 操作类型安全。
+  pre-824a809 C++ `std::set<int>` 允许任意 int 进入，Python 改写通过 `CliqueUUID` 构造函数强制长度校验。
+- **内存安全**: `CliqueUUID._raw` 长度固定为 `NVML_GPU_FABRIC_UUID_LEN`，构造时截断/补零与 C++ `std::string(ptr, len)` 行为对齐；无悬空指针风险（C++ reinterpret_cast 路径有潜在越界，Python bytes 切片安全）。
+- **并发安全**: `exchange_rank_clique_info()` 是纯函数，无全局状态；`CliqueRegistry` 为值语义，每次调用创建新实例，线程安全。
+- **性能**: `CliqueRegistry.insert/get_id` 均为 O(1) dict 操作；`sorted_id()` 为 O(N log N) 仅在 `use_sorted_id=True` 时执行，N=clique 数量（通常 <10）。
 
 ---
 
