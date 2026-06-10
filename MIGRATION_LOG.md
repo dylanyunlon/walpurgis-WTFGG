@@ -1273,3 +1273,86 @@ make_temporal_session_from_loader_args()  # 便利builder对应NeighborLoader.__
   包含 reorder, 故无法 zero-copy. 这与上游 CUDA kernel 语义一致 (kernel 内
   逐元素 cast, 无 zero-copy 路径).
 
+
+## migrate 7c2907f: [BUG] Correct De-Offset of Edge Label Index
+
+- **Upstream commit**: 7c2907f (cugraph-gnn, NVIDIA, 2025-07-28)
+- **Commit message**: `[BUG] Correct De-Offset of Edge Label Index`
+- **PR**: #258，作者 Alex Barghi (alexbarghi-nv)
+- **Upstream diff** (4 files changed, 260 insertions, 10 deletions):
+  - `loader/link_loader.py`: `edge_label_index = edge_label_index.detach().clone()`
+    新增 drop_last + 边数不足的早期 ValueError
+  - `loader/node_loader.py`: `input_nodes = input_nodes.detach().clone()`
+    新增 drop_last + 节点数不足的早期 ValueError
+  - `sampler/sampler.py`:
+    - `HeterogeneousSampleReader.__decode_coo`: `integer_input_type = None` 提前初始化；
+      旧 `edge_inverse[0] -= __vertex_offsets[src]` / `edge_inverse[1] -= __vertex_offsets[dst]`
+      替换为词典序判断:
+      `if input_type[0] < input_type[2]: dst -= src.max()+1`
+      `else: src -= dst.max()+1`
+    - `HomogeneousSampleReader.__decode_csr` / `__decode_coo`:
+      `edge_inverse = edge_inverse.view(2,-1)` 提前赋值再放入 metadata tuple
+  - `tests/loader/test_neighbor_loader.py`:
+    新增 3 个双向异构图 link prediction 测试
+
+- **Bug 根因**:
+  Heterogeneous 图采样后，不同类型节点被 concat 为单一全局编号空间，
+  各类型节点在 minibatch renumber map 中的排列顺序由词典序决定。
+  旧代码用 `__vertex_offsets[integer_input_type]` 做固定减法——
+  该 offset 是全图层面的绝对偏移，与 minibatch 内的相对排列无关；
+  当 src_type != dst_type 时，减去错误的 offset，
+  edge_label_index 解码出的节点 ID 指向错误位置，链路预测 batch 静默返回错误结果。
+  修复: 按词典序判断两端节点在 renumber map 中的先后，
+  以 `max()+1` 动态确定偏移量，与全图绝对 offset 无关。
+
+- **Knuth 审查**:
+  1. diff 对比源:
+     旧代码 `edge_inverse[0] -= vertex_offsets[src]` 依赖全图绝对 offset，
+     新代码 `edge_inverse[1] -= edge_inverse[0].max()+1` 依赖 minibatch 内相对位置；
+     两者在 src_type==dst_type 时等价（同段 offset 相消），
+     在 src_type!=dst_type 时新代码正确，旧代码必然出错。
+     HomogeneousSampleReader 的 view 提前是防御性重构，不改变语义。
+  2. 用户角度 bug:
+     双向异构图（如 user→merchant + merchant→rev_to→user）做 link prediction 时，
+     每个 batch 的 edge_label_index 解码出错误的节点 ID，
+     assert 通过但节点映射乱序，导致训练 loss 异常升高而无明显报错，
+     极难与模型本身的问题区分；detach().clone() 缺失时，
+     外部传入的 edge_label_index 被 in-place 加 offset 修改，
+     调用方下次迭代时 tensor 已污染，产生难以复现的随机 bug。
+  3. 系统角度安全:
+     词典序去偏移依赖 minibatch 内节点编号的单调性假设（renumber 保证），
+     若 renumber map 顺序变化则此假设失效；
+     detach().clone() 增加了内存开销（每个 mini-batch 额外一份拷贝），
+     但在多 worker DataLoader 场景下是必要的隔离措施，
+     否则共享 tensor 的 in-place 修改会触发 CUDA multiprocessing 竞态。
+
+### Walpurgis 迁移位置
+
+**文件: `src/walpurgis/dataloader/edge_label_deoffset.py`** — 新增
+
+**迁移要点**:
+- `DeOffsetStrategy`: 枚举，VERTEX_OFFSET (旧 BUG 路径，禁用) vs LEXICOGRAPHIC (7c2907f 修复路径)
+- `EdgeInverseBundle`: 值对象，携带 (src, dst, input_type)，替代裸 list 操作
+- `HeteroEdgeLabelDeoffset`: 执行类，封装词典序去偏移逻辑，`apply(bundle)` 原地修改并返回
+- `HomoEdgeInverseView`: 静态工具类，封装 `view(2,-1)` + numel 奇偶校验
+- `InputTensorGuard`: 守卫类，封装 `detach().clone()` + drop_last 早期校验，支持 edge/node 两种模式
+- `build_deoffset_session()`: 工厂函数，对应 7c2907f 标准使用路径
+
+**改写20%（鲁迅拿法）**:
+- `DeOffsetStrategy` 枚举明示旧 BUG 路径，`build_deoffset_session` 见到 VERTEX_OFFSET 直接 raise，
+  从架构上封死回退旧代码的可能
+- `EdgeInverseBundle` 值对象在 `__post_init__` 做形状一致性校验，
+  上游裸 list 操作无任何校验，异形 tensor 会静默产生错误的 max()+1
+- `HomoEdgeInverseView` 在 view 前检查 `numel % 2 != 0`，
+  上游直接 `edge_inverse.view(2,-1)`，numel 为奇数时 RuntimeError 不指向根因
+- `InputTensorGuard._check_drop_last` 统一了 edge/node 两种模式的校验逻辑，
+  上游 link_loader / node_loader 两处代码重复
+
+全链路7个 `WALPURGIS_DEBUG=1` 断点 print，覆盖:
+  InputTensorGuard.__init__ 入口 →
+  InputTensorGuard._check_drop_last 计数 →
+  EdgeInverseBundle.__post_init__ 形状 →
+  HeteroEdgeLabelDeoffset.apply 入口 + 词典序分支 →
+  HomoEdgeInverseView.apply 前后形状 →
+  build_deoffset_session 出口
+
