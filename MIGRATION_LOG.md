@@ -1,4 +1,72 @@
 
+## migrate 940ab01: [FEA] Add Elliptic Bitcoin fraud example
+
+- **Upstream commit**: 940ab01 (cugraph-gnn, NVIDIA)
+- **Commit message**: `[FEA] Add Elliptic Bitcoin fraud example`
+- **Upstream diff** (9 files changed):
+  - `ci/run_cugraph_pyg_pytests.sh` — 新增 bitcoin example 运行命令
+  - `ci/test_wheel_cugraph-pyg.sh` — 同上
+  - `conda/environments/all_cuda-128_arch-*.yaml` — 新增 `cuml==25.8.*` 依赖
+  - `dependencies.yaml` — 新增 `depends_on_cuml` 依赖块 (4处引用)
+  - `python/cugraph-pyg/pyproject.toml` — test deps 新增 `cuml==25.8.*`
+  - `examples/fraud/README.md` — 新增，10行说明
+  - `examples/fraud/bitcoin_mnmg.py` — 新增，280行，GNN多GPU训练 + 嵌入生成
+  - `examples/fraud/bitcoin_rf.py` — 新增，83行，随机森林分类器
+
+- **Knuth 审查**:
+  1. diff 修改与源对比:
+     - `bitcoin_rf.py` 的 `cudf.read_parquet(embedding_dir)` 读目录合并所有 parquet，
+       但 `bitcoin_mnmg.py` 按 rank 写多文件，合并后行数 != `data.num_nodes`，
+       `X[data.train_mask]` 越界或静默错位 (上游无对齐检查)
+     - `bitcoin_mnmg.py` 推理阶段 `drop_last=True` 导致嵌入不完整，
+       写回 feature_store 后 emb 与 y 对齐错位
+     - 推理循环手动展开 `encoder.module.convs/norms/act/lin`，
+       深度耦合 PyG 内部结构，模型升级时静默出错
+     - parquet 文件名含超参拼接无时间戳，并发实验静默覆盖
+  2. 用户角度 bug:
+     - `EllipticBitcoin` 含 y=2 (unknown) 节点，`cross_entropy` 2分类头遇 y=2
+       抛 IndexError 或产生错误梯度，用户看到 CUDA assert 或 loss=nan
+     - `ix_train` tensor_split 末尾可能为空 (节点数不被 world_size 整除)，
+       空 input_nodes 的 NeighborLoader 行为版本依赖，可能挂起
+     - `bitcoin_rf.py` 读目录合并时若有多次实验 parquet 混入，训练数据被污染
+  3. 系统角度安全:
+     - `embedding_dir` 含 "/" 或 ".." 的 encoder 字符串可路径穿越
+     - `cugraph_comms_shutdown()` 裸调，OOM/NCCL 挂起时不执行，资源泄漏
+     - `RandomForestClassifier()` 无随机种子，CI 结果不可复现
+     - `rmm.reinitialize(pool_allocator=False)` 与同仓库 c3799ae 方向相反，一致性缺失
+
+### Walpurgis 迁移位置
+
+**文件: `src/walpurgis/examples/fraud/bitcoin_mnmg.py`** — 新增，GNN 多 GPU 训练
+
+**文件: `src/walpurgis/examples/fraud/bitcoin_rf.py`** — 新增，随机森林分类器
+
+**文件: `src/walpurgis/examples/fraud/README.md`** — 新增，说明文档
+
+**迁移要点**:
+- `BitcoinMnmgArgs`: dataclass 封装 argparse，`validate()` 含 encoder 合法性 + 路径安全检查
+- `CugraphWorkerSession`: context manager 封装 init_pytorch_worker 生命周期，
+  `__exit__` 保证异常路径也调用 `cugraph_comms_shutdown()`
+- `BitcoinGraphBundle`: 值对象封装分布式图构建，`build()` 类方法集中构建
+- `EmbeddingWriter`: 封装推理 + parquet 写出，加 timestamp 防并发覆盖
+- `BitcoinRfArgs`: dataclass 封装参数，`validate()` 含路径安全检查
+- `EmbeddingDataset`: 封装 `cudf.read_parquet` + mask 对齐检查 (上游无此保护)
+- `RfExperiment`: 封装 RF 训练 + 评估，加 `random_state` + dtype 强制转换
+
+**改写20%（鲁迅拿法）**:
+- `CugraphWorkerSession` context manager 替代裸函数 + 末尾裸调 shutdown
+- `BitcoinGraphBundle.build()` 集中分布式图构建，替代 __main__ 散落赋值
+- `EmbeddingDataset` 封装 parquet 加载 + mask 对齐验证 (上游无此步骤)
+- `RfExperiment` 封装 RF 实验，加 `random_state` + dtype 检查 (上游全默认)
+- 全链路 `WALPURGIS_DEBUG=1` 断点 print，覆盖:
+  BitcoinMnmgArgs dump → create_uid uid类型 → CugraphWorkerSession RMM/cupy/comms初始化 →
+  BitcoinGraphBundle edge_index/feature shape/barrier → build_encoder 参数量 →
+  ix_train/ix_test 分配 shape/空检查 → train_epoch batch.x/edge_index/out shape →
+  eval_epoch batch统计 → EmbeddingWriter 推理batch/layer状态/写回index/parquet路径 →
+  BitcoinRfArgs dump → EmbeddingDataset parquet shape/对齐检查 →
+  EmbeddingDataset.split X/y shape/class dist → RfExperiment fit/evaluate dtype/prob shape →
+  gnn_only_evaluate z_test分布
+
 ## migrate c3799ae: [BUG] Use memory pool in movielens example
 
 - **Upstream commit**: c3799ae (cugraph-gnn, NVIDIA, 2025-10-31)
