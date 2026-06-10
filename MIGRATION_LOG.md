@@ -1,4 +1,55 @@
 
+## migrate c3799ae: [BUG] Use memory pool in movielens example
+
+- **Upstream commit**: c3799ae (cugraph-gnn, NVIDIA, 2025-10-31)
+- **Commit message**: `[BUG] Use memory pool in movielens example`
+- **Upstream diff** (1 file changed, 81 insertions, 80 deletions):
+  - `movielens_mnmg.py` — `__main__` 块:
+    删除旧代码: `if global_rank == 0: torch.cuda.change_current_allocator(rmm_torch_allocator)`
+    新增: `from rmm.allocators.torch import rmm_torch_allocator`
+    新增: `with torch.cuda.use_mem_pool(torch.cuda.MemPool(rmm_torch_allocator.allocator())):`
+    主逻辑全部缩进一层, 逻辑无变化, 纯作用域包裹
+
+- **Bug 根因**:
+  旧代码 `change_current_allocator()` 修改进程级全局状态, 且仅在 `global_rank == 0`
+  的 if 分支内调用。多 GPU 训练时 rank 1..N 继续使用 PyTorch 默认 CUDA caching
+  allocator。DDP all-reduce / NCCL 通信时两侧 buffer 来自不同内存池 → 显存碎片 +
+  NCCL 挂起 + OOM, 错误信息不指向 allocator 根因, 极难定位。
+  修复: `use_mem_pool` context manager 是进程局部的, 所有 rank 均建立独立 MemPool,
+  退出 with 块后自动恢复默认 allocator, 无资源泄漏。
+
+- **Knuth 审查**:
+  1. diff对比源: change_current_allocator 全局不可撤销 vs use_mem_pool 局部可回退;
+     旧代码只 rank 0 执行 vs 新代码全 rank 均执行; 作用域明确性质变
+  2. 用户角度 bug: 2 卡以上训练中途 OOM 或 NCCL 挂起, 错误信息不指向 allocator,
+     用户误以为显存不足或网络问题, 实际是 allocator 不一致
+  3. 系统角度安全: change_current_allocator 一旦设置不可回退, 第三方库再次调用将静默
+     覆盖 → 不可预期; use_mem_pool 作用域明确, 退出自动恢复, 系统状态可控
+
+### Walpurgis 迁移位置
+
+**文件: `src/walpurgis/core/memory_pool.py`** — 新增
+
+**迁移要点**:
+- `RmmAllocatorMode`: 枚举, GLOBAL_CHANGE (旧 BUG 方式) vs MEM_POOL (c3799ae 修复方式),
+  build_mem_pool_session() 见到 GLOBAL_CHANGE 直接 raise ValueError
+- `RmmMemPoolContext`: 值对象, 携带 (rank, device, allocator_fn, pool),
+  替代 Python 中 rmm_torch_allocator 直接内联使用, 支持懒初始化和调试
+- `WalpurgisMemPoolSession`: context manager 类, 封装 torch.cuda.use_mem_pool 生命周期,
+  __enter__ 激活 pool + 打印调试, __exit__ 退出 + 显存摘要; RMM 不可用时优雅降级 noop
+- `validate_mem_pool_consistency()`: 验证所有 rank 均已激活 pool session
+  (Python c3799ae 无此校验; 对应旧 BUG: 只有 rank 0 调用 allocator)
+- `build_mem_pool_session()`: 顶层工厂函数, 对应 c3799ae 修复后的两行代码
+
+**改写20%（鲁迅拿法）**:
+- `RmmAllocatorMode` 枚举明示两种模式语义差异, 防止日后误用旧 BUG 方式
+- `RmmMemPoolContext` 值对象替代 Python 内联 MemPool 构造, 携带 rank/device 元数据
+- `WalpurgisMemPoolSession` 提取裸 with 语句为可测试/可日志的 session 类
+- `validate_mem_pool_consistency()` 新增验证方法 (Python 无此逻辑)
+- 全链路5个 `WALPURGIS_DEBUG=1` 断点 print, 覆盖:
+  build_mem_pool_session入口 → RmmMemPoolContext构造 → build_pool allocator地址 →
+  pool创建 → session.__enter__激活 → session.__exit__显存摘要 →
+  validate一致性检查
 ## migrate 05fe6f4: [FEA] Knowledge Graph/Graph Database Renumbering
 
 - **Upstream commit**: 05fe6f4 (cugraph-gnn, NVIDIA)
