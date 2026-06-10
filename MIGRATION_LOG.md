@@ -1,4 +1,75 @@
 
+## migrate 66da9ac: [BUG] Fix input ID creation to use shape[-1] instead of len
+
+- **Upstream commit**: 66da9ac (cugraph-gnn, NVIDIA, 2025-09-24)
+- **Commit message**: `[BUG] Fix input ID creation to use shape[-1] instead of len`
+- **Upstream diff** (1 file changed, 1 insertion, 1 deletion):
+  - `python/cugraph-pyg/cugraph_pyg/sampler/distributed_sampler.py`:
+    - `BaseDistributedSampler.sample_from_edges` L694:
+      - 旧: `input_id = torch.arange(len(edges), dtype=torch.int64, device="cpu")`
+      - 新: `input_id = torch.arange(edges.shape[-1], dtype=torch.int64, device="cpu")`
+
+- **Bug 根因**:
+  `edges` 是 `2 × N` tensor（2 行=src/dst，N 列=边数）。
+  `len(edges)` 返回第 0 维 → 恒为 **2**，与实际边数 N 无关。
+  `edges.shape[-1]` 返回最后一维 → 正确得到 **N**。
+  当 N > 2 时，旧代码 `input_id = tensor([0, 1])`，仅 2 个 index，
+  与实际 batch 数量严重不符，导致下游 batch 分组以最短 tensor 截断，
+  N-2 条边静默丢失。N == 2 时旧代码偶然正确，可能掩盖 bug。
+
+- **Knuth 审查**:
+  1. **diff 对比源**:
+     | 上游 66da9ac | Walpurgis 迁移 |
+     |---|---|
+     | `torch.arange(edges.shape[-1], ...)` 内联 | `make_edge_input_id(edges)` 封装函数 |
+     | 无前置形状校验 | `validate_edges_shape` 检查 ndim==2 且 shape[0]==2 |
+     | 无后置一致性校验 | `assert_input_id_consistent` 检查 len(input_id)==shape[-1] |
+     | 无调试输出 | `WALPURGIS_DEBUG=1` 打印 `len(edges)` vs `edges.shape[-1]` 对比 |
+     | 无专用异常 | `EdgeInputIdError` 携带 edges.shape 信息 |
+     | None-check 内联 | `resolve_edge_input_id` 完整封装 None-check + 构造 + 校验 |
+
+  2. **用户角度 bug**:
+     - 调用 `sampler.sample_from_edges(edges)`（不传 input_id，最常见用法）。
+       edges 有 1024 条，`len(edges)=2`，`input_id=tensor([0,1])`。
+       下游 `__get_call_groups` 以 input_id 长度切分 batch，
+       实际只处理 2 条边，其余 1022 条静默丢失。
+       训练数据量不足导致模型严重欠拟合，无任何异常抛出，难以定位。
+     - 只有 N==2（即 edges 恰好只有 2 列）时旧代码偶然正确，
+       小规模测试可能通过，生产规模失效的经典案例。
+
+  3. **系统角度安全**:
+     - `len()` 对 PyTorch tensor 返回第 0 维长度（Python 数据模型标准行为）。
+       边索引约定 2×N 中，第 0 维永远是 2（src/dst 两行），
+       `len()` 的"正确"语义（行数）与业务语义（边数）完全相反，是 API 语义陷阱。
+     - 静默截断：input_id 短于 edges.shape[-1] 时，上游不做长度一致性校验，
+       短 input_id 被正常传入后续逻辑，多余的边被无声丢弃，系统不崩溃。
+     - 转置陷阱：若用户误传 N×2（转置）的 edges，
+       旧代码 `len(edges)=N`（偶然正确），新代码 `shape[-1]=2`（错误）；
+       `validate_edges_shape` 检查 `shape[0]==2` 可捕获此类转置错误。
+
+### Walpurgis 迁移位置
+
+**文件: `src/walpurgis/dataloader/edge_input_id.py`** — 新增
+
+**迁移要点**:
+- `EdgeInputIdError`: 专用异常类，携带 edges.shape 信息，上游无此错误类型
+- `validate_edges_shape`: 前置 2×N 形状校验，检查 ndim==2 且 shape[0]==2，
+  同时在 DEBUG 模式打印 `len(edges)` vs `shape[-1]` 两者对比，直指 bug 根因
+- `make_edge_input_id`: 替代内联 `torch.arange(edges.shape[-1], ...)`，
+  统一 input_id 构建入口，断点调试打印 BUG WOULD HAVE OCCURRED 提示
+- `assert_input_id_consistent`: 后置一致性校验，检查外部传入 input_id 长度，
+  上游 sample_from_edges 对非 None 的 input_id 无任何校验
+- `resolve_edge_input_id`: 完整封装 None-check + 构造/校验，
+  drop-in 替代 sample_from_edges 中的 if input_id is None 块
+
+**改写 20%（鲁迅拿法）**:
+- `validate_edges_shape` 捕获转置 N×2 输入（上游无此保护）
+- `assert_input_id_consistent` 保护外部传入的自定义 input_id 长度一致性
+- `EdgeInputIdError` 将形状信息完整携带进异常，上游直接 IndexError 或静默
+- `resolve_edge_input_id` 将三步逻辑合并为单函数，上游三步散落于 sample_from_edges 中
+
+---
+
 ## migrate a72a521: fix: fixes memory context leak
 
 - **Upstream commit**: a72a521 (cugraph-gnn, NVIDIA, 2025-10-13)
