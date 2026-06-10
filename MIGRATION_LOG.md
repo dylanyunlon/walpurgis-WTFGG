@@ -1,4 +1,55 @@
 
+## migrate a72a521: fix: fixes memory context leak
+
+- **Upstream commit**: a72a521 (cugraph-gnn, NVIDIA, 2025-10-13)
+- **Commit message**: `fix: fixes memory context leak (#332)`
+- **Upstream diff** (1 file changed, 3 insertions, 4 deletions):
+  - `cpp/src/wholememory_ops/temp_memory_handle.hpp`:
+    - `free_memory()` 守卫条件 `ptr_ != nullptr` → `memory_context_ != nullptr`
+    - 同时将 `free_fn` 调用提取为 `free_data()` 复用（上游原本已有，修复使其被正确调用）
+    - `ptr_ = nullptr` 清零移入 `free_data()`，`free_memory()` 不再重复清零
+
+- **Bug 根因**:
+  `free_memory()` 旧实现用 `ptr_ != nullptr` 判断是否需要销毁 `memory_context_`。
+  但 `free_data()` 先于 `destroy_memory_context_fn` 被调用，已将 `ptr_` 清零，
+  导致以下两种场景均发生 memory_context_ 泄漏：
+  (1) 构造后从未 malloc，`ptr_` 始终为 nullptr → destroy 永不触发；
+  (2) 调用方显式调用 `free_data()` 后对象析构 → ptr_ 已为 nullptr → destroy 跳过。
+  修复将守卫换成 `memory_context_ != nullptr`，两个资源的生命周期彻底解耦。
+
+- **Walpurgis 迁移改写 (鲁迅拿法 20%)**:
+  | 上游 a72a521 | Walpurgis 迁移 |
+  |---|---|
+  | device/host/pinned malloc 三路重复代码 | 抽取 `alloc_impl_()` 统一实现 |
+  | 无入参校验 | 构造函数 `assert(env_fns != nullptr)` 快速失败 |
+  | 无调试输出 | `WALPURGIS_DEBUG` 门控 7 处断点 print，覆盖 create/malloc/free/destroy |
+  | `size_t` 直接赋给 `int64_t sizes[0]` | `static_cast<int64_t>` 显式转换，消除符号警告 |
+  | copy ctor 未删除 | 显式 `= delete`，防止浅拷贝导致 double-free |
+
+- **Knuth 审查**:
+  1. **diff 对比源**:
+     旧代码 `free_memory()` 中 `free_fn` + `destroy_memory_context_fn` 均在
+     `if (ptr_ != nullptr)` 内，两个不同资源共享同一守卫——设计上即为错误。
+     修复将 `free_fn` 移入已有的 `free_data()`，`destroy` 独立守卫 `memory_context_`，
+     责任边界清晰，符合单一职责原则。
+
+  2. **用户角度 bug**:
+     在 WholeMemory GNN 训练循环中，每个 mini-batch 会构造若干 `temp_memory_handle`
+     对象做临时 tensor 缓冲。若 batch 处理中途出现错误（如采样为空提前 return），
+     对象可能在 `device_malloc` 之前被析构，或在 `free_data()` 之后被析构。
+     旧代码两种路径均泄漏 `memory_context_`。训练数千 batch 后 CUDA memory context
+     池耗尽，报 `WHOLEMEMORY_INVALID_VALUE` 或 OOM，难以定位，因为泄漏点距崩溃点
+     时间跨度长。新代码 RAII 完全兑现，用户无感知。
+
+  3. **系统角度安全**:
+     `create_memory_context_fn` / `destroy_memory_context_fn` 维护后端 context 表
+     的引用计数，为配对 API contract。旧代码破坏该 contract，造成 handle 泄漏而非
+     纯内存泄漏——valgrind 无法检测（GPU side），需专用工具（如 compute-sanitizer）。
+     Walpurgis 迁移中 `assert` + WALPURGIS_DEBUG 断点覆盖了构造/析构的全部关键状态
+     转换点，可在测试阶段快速定位任何 context 生命周期异常。
+
+---
+
 ## migrate 24e91be: [BUG] Specify Input Type and Assign Output to Correct Type
 
 - **Upstream commit**: 24e91be (cugraph-gnn, NVIDIA, 2025-07-17)
