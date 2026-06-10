@@ -1,4 +1,84 @@
 
+## migrate f2b7f50: [BUG] Fix shuffle on single GPU in Taobao Example
+
+- **Upstream commit**: f2b7f50 (cugraph-gnn, NVIDIA)
+- **Commit message**: `[BUG] Fix shuffle on single GPU in Taobao Example`
+- **Upstream diff** (1 file changed):
+  - `python/cugraph-pyg/cugraph_pyg/examples/taobao_mnmg.py`:
+    - `preprocess_and_partition` L173: 新增 `print(data)`（调试断点）
+    - `balance_shuffle_edge_split` L411-418: 重写 dst_rank 切片逻辑
+      - 旧: `if rank > 0 and rank < world_size - 1 / elif rank == 0 / else`
+      - 新: `if world_size == 1: local_rank_t = dst_rank` (单卡 early-return)
+      - 新: `else: start/end 二元组` 替代三段 if-elif-else
+
+- **Bug 根因**:
+  `balance_shuffle_edge_split` 中:
+  ```python
+  edge_offsets = num_edges.cumsum(0).cpu()[:-1]
+  ```
+  world_size==1 时 `num_edges.shape=(1,)`，`cumsum[:-1]` → 空 tensor。
+  旧代码 `elif rank==0` 触发 `edge_offsets[0]`，IndexError 确定性触发。
+  新代码提前判断 `world_size==1`，直接 `local_rank_t = dst_rank`，
+  跳过 `edge_offsets` 访问，从根本上规避 IndexError。
+  多卡路径同时重写为 start/end 二元组，消除三段式边界条件穷举。
+
+- **Knuth 审查**:
+  1. **diff 对比源**:
+     | 上游 f2b7f50 | Walpurgis 迁移 |
+     |---|---|
+     | `if world_size == 1: local_rank_t = dst_rank` 两行内联 | `EdgeShuffler._single_gpu_path()` 命名路径 |
+     | `start/end` 二行散落 else 块 | `_compute_local_slice()` 静态方法，加断点 print |
+     | 三段 all_to_all 重复代码块 | `_scatter_gather_tensor()` 封装复用 |
+     | `print(data)` 裸调 | `_dbg(..., tag="PREPROCESS")` 仅 DEBUG 时输出 |
+     | 无单卡 guard 注释 | 内联注释说明旧代码为何在单卡崩溃 |
+
+  2. **用户角度 bug**:
+     - 单卡调试（最常见场景）：`torchrun --nproc_per_node=1` 运行，
+       到 `balance_shuffle_edge_split` 直接 `IndexError: index 0 is out of bounds for dimension 0 with size 0`
+       错误指向 `edge_offsets[0]`，与业务逻辑毫无关联，难以定位
+     - 错误发生在 broadcast 之后，浪费了集体操作开销
+     - 多卡路径旧三段式：rank==0 / 0<rank<N-1 / rank==N-1，
+       穷举边界条件，任何 world_size 变化都需重新验证三段覆盖
+
+  3. **系统角度安全**:
+     - `edge_offsets = cumsum[:-1]` 长度恒为 `world_size - 1`，
+       world_size==1 时为空，旧代码无 guard，单卡必崩
+     - `dst_rank = randperm(total) % world_size`，world_size==1 时全为 0，合法，
+       问题只在后续切片逻辑
+     - 新代码 world_size==1 时 `all_to_all` 退化为单槽自环（`rx[0]=s[0]`），
+       torch.distributed 在单进程组下此操作合法
+     - `None` 作为切片 end 等价于"到末尾"，避免了旧代码 else 分支的
+       `dst_rank[edge_offsets[-1]:]` 隐含语义（edge_offsets[-1] 恰好是末尾 rank 起点）
+
+### Walpurgis 迁移位置
+
+**文件: `src/walpurgis/examples/taobao/taobao_mnmg.py`** — 新增
+
+**迁移要点**:
+- `DataPreprocessor`: dataclass 封装 preprocess_and_partition 前段 del 链，
+  `_clean()` 方法集中管理，`_dbg()` 替代上游裸 `print(data)`
+- `EdgeShuffler`: dataclass 封装 balance_shuffle_edge_split 核心逻辑，
+  `_compute_local_slice()` 静态方法封装 start/end 计算 + 断点调试 print，
+  `_scatter_gather_tensor()` 封装三段重复 all_to_all 代码块
+- `balance_shuffle_edge_split()`: 公共接口保持上游签名，委托给 `EdgeShuffler.split()`
+- `_edge_shuffler`: 模块级单例，避免每次 create_loader 重复构造
+- 全链路 `WALPURGIS_DEBUG=1` 断点 print，覆盖:
+  DataPreprocessor._clean data 结构前后 →
+  EdgeShuffler.split world_size/rank/edge_offsets →
+  _compute_local_slice start/end per rank →
+  balance_shuffle_edge_split broadcast 前后 dst_rank 分布 →
+  train/test batch shape → epoch loss/auc → main barrier 检查点
+
+**改写 20%（鲁迅拿法）**:
+- `DataPreprocessor` dataclass 替代裸函数 + 散落 del 链
+- `EdgeShuffler` dataclass 替代 230 行大函数内的内联逻辑
+- `_compute_local_slice()` 命名静态方法替代两行无名 start/end 赋值
+- `_scatter_gather_tensor()` 消除三段重复 all_to_all 代码块
+- `balance_shuffle_edge_split()` 薄包装保持上游 API 兼容
+- 单卡 ZeroDivisionError 防御（train loader 为空时返回 0.0）
+
+---
+
 ## migrate 66da9ac: [BUG] Fix input ID creation to use shape[-1] instead of len
 
 - **Upstream commit**: 66da9ac (cugraph-gnn, NVIDIA, 2025-09-24)
