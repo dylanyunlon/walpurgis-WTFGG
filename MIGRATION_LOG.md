@@ -2831,3 +2831,74 @@ if d > 0:           # 整除时 d==0，跳过切片，保留完整 perm
   断点4-6: VertexCountRegistry 类型安全更新 + dst_key 提取 →
   断点7-9: GatheredEdgeVerifier all_gather + 全局验证 →
   断点10-12: WalpurgisDistMatrix local_col / local_row / local_coo property
+
+---
+
+## migrate 2d545b9: Deprecate TensorDictFeatureStore in cuGraph-PyG
+
+- **Upstream commit**: 2d545b9 (cugraph-gnn, NVIDIA, 2025)
+- **Commit message**: `Deprecate TensorDictFeatureStore in cuGraph-PyG`
+- **Upstream diff** (1 file changed):
+  - `python/cugraph-pyg/cugraph_pyg/data/__init__.py` — 12 行新增，1 行替换
+    - 原裸 import `TensorDictFeatureStore` 改为 `TensorDictFeatureStore as DEPRECATED__TensorDictFeatureStore`
+    - 新增 wrapper 函数 `TensorDictFeatureStore(*args, **kwargs)`:
+      触发 FutureWarning("TensorDictFeatureStore is deprecated. Consider changing your
+      workflow to launch using 'torchrun' and store data in the faster and more
+      memory-efficient WholeFeatureStore instead.")，透传构造 `DEPRECATED__TensorDictFeatureStore`
+    - 设计目标: 统一 API 战略（Unified API / Project #159）要求所有特征存储走
+      WholeGraph；TensorDictFeatureStore 是单机 dict 存储，不再作为可选路径维护
+
+- **Knuth 审查**:
+  1. **diff 对比源**:
+     | 上游 2d545b9                              | Walpurgis 迁移                               |
+     |------------------------------------------|----------------------------------------------|
+     | wrapper 函数，无调试信息，无调用统计       | `DeprecationGate` 类，call_count + 断点 print |
+     | DEPRECATED__ 别名直接暴露在 module 命名空间| `_DEPRECATED__` 封装在模块内，不外泄          |
+     | isinstance(obj, TensorDictFeatureStore) 崩溃 | `InstanceCheckGuard` 修补 isinstance        |
+     | 每个废弃类重复 warnings.warn 模板          | `DeprecationPolicy.register()` 统一注册      |
+     | __init__.py 内联 wrapper 不可单测          | `feature_store_deprecation.py` 独立可测模块  |
+
+  2. **用户角度 bug**:
+     - 上游 wrapper 函数化使 `TensorDictFeatureStore` 不再是 type，
+       `isinstance(my_store, TensorDictFeatureStore)` 会抛 `TypeError`，
+       这是 silent breaking change（用户类型检查代码无警告直接 crash）；
+       `InstanceCheckGuard` 提供修补路径，`isinstance(obj, InstanceCheckGuard(gate))` 安全透传
+     - `FutureWarning` 被 Python 默认 warning filter 静默（非 `-W error` 时不可见），
+       用户可能完全看不到废弃提示；`DeprecationGate` 同时写 WALPURGIS_DEBUG stderr，
+       调试模式下强制可见
+     - wrapper 函数每次调用均触发 `warnings.warn`，Python filter 策略 `once/location`
+       意味着同一调用点只显示一次；多处构造 TensorDictFeatureStore 的代码
+       可能只看到第一处警告，`call_count` 暴露真实调用频次
+
+  3. **系统角度安全**:
+     - wrapper 函数与 `import as` 别名共享 module 命名空间，mypy/pyright
+       静态分析会报 `TensorDictFeatureStore is not a type`，影响 type annotation；
+       `DeprecationGate` 通过 `__name__`/`__qualname__` 属性模拟类名，减轻静态分析影响
+     - 多进程 spawn 模式下 wrapper 函数 pickle 时查找的是 module 全局名称，
+       `TensorDictFeatureStore` 指向函数而非类，pickle 后 unpickle 会找到 wrapper
+       而非原始类，若子进程直接调用会再次触发 FutureWarning（double-warn）；
+       这是上游已知的废弃期 trade-off，`DeprecationGate` 保持同等行为，
+       `call_count` 可帮助诊断多进程场景下的调用频次异常
+
+### Walpurgis 迁移位置
+
+**文件: `src/walpurgis/core/feature_store_deprecation.py`** — 新增
+
+**迁移要点**:
+- `DeprecationGate`: `_wrapped_cls` + `_warning_msg` + `call_count`，
+  `__call__` 等同上游 wrapper 函数，额外 call_count 统计 + 断点 print；
+  `get_wrapped_class()` 为 isinstance 检查提供逃生舱
+- `InstanceCheckGuard`: 修补 wrapper 函数化破坏 `isinstance` 的问题，
+  `__instancecheck__` 委托给 `_wrapped_cls`，完全透明
+- `DeprecationPolicy`: `register(name, cls, msg)` 统一注册，
+  `get(name)` 返回 `DeprecationGate`，`call_all_summary()` 批量统计；
+  替代 `__init__.py` 中重复的 `warnings.warn` 模板代码
+- 模块级 `_POLICY` 实例预注册 `TensorDictFeatureStore`（上游 2d545b9 唯一变更），
+  ImportError 时降级为 stub 模式，保持模块可导入（适用纯 Walpurgis 环境）
+- 6 个 WALPURGIS_DEBUG=1 断点，覆盖全链路:
+  断点1: DeprecationGate.__call__ 入口（参数类型摘要）→
+  断点2: FutureWarning 触发时机（call_count）→
+  断点3: 构造完成（result_type + id）→
+  断点4: DeprecationPolicy.register（注册事件）→
+  断点5: DeprecationPolicy.get（查找事件）→
+  断点6: DeprecationPolicy.call_all_summary（批量调用统计柱状图）
