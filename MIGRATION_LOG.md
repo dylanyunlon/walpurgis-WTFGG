@@ -1,4 +1,64 @@
 
+## migrate 8b3b67f: [BUG] Mask out unwanted vertices during negative sampling
+
+- **Upstream commit**: 8b3b67f (cugraph-gnn, NVIDIA, 2025)
+- **Commit message**: `[BUG] Mask out unwanted vertices during negative sampling`
+- **Upstream diff** (3 files changed, 110 insertions, 9 deletions):
+  - `sampler_utils.py` — `neg_sample()`:
+    新增 `input_type: Tuple[str,str,str]` 参数;
+    删除 `unweighted` 局部变量;
+    按 `is_homogeneous + input_type` 从 `graph_store` 取 `num_src/dst_nodes`;
+    None 权重 → 全1向量; dtype 一致性检查;
+    异构图 type_mismatch 时: `vertices=concat(arange(src)+off, arange(dst)+off)`,
+    `src_weight=concat([sw, zeros(dst)])`, `dst_weight=concat([zeros(src), dw])`
+    → **掩码核心**: 每个顶点在"错误角色"中权重=0, 永不被采样
+  - `sampler.py` — `BaseSampler._sample_negative()`:
+    新增 `index.input_type` 传参;
+    triplet 分支 BUG 修复: 旧代码 `neg_cat(src.cuda(), dst_neg, ...)` 将
+    dst类型节点（如paper）混入src（如author）→ 类型污染;
+    新代码: `per=randint(0,scu.numel(),(dst_neg.numel(),)); neg_cat(scu, scu[per], ...)`
+    → 从 src 自身随机子集补位, 类型纯净
+  - `test_neighbor_loader.py`:
+    新增 `test_link_neighbor_loader_hetero_negative_sampling`:
+    author-writes-paper 异构图, binary/triplet × amount=1/2 × batch_size=1/2;
+    验证 edge_label_index src ∈ author.n_id, dst ∈ paper.n_id
+
+- **Bug 根因**:
+  旧代码 `neg_sample()` 中 `vertices = cupy.arange(src_weight.numel())` 生成
+  从0开始的本地ID序列, 完全忽略异构图中每种节点类型的全局偏移 `_vertex_offsets`。
+  后果: paper节点（全局ID从4开始）被以 [0,5] 范围采样, 实际命中的是 author 节点的ID空间,
+  pylibcugraph 收到的候选集包含错误类型的全局ID → 负样本被选到不存在的/错误类型的节点上。
+  同理 triplet 分支直接 `cat(src, dst_neg)` 将不同类型张量拼接, embedding lookup 时
+  用 paper ID 索引 author embedding table → 越界或静默语义错误。
+
+### Walpurgis 迁移位置
+
+**文件: `src/walpurgis/models/neg_sampler.py`** — 新增
+
+**迁移要点**:
+- `NegSamplingWeights`: 值对象, 携带 (src_weight, dst_weight, vertices, dtype, offset_applied, type_mismatch),
+  替代 Python neg_sample() 中三变量 interleaved 原地修改模式
+- `NegSamplingVertexMask`: 静态类, 4个命名方法 + `build()` 分发,
+  封装 8b3b67f 的完整 vertices/bias 构建逻辑 (Python 是内联 if/elif/else 树)
+- `WalpurgisNegSampleConfig`: 配置对象, 携带 `is_hetero / type_mismatch / is_binary / is_triplet`
+  派生属性 + `compute_num_neg()` 方法
+- `TripletSrcRepair`: 封装 sampler.py triplet src 修复逻辑 + `validate_src_purity()` 断言
+- `neg_sample_walpurgis()`: 顶层入口函数, 无 torch/cupy 依赖 (纯配置+掩码层)
+- `test_hetero_negative_sampling_vertex_purity()`: 自检函数, 对应 8b3b67f 测试的核心断言
+
+**改写20%（鲁迅拿法）**:
+- `NegSamplingWeights` 值对象替代 Python 三变量分散赋值模式
+- `NegSamplingVertexMask._build_hetero_type_mismatch / _build_hetero_same_type /
+  _build_homo_unweighted / _build_homo_weighted` 4个命名方法
+  替代 Python 单个 neg_sample() 函数内的 if/elif/else 内联树
+- `TripletSrcRepair.validate_src_purity()` 新增验证方法 (Python 测试侧 assert,
+  我们提取为运行时可选断言)
+- `WalpurgisNegSampleConfig.type_mismatch / is_hetero` 派生属性明示分支决策
+  (Python 是内联 `if input_type[0] != input_type[2]`, 每次重新比较)
+- 全链路11个 `WALPURGIS_DEBUG=1` 断点 print, 覆盖:
+  build()入口 → dtype决策 → hetero/homo分支 → vertices构建 → zero-pad宽度 →
+  TripletSrcRepair per索引分布 → 最终 vertices/weight 摘要
+
 ## migrate 7ea1138: [BUG] Fix Weights Issue in Negative Sampling
 
 - **Upstream commit**: 7ea1138 (cugraph-gnn, alexbarghi-nv, 2026-04-08, PR #447)
@@ -58,6 +118,49 @@
 ### 质量审查（Knuth 标准）
 
 **1. diff 对比源**
+
+| 上游 8b3b67f | Walpurgis 迁移 |
+|---|---|
+| `neg_sample(graph_store, seed_src, seed_dst, input_type, ...)` 新增 `input_type` | `WalpurgisNegSampleConfig(input_type=...)` + `neg_sample_walpurgis(config, ...)` |
+| `num_src_nodes = graph_store._num_vertices()[input_type[0]]` | `config.num_src_nodes` (调用方传入, 无 graph_store 依赖) |
+| `src_weight = torch.ones(num_src_nodes, ...)` (None→全1) | `NegSamplingVertexMask.build()` 内 None 填充逻辑 |
+| `dtype 一致性 raise ValueError` | `neg_sample_walpurgis()` 内相同检查 |
+| `vertices = concat(arange(src)+off_src, arange(dst)+off_dst)` | `_build_hetero_type_mismatch()` 对应实现 |
+| `src_weight = concat([sw, zeros(dst)])` (掩码) | `_build_hetero_type_mismatch()` `src_weight_ext` |
+| `dst_weight = concat([zeros(src), dw])` (掩码) | `_build_hetero_type_mismatch()` `dst_weight_ext` |
+| triplet: `per = randint(0, scu.numel(), (dst_neg.numel(),))`; `neg_cat(scu, scu[per], ...)` | `TripletSrcRepair.repair(src_ids, dst_neg_count)` |
+| test: `assert isin(src_nodes, arange(len(author_n_ids)))` | `TripletSrcRepair.validate_src_purity()` + `test_hetero_negative_sampling_vertex_purity()` |
+| `vertices=None if vertices is None else cupy.asarray(vertices)` | `weights.vertices` (None or list, 调用方转 cupy) |
+
+**2. 用户角度 bug 排查**
+
+- **Bug 1 (错误节点类型入负样本)**: 旧代码 `vertices=cupy.arange(src_weight.numel())` 在
+  异构图中生成 [0, num_src) 范围, 完全忽略 `_vertex_offsets`。例如 author=4节点、paper=6节点,
+  paper的全局ID应为 [4,9], 旧代码却从 [0,5] 采样 → author ID 混入 dst 负样本。
+  `WALPURGIS_DEBUG=1` 打印 `off_src/off_dst` + `vertices concat范围`, 用户可立即看到是否正确偏移。
+- **Bug 2 (triplet src类型污染)**: 旧代码 `neg_cat(src, dst_neg, ...)` 将 paper ID 直接并入
+  author 张量。下游 embedding lookup 用这些 ID 索引 author embedding table → 越界或语义错误。
+  `TripletSrcRepair.validate_src_purity()` + `WALPURGIS_DEBUG=1` 打印 `invalid_count`,
+  用户可确认修复是否生效。
+- **Bug 3 (二元采样权重dtype不一致)**: 若用户分别传 float32 src_weight + float64 dst_weight,
+  pylibcugraph 内部 bias 计算可能静默截断。8b3b67f 新增 dtype 一致性 raise;
+  Walpurgis 同样检查并打印 `src_dtype / dst_dtype`。
+
+**3. 系统角度内存并发安全**
+
+- `NegSamplingWeights` 构造后字段不可变 (无 setter), 多线程读安全。Python 的
+  `src_weight / dst_weight / vertices` 局部变量原地修改 (`src_weight = concat(...)`) 在
+  同函数内是单线程安全的; 我们的封装同等安全, 且防止调用方意外写穿。
+- `NegSamplingVertexMask.build()` 是纯函数 (无共享可变状态), 可安全并发调用。
+  Python `neg_sample()` 同样是纯函数 (无 side effect)。
+- `TripletSrcRepair.repair()` 接受 `rng` 参数 (改写: Python 用 `torch.randint` 的
+  全局 CUDA RNG)。若多线程共享同一 rng 对象需外部加锁; Python 的 `torch.randint` 在 CUDA
+  上有内部锁, 行为等价。调用方应为每个 worker 传独立 rng 以避免竞争。
+- `WalpurgisNegSampleConfig` 构造后不可变, 跨进程/线程复制安全
+  (同 `TemporalSamplerSession` 的线程安全语义)。
+- **性能**: `NegSamplingVertexMask.build()` 使用 Python list, 实际 CUDA 路径须转换为
+  `cupy.asarray(weights.vertices)` (调用方负责); 转换代价 O(N), 与 Python 的
+  `torch.concat + cupy.asarray` 等量。断点 print 均在 `_DBG` 门控下, production 零开销。
 
 | 上游 7ea1138 | Walpurgis 迁移 |
 |---|---|
