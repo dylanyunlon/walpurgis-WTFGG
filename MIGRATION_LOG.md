@@ -2067,3 +2067,73 @@ make_temporal_session_from_loader_args()  # 便利builder对应NeighborLoader.__
   `get_buffer_fields.__getbuffer__` 视图获取 →
   `release_buffer.__releasebuffer__` 策略选择 →
   `ObjDoubleDecrefBug.simulate` 引用计数路径演示
+
+---
+
+## migrate 5baac8b: [BUG] Fix bug with drop_last when mod is 0
+
+**上游 commit**: `5baac8b`
+**上游描述**: [BUG] Fix bug with drop_last when mod is 0
+**影响文件**:
+- `python/cugraph-pyg/cugraph_pyg/loader/node_loader.py`
+- `python/cugraph-pyg/cugraph_pyg/loader/link_loader.py`
+
+### Bug 根因
+
+`NodeLoader.__iter__` 与 `LinkLoader.__iter__` 中，`drop_last=True` 时执行:
+
+```python
+d = perm.numel() % self.__batch_size
+perm = perm[:-d]    # BUG: d==0 时 perm[:-0] == perm[:0] => 空 tensor
+```
+
+Python 中 `-0 == 0`，`perm[:-0]` 等价于 `perm[:0]`，返回空 tensor。
+当训练集大小恰好整除 batch_size 时（极常见场景），所有样本静默丢失，
+训练跑零步，loss 不更新，无任何报错。
+
+### 上游修复（2 行）
+
+```python
+d = perm.numel() % self.__batch_size
+if d > 0:           # 整除时 d==0，跳过切片，保留完整 perm
+    perm = perm[:-d]
+```
+
+### Walpurgis 迁移位置
+
+**文件: `src/walpurgis/dataloader/edge_label_deoffset.py`** — 新增 `PermDropLastSlicer` 类
+
+### 迁移要点
+
+- `PermDropLastSlicer`: 封装 5baac8b 修复为独立可测试类
+  - `__init__(batch_size)`: 预存 batch_size，校验 > 0
+  - `apply(perm, drop_last)`: 纯函数语义，d==0 跳过切片，d>0 裁尾
+  - NodeLoader 与 LinkLoader 共享同一实现，消除上游两处重复代码
+
+### 改写20%（鲁迅拿法）
+
+- 上游: 2 文件各一处裸 if 条件，逻辑相同但分散
+- Walpurgis: 提取为 `PermDropLastSlicer.apply()`，单一职责，独立测试
+- `__init__` 校验 batch_size > 0，防止 d 计算出现除零静默行为
+
+### 调试断点 (WALPURGIS_DEBUG=1)
+
+1. `PermDropLastSlicer.__init__`: batch_size 记录
+2. `PermDropLastSlicer.apply` 入口: perm.numel(), batch_size, d 值
+3. `PermDropLastSlicer.apply` 决策: skip（d==0）或 slice（d>0）
+4. `PermDropLastSlicer.apply` 出口: 裁剪后 perm.numel()
+
+### Knuth 审查
+
+1. **diff 对比源**: 上游两处 `perm = perm[:-d]` 改为 `if d > 0: perm = perm[:-d]`，
+   改动最小，语义精确。Walpurgis 封装消除重复，保持与上游修复等价。
+
+2. **用户角度 bug**: 整除场景（1024 样本 / batch_size=32 等）
+   静默产生空迭代器，train_loop 跑零步，无报错无 warning，
+   用户只能靠 loss 曲线异常或 acc=nan 来猜测根因，极难排查。
+
+3. **系统角度安全**: 空 perm 导致后续 `input_id[perm]`、`node[perm]` 均为空 tensor；
+   进入 CUDA 采样 kernel 时 grid_size=0 行为未定义；
+   分布式场景各 rank perm 长度不一致，allreduce shape mismatch
+   直接崩溃 NCCL，且错误信息指向 collective 而非根因 `perm[:-0]`。
+

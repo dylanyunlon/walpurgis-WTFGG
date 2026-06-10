@@ -1,17 +1,27 @@
 """
 边标签索引去偏移修正模块
 migrate 7c2907f: [BUG] Correct De-Offset of Edge Label Index
+migrate 5baac8b: [BUG] Fix bug with drop_last when mod is 0
 
 上游: cugraph-gnn / python/cugraph-pyg/cugraph_pyg/{loader,sampler}
 作者: Alex Barghi (alexbarghi-nv)
 
-Bug 根因:
+Bug 根因 (7c2907f):
   HeterogeneousSampleReader.__decode_coo 中 edge_inverse 携带全局节点 offset。
   旧代码以 integer_input_type 索引 __vertex_offsets 做固定减法——
   当 src_type != dst_type 时两侧节点分属不同 offset 段，
   用同一套 __vertex_offsets 做减法，方向与量级均错误。
   修复: 不再依赖全局 offset 表，改用词典序比较边两端节点类型名，
   按 minibatch 内实际位置 (max+1) 动态去偏移。
+
+Bug 根因 (5baac8b):
+  NodeLoader / LinkLoader 的 __iter__ 中，drop_last=True 时执行:
+      d = perm.numel() % self.__batch_size
+      perm = perm[:-d]
+  当 perm.numel() 恰好整除 batch_size 时，d == 0，
+  Python 负索引 perm[:-0] 等价于 perm[:0]，返回空 tensor——
+  训练集恰好被整除时，一批数据都不迭代，静默丢失全部样本。
+  修复: 加 if d > 0 保护，d==0 时跳过切片，保留完整 perm。
 
 鲁迅拿法改写20%:
   - EdgeInverseBundle: 值对象，携带 (src, dst, input_type) 三元组，
@@ -22,6 +32,8 @@ Bug 根因:
   - InputTensorGuard: 封装 detach().clone() + drop_last 校验，
     对应 link_loader.py / node_loader.py 两处修复
   - HomoEdgeInverseView: 封装 view(2, -1) 提前赋值，对应 HomogeneousSampleReader 修复
+  - PermDropLastSlicer: 封装 5baac8b 修复——drop_last 时对 perm 的安全裁剪，
+    d==0 时不做切片，替代上游 NodeLoader/LinkLoader.__iter__ 裸条件
 
 调试断点: 设 WALPURGIS_DEBUG=1 激活全链路 print
   1. InputTensorGuard.__init__ 入口
@@ -29,6 +41,7 @@ Bug 根因:
   3. HeteroEdgeLabelDeoffset.apply 入口 + 词典序判断
   4. HomoEdgeInverseView.apply 入口
   5. build_deoffset_session 工厂函数出口
+  6. PermDropLastSlicer.apply 入口 + d 值 + 裁剪决策
 """
 
 import os
@@ -348,3 +361,129 @@ def build_deoffset_session(
         )
 
     return session
+
+
+# ─────────────────────────────────────────────
+# 7. perm 裁剪守卫: drop_last mod==0 安全切片
+# ─────────────────────────────────────────────
+
+class PermDropLastSlicer:
+    """
+    5baac8b 核心修复: drop_last 模式下对排列张量 perm 的安全裁剪。
+
+    上游旧代码 (NodeLoader / LinkLoader 各一处，共两处，逻辑相同):
+
+        if self.__drop_last:
+            d = perm.numel() % self.__batch_size
+            perm = perm[:-d]          # BUG: d==0 时等价于 perm[:0] => 空 tensor
+
+    Python 负索引语义:
+        perm[:-d]  当 d > 0 时，从末尾丢弃 d 个元素 —— 正确
+        perm[:-0]  Python 中 -0 == 0，等价于 perm[:0]  —— 返回空 tensor
+
+    后果:
+        当样本总数恰好整除 batch_size（例如 1024 样本 / batch_size=32），
+        d == 0，所有 batch 迭代消失，训练/推理静默跑零步，
+        loss 不更新，用户毫无提示，极难排查。
+
+    修复后 (5baac8b):
+
+        if self.__drop_last:
+            d = perm.numel() % self.__batch_size
+            if d > 0:                 # 整除时 d==0，跳过切片，保留完整 perm
+                perm = perm[:-d]
+
+    Walpurgis 改写:
+        封装为独立可测试类。apply() 是纯函数语义（无 in-place），
+        返回新 tensor（整除时原地引用，d>0 时切片副本）。
+        NodeLoader 与 LinkLoader 共享同一实现，消除重复。
+
+    调试断点 (WALPURGIS_DEBUG=1):
+        - 入口: perm.numel(), batch_size, d 值
+        - 决策: skip (d==0, 整除) 或 slice (d>0, 丢弃尾部 d 个)
+        - 出口: 裁剪后 perm.numel()
+
+    Knuth 审查备注:
+        1. diff 对比源:
+           上游两文件 (node_loader.py L138-140, link_loader.py L188-190) 各有一处
+           相同的单行 `perm = perm[:-d]`，修复统一为 `if d > 0` 保护。
+           Walpurgis 在此统一封装，避免未来出现第三处遗漏。
+
+        2. 用户角度 bug:
+           整除场景（如数据集大小是 batch_size 的整数倍）静默产生空迭代器，
+           train_loop 跑零步，但不报错、不打 warning，
+           用户只能靠 epoch loss 突然消失或 acc=nan 来猜测原因。
+
+        3. 系统角度安全:
+           空 perm 导致后续 input_id[perm] / node[perm] 均为空 tensor，
+           进入采样器时可能触发 CUDA kernel 的 grid_size=0 路径，
+           部分 GPU 驱动版本对此未做保护，行为未定义；
+           分布式场景下各 rank perm 长度不一致，allreduce shape mismatch
+           会直接崩溃 NCCL，且错误信息指向 collective 而非根因。
+    """
+
+    def __init__(self, batch_size: int):
+        if batch_size <= 0:
+            raise ValueError(
+                f"[PermDropLastSlicer] batch_size 须 > 0，实际: {batch_size}"
+            )
+        self.batch_size = batch_size
+
+        if _DBG:
+            print(
+                f"[WALPURGIS:PermDropLastSlicer.__init__] batch_size={batch_size}",
+                file=sys.stderr,
+            )
+
+    def apply(self, perm: torch.Tensor, drop_last: bool) -> torch.Tensor:
+        """
+        对排列张量 perm 执行 drop_last 裁剪。
+
+        Args:
+            perm: 1-D 索引排列张量，由 torch.randperm 或 torch.arange 生成。
+            drop_last: 是否丢弃无法凑成完整 batch 的尾部样本。
+
+        Returns:
+            裁剪后的 perm tensor（d==0 时返回原 tensor，d>0 时返回切片）。
+        """
+        if not drop_last:
+            if _DBG:
+                print(
+                    f"[WALPURGIS:PermDropLastSlicer.apply] "
+                    f"drop_last=False，跳过裁剪，perm.numel()={perm.numel()}",
+                    file=sys.stderr,
+                )
+            return perm
+
+        d = perm.numel() % self.batch_size
+
+        if _DBG:
+            print(
+                f"[WALPURGIS:PermDropLastSlicer.apply] "
+                f"perm.numel()={perm.numel()} batch_size={self.batch_size} "
+                f"d={d}",
+                file=sys.stderr,
+            )
+
+        # 5baac8b 修复核心: d==0 表示整除，无需裁剪；
+        # 直接 perm[:-0] 等价于 perm[:0] (空 tensor)，故必须保护
+        if d == 0:
+            if _DBG:
+                print(
+                    f"[WALPURGIS:PermDropLastSlicer.apply] "
+                    f"d==0 整除，跳过切片，perm 保持完整 numel={perm.numel()}",
+                    file=sys.stderr,
+                )
+            return perm
+
+        # d > 0: 丢弃尾部 d 个多余样本，确保每个 batch 恰好 batch_size 个
+        sliced = perm[:-d]
+
+        if _DBG:
+            print(
+                f"[WALPURGIS:PermDropLastSlicer.apply] "
+                f"d={d} > 0，裁剪尾部，裁剪后 perm.numel()={sliced.numel()}",
+                file=sys.stderr,
+            )
+
+        return sliced
