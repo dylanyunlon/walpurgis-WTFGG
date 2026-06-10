@@ -28,12 +28,18 @@ _dbg_import(">>> sampler 子包开始加载")
 
 from .sampler import BaseSampler, SampleIterator
 from .distributed_sampler import DistributedNeighborSampler, BaseDistributedSampler
+from .sampling_csc_helpers import (
+    create_homogeneous_sampled_graphs_from_dataframe_csc,
+    _process_sampled_df_csc,
+    _create_homogeneous_sparse_graphs_from_csc,
+)
 
 _dbg_import(
     f"<<< sampler 子包加载完毕 | "
     f"符号: BaseSampler={BaseSampler.__module__}, "
     f"DistributedNeighborSampler={DistributedNeighborSampler.__module__}, "
-    f"BaseDistributedSampler={BaseDistributedSampler.__module__}"
+    f"BaseDistributedSampler={BaseDistributedSampler.__module__}, "
+    f"create_homogeneous_sampled_graphs_from_dataframe_csc 已加载"
 )
 
 __all__ = [
@@ -41,4 +47,7 @@ __all__ = [
     "SampleIterator",
     "DistributedNeighborSampler",
     "BaseDistributedSampler",
+    "create_homogeneous_sampled_graphs_from_dataframe_csc",
+    "_process_sampled_df_csc",
+    "_create_homogeneous_sparse_graphs_from_csc",
 ]

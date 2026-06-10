@@ -30,12 +30,14 @@ _dbg_import(">>> tensor 子包开始加载")
 from walpurgis.tensor.dist_tensor import DistTensor, DistEmbedding
 from walpurgis.tensor.dist_matrix import DistMatrix
 from walpurgis.tensor.utils import is_empty, empty
+from walpurgis.tensor.sparse_graph import SparseGraph, compress_ids, decompress_ids
 
 _dbg_import(
     f"<<< tensor 子包加载完毕 | "
     f"符号: DistTensor={DistTensor.__module__}, "
     f"DistMatrix={DistMatrix.__module__}, "
-    f"is_empty={is_empty.__module__}"
+    f"is_empty={is_empty.__module__}, "
+    f"SparseGraph={SparseGraph.__module__}"
 )
 
 __all__ = [
@@ -44,4 +46,7 @@ __all__ = [
     "DistMatrix",
     "is_empty",
     "empty",
+    "SparseGraph",
+    "compress_ids",
+    "decompress_ids",
 ]
