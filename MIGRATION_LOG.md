@@ -1,4 +1,63 @@
 
+## migrate b25bc88: Support Disjoint Sampling in cuGraph-PyG
+
+- **Upstream commit**: b25bc88 (cugraph-gnn, NVIDIA, 2026-05-22)
+- **Commit message**: `[FEA] Support Disjoint Sampling in cuGraph-PyG`
+- **Upstream diff** (4 files changed, 174 insertions, 10 deletions):
+  - `neighbor_loader.py` + `link_neighbor_loader.py`: 删除 docstring "Currently unsupported." + 删除 `if disjoint: raise ValueError("Disjoint sampling is currently unsupported")` + 新增 `disjoint=disjoint` 传入 `DistributedNeighborSampler`
+  - `distributed_sampler.py`: `__init__` 新增 `disjoint: bool = False`; `sample_kwargs` dict 新增 `"disjoint_sampling": disjoint`; `__calc_local_seeds_per_call` 新增 `disjoint: bool = False` 参数 + 所有参数改为 keyword-only (`*`); 修正 bucket 顺序 bug（`unknown_fanout` 检查从 `heterogeneous` 规范化之前移到之后）; `disjoint=True` 时 `fanout_prod *= fanout[0]`（per-seed 不去重，内存放大）
+  - `tests/loader/test_neighbor_loader.py`: 新增 `test_link_neighbor_loader_disjoint`、`test_neighbor_loader_disjoint`、`test_neighbor_loader_disjoint_batch_structure` 三个测试（验证 per-seed 子图互不相交）
+
+- **Bug 根因（两个）**:
+  1. **disjoint 不可用**: `if disjoint: raise ValueError` 硬拦截了所有 disjoint=True 请求，即使底层 pylibcugraph 已支持
+  2. **内存估算 bucket 顺序错误**: `heterogeneous` 采样时，`unknown_fanout` 检查在规范化之前，导致 `fanout` 含 `<=0` 值时提前返回 `UNKNOWN_VERTICES_DEFAULT`，跳过 heterogeneous 规范化路径
+
+### Walpurgis 迁移位置
+
+**文件: `src/walpurgis/models/disjoint_sampler.py`** — 新增
+
+**迁移要点**:
+- `DisjointSamplingConfig`: 封装 `sample_kwargs` 构建 (对应 `distributed_sampler.py` `__init__` 的 dict 初始化)
+- `DisjointMemoryEstimator`: 封装 `__calc_local_seeds_per_call` 逻辑，含 b25bc88 bucket 顺序修正 + disjoint 放大
+- `WalpurgisDisjointSession`: 封装 disjoint 采样完整配置，含内存估算 + 验证
+- `validate_disjoint_batches()`: 可复用的 per-seed 子图互不相交验证器（对应 test 中内联逻辑）
+
+**改写20%（鲁迅拿法）**:
+- `DisjointSamplingConfig` 对象替代 Python `__init__` 中散落的 dict 更新
+- `DisjointMemoryEstimator` 静态类替代 Python instance method（无需构造完整 sampler，可单独测试）
+- `WalpurgisDisjointSession.validate()` soft validation（Python 是 hard raise，我们改写为 warning + bool 返回）
+- `validate_disjoint_batches()` 加 overlap 统计（Python test 仅 assert，无统计）
+- 全链路 `WALPURGIS_DEBUG=1` 断点 print
+
+### 质量审查（Knuth 标准）
+
+**1. diff 对比源**
+
+| 上游 b25bc88 | Walpurgis 迁移 |
+|---|---|
+| `neighbor_loader.py`: 删 `if disjoint: raise ValueError` | `WalpurgisDisjointSession.__init__` 不 raise，由 `validate()` soft-warn |
+| `distributed_sampler.py`: `sample_kwargs["disjoint_sampling"] = disjoint` | `DisjointSamplingConfig.to_sample_kwargs()` 返回含 `"disjoint_sampling"` 的 dict |
+| `__calc_local_seeds_per_call(*, ..., disjoint, ...)` keyword-only | `DisjointMemoryEstimator.calc_seeds_per_call(fanout, ..., *, ...)` 同为 keyword-only |
+| bucket 顺序: hetero_normalize → unknown_check → fanout_prod | `calc_seeds_per_call` 中同序: normalize → unknown check → prod |
+| `if disjoint: fanout_prod *= fanout[0]` | `if disjoint: fanout_prod *= amplification`（同逻辑，加 debug print） |
+| `super().__init__(local_seeds_per_call=...)` 改为关键字参数 | `calc_seeds_per_call` 内部全部 keyword arg 传递 |
+| 3个新 test: link_disjoint, neighbor_disjoint, batch_structure | `validate_disjoint_batches()` 封装 batch_structure 逻辑 |
+
+**2. 用户角度 bug 排查**
+
+- **Bug 1 (disjoint 静默失效)**: 若 `disjoint_sampling` 未正确传入采样引擎，采样结果会在 cross-seed 去重，用户看到的 `n_id` 数量偏少。`DisjointSamplingConfig.to_sample_kwargs()` 每次打印完整 dict（`WALPURGIS_DEBUG=1`），用户可立即确认 `disjoint_sampling=True` 是否到达底层。
+- **Bug 2 (内存 OOM)**: `disjoint=True` 时内存放大 `fanout[0]` 倍，若用户沿用非 disjoint 的 `local_seeds_per_call`，会 OOM。`DisjointMemoryEstimator` debug print 打印 `fanout_prod * amplification`，明示放大量。
+- **Bug 3 (hetero bucket 顺序)**: 旧代码 `heterogeneous=True` 且 `fanout` 含 `<=0` 时，提前返回 `UNKNOWN_VERTICES_DEFAULT` 而不做规范化。改写后 `normalize_hetero_fanout` 先执行，再检查 unknown，与 b25bc88 修正一致。
+
+**3. 系统角度**
+
+- **类型安全**: `DisjointSamplingConfig.disjoint` 为 `bool`，`to_sample_kwargs()` 强制写入 dict；Python 的 bool→dict 散落在 `__init__` 中，容易被误覆盖。
+- **内存安全**: `DisjointMemoryEstimator.calc_seeds_per_call` 是纯函数，无副作用；`fanout_prod` 在除法前不为零（`any(x<=0)` 已在 prod 前拦截）。`disjoint=True` 且 `fanout[0]<=0` 时 `validate()` 输出 warning，避免除以 0。
+- **并发安全**: `WalpurgisDisjointSession` 是值语义对象，每个 loader worker 应持有自己副本。`validate_disjoint_batches` 是无状态函数，thread-safe。
+- **性能**: `DisjointMemoryEstimator` 估算为 O(len(fanout)) 纯 Python，每次 loader 初始化调用一次，不在热路径。`validate_disjoint_batches` 为 O(B × S² × H)（B=batches, S=seeds/batch, H=hops），仅在 `WALPURGIS_DEBUG=1` 或显式调用时运行。
+
+---
+
 ## migrate 4005ab1: Support Standard Temporal Sampling Behavior
 
 - **Upstream commit**: 4005ab1 (cugraph-gnn, NVIDIA, 2024)
