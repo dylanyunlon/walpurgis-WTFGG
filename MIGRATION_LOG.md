@@ -3144,3 +3144,37 @@ if d > 0:           # 整除时 d==0，跳过切片，保留完整 perm
    - `PropertyGraph` 示例无网络请求、无文件系统写入、无进程间通信——即使迁移该代码也无安全面扩展
 
 **迁移决策**: SKIP — 纯 `readme_pages/property_graph.md` 文档删除，内容依赖 `cugraph.experimental.PropertyGraph` 专有 API 与 `cudf` GPU DataFrame，与 Walpurgis 时空图 GNN 项目技术栈（PyG/DGL + PyTorch + METR-LA 数据集）完全不匹配；Walpurgis 无 `readme_pages/` 目录结构，无任何可迁移内容，无需创建或删除任何文件
+
+## migrate e9eee19: remove pylibcugraph page
+
+- **Upstream commit**: e9eee19 (cugraph-gnn, NVIDIA)
+- **Commit message**: `remove pylibcugraph page'`
+- **Author**: Alexandria Barghi <abarghi@nvidia.com>
+- **Date**: 2024-06-11
+
+- **Upstream diff** (1 文件删除):
+  - `readme_pages/pylibcugraph.md` — 删除，25 行：
+    - cuGraph logo + 标题
+    - 说明 pylibcugraph 是 cuGraph C API 的 Python 包装器，面向集成者而非终端用户/数据科学家
+    - 描述与 cython 深度集成以减少 Python 层开销
+    - Louvain 算法调用示例（`pylibcugraph.SGGraph` + `cupy` 构建图 → `pylibcugraph.louvain(...)` → 返回 `(vertices, clusters, modularity)`）
+
+**Knuth 审查**:
+1. **diff 对比源**:
+   | 上游 e9eee19 `readme_pages/pylibcugraph.md` | Walpurgis 现有结构 |
+   |---|---|
+   | `readme_pages/` 子页面文档，介绍 pylibcugraph C API Python 封装 | Walpurgis 无 `readme_pages/` 目录，项目无子页面文档体系 |
+   | 演示 `pylibcugraph.SGGraph` + `pylibcugraph.louvain` 直接调用 | Walpurgis 虽在采样层间接依赖 pylibcugraph，但无此直接调用路径，且无 Louvain 使用场景 |
+   | 图片引用 `../img/cugraph_logo_2.png` | Walpurgis 无 `img/` 目录，引用路径在 Walpurgis 下直接 404 |
+   | 内容面向 RAPIDS cuGraph 集成者，讲解 cython 绑定架构 | Walpurgis 是时空图 GNN 研究项目（METR-LA 交通预测），无文档站点，无集成者受众 |
+
+2. **用户角度 bug**:
+   - 代码示例 `pylibcugraph.louvain(resource_handle, G, 100, 1., False)` 中第 3-5 参数（`max_level=100`、`threshold=1.`、`resolution_param=False`）最后一个参数传入布尔值 `False` 给本应为 float 型的 `resolution_param`，属于上游文档示例 bug；随文件删除消除
+   - `store_transposed=True` 但 Louvain 需要对称图，转置对无向图无影响但对有向图静默改变语义——上游文档未说明此约束，删除后不再误导用户
+
+3. **系统角度安全**:
+   - 纯 Markdown 文档删除，无运行时代码，无安全影响
+   - 代码示例无硬编码密钥、token、凭证或危险系统调用
+   - 此 commit 属于与 `fc5c0e6`（property_graph.md 删除）同批次的 `readme_pages/` 文档清理，模式一致：整个 `readme_pages/` 目录逐步移除
+
+**迁移决策**: SKIP — 纯 `readme_pages/pylibcugraph.md` 文档删除；Walpurgis 无 `readme_pages/` 目录结构，无任何可迁移或可删除内容；pylibcugraph 文档面向 RAPIDS cuGraph 集成者受众，与 Walpurgis 时空图 GNN 项目（PyG + PyTorch + METR-LA）技术栈及使用场景完全不匹配；强行创建再删除将制造纯噪音 commit，无任何工程价值
