@@ -2991,3 +2991,47 @@ if d > 0:           # 整除时 d==0，跳过切片，保留完整 perm
 3. **系统安全**: `.pyc` 文件头部嵌有编译时绝对路径（开发者本机路径/用户名），入库属轻微信息泄露；此 commit 正确清除，安全性略有提升
 
 **迁移决策**: SKIP — 纯 `__pycache__` 清理，Walpurgis 项目无此类缓存文件入库问题，无任何可迁移内容
+
+## migrate 62d487d: [SKIP] copy gitignore — 上游基础设施产物，与 Walpurgis 项目无关
+
+**上游 commit**: `62d487d` (Alexandria Barghi, abarghi@nvidia.com)
+**上游描述**: copy gitignore
+
+**diff 分析**:
+- 变更范围: 1 个文件，107 行新增，0 行删除
+- 全部位于 `.gitignore`，为 cugraph-gnn 仓库第一个 commit（从 `/dev/null` 新建）
+- 内容来自 RAPIDS cugraph 主仓库 `.gitignore`，面向 C++/Python 混合构建体系：
+  1. **C++ 构建产物**: `CMakeFiles/`、`cpp/build/`、`*.a`/`*.o`/`*.so`/`*.dylib`、IPC 生成头文件
+  2. **Python 构建产物**: `_skbuild/`、`pylibcugraph.egg-info`、`python/cugraph/bindings/*.cpp`、`dask-worker-space/`
+  3. **文档产物**: `docs/cugraph/lib*`、`docs/cugraph/api/*`、`cpp/doxygen/html`
+  4. **数据集白名单**: `datasets/*` + `!datasets/cyber.csv` 等 5 个例外（cugraph 专属数据集名）
+  5. **IDE/OS 通用**: `.vscode`、`.idea/`、`.DS_Store`、`*.swp` 等
+
+**Knuth 审查**:
+1. **diff 对比源**:
+   | 上游 62d487d `.gitignore` | Walpurgis 现有 `.gitignore` |
+   |---|---|
+   | 包含 `CMakeFiles/`、`cpp/build/`、`*.dylib`（C++ 构建产物）| Walpurgis 纯 Python 项目，无 CMake/C++ 构建，这些规则全部无效 |
+   | 包含 `python/cugraph/bindings/*.cpp`、`pylibcugraph.egg-info`（cugraph 专属路径）| Walpurgis 无 `cugraph` 子包路径，规则永远不会匹配 |
+   | `datasets/*` + 白名单仅含 cugraph 专属 CSV（`cyber.csv`、`karate-data.csv`）| Walpurgis 有 `!datasets/sensor_graph/*.pkl`、`!datasets/SYNTH/*.pkl` 例外，覆盖真实数据集文件 |
+   | 无 `*.pt`/`*.pth`/`*.pkl`/`*.h5` 等 ML 模型/数据规则 | Walpurgis 已有完整模型检查点 + 大数据文件忽略规则 |
+   | 无 `submodel_*.txt`、`.claude-hk-config`（Walpurgis 运行产物）| 已在 Walpurgis `.gitignore` 中覆盖 |
+
+2. **用户角度 bug**:
+   - 若直接合并上游 `.gitignore`，`datasets/*` 规则覆盖 Walpurgis 现有白名单；
+     `!datasets/sensor_graph/*.pkl` 例外需在新文件中重复声明，否则 `.pkl` 传感器图文件将被意外忽略，
+     导致 `git status` 不显示这些关键数据文件的变更，调试数据版本问题时极难发现
+   - 上游白名单 `!datasets/cyber.csv` 等 5 个文件名在 Walpurgis 项目中不存在，
+     这些例外规则形同噪音，增加未来维护者的认知负担
+   - `*.diff`/`*.orig`/`*.rej`（Patching 分类）在 Walpurgis 迁移工作流中 `.diff` 文件有时需要暂存检查，
+     若合并上游规则会导致迁移 patch 文件被 git 忽略，污染迁移工作流
+
+3. **系统角度安全**:
+   - 纯 `.gitignore` 配置，无运行时代码，无安全影响
+   - 唯一潜在风险：若合并后 `.gitignore` 规则冲突导致敏感文件（如含 API key 的配置文件）
+     意外不被忽略而提交入库——但 Walpurgis 现有规则已覆盖 `.claude-hk-config`，风险低
+
+**迁移决策**: SKIP — 上游 `.gitignore` 是 RAPIDS cugraph C++/GPU 全栈基础设施的历史产物，
+与 Walpurgis 纯 Python GNN 研究项目技术栈完全不匹配。Walpurgis 已有针对自身项目特征
+（ML 模型检查点、传感器图数据集、实验日志、迁移工具产物）精心设计的 `.gitignore`，
+强行合并上游规则只会引入无效噪音并破坏现有数据集白名单逻辑。无任何可迁移内容。
