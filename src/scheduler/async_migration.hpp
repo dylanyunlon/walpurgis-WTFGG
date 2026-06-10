@@ -388,11 +388,30 @@ public:
         //   float16: 2 bytes/elem — 2× more elements per cache line
         //   bfloat16: 2 bytes/elem — same as float16, wider dynamic range
         //
-        // We track bytes by dtype to expose per-precision migration cost.
-        // Print-debug: Stats::print() now breaks out bytes by dtype.
+        // ── 220563b migration: bf16 as explicit first-class dtype ────────────
+        // 220563b "Explicitly support bf16 in feature store" completed the dtype
+        // registry so that bfloat16 is no longer missing from the encode/decode table.
+        // Before 220563b, bf16 tensors stored in the feature store would fail at
+        // lookup time (KeyError: torch.bfloat16 not in dtypes dict).
+        //
+        // Impact on async_migration.hpp:
+        //   - bytes_bfloat16 counter was already tracking bf16 migrations (b58ea19),
+        //     but the WIRE ID used to tag these migrations was undefined (since the
+        //     feature_store.py registry was incomplete).
+        //   - After 220563b, wire_id=7 is the canonical identifier for bf16 in
+        //     IPC/serialization paths.  Migrations carrying bf16 partitions can now
+        //     be tagged and audited end-to-end: allocator → feature_store → loader.
+        //   - record_dtype_bytes(dtype=2, nb) corresponds to bfloat16 (wire_id=7).
+        //     The dtype=2 code maps to EmbeddingDtype::BF16 in tiered_allocator.hpp.
+        //
+        // 断点调试: Stats::print() breaks out bytes by dtype so bf16 migration
+        // volume is visible separately from fp16 — important because bf16 has
+        // the same element_size as fp16 but different numerical behavior in the
+        // optimizer (Adam momentum accumulation is more stable with bf16's wider
+        // exponent range on Ampere+ hardware).
         std::atomic<uint64_t> bytes_float32{0};
         std::atomic<uint64_t> bytes_float16{0};
-        std::atomic<uint64_t> bytes_bfloat16{0};
+        std::atomic<uint64_t> bytes_bfloat16{0};  // 220563b: bf16 now wire_id=7
 
         void print() const {
             uint64_t c = completed.load();

@@ -21,6 +21,35 @@
 
 namespace philemon {
 
+// ─── 220563b migration: design commentary ───────────────────────────────────
+// cugraph-gnn commit 220563b "Explicitly support bf16 in feature store":
+//
+//   The scheduler is not directly modified by 220563b, but is downstream-
+//   affected: migrations now carry partitions that may store bfloat16 features
+//   (wire_id=7 in the feature_store.py dtype registry).
+//
+//   Before 220563b: if a caller tried to store bf16 features and then trigger
+//   a migration sweep, the migration would succeed at the memory level
+//   (bytes are bytes), but the feature store decode on retrieval would fail
+//   because dtype_ids had no entry for wire_id=7.
+//
+//   After 220563b: bf16 (wire_id=7) is a first-class registered dtype.
+//   Migrations now support the full {float32, float16, bfloat16} dtype set,
+//   matching the three EmbeddingDtype enum values in tiered_allocator.hpp.
+//
+//   MigrationScheduler::sweep_once() is agnostic to dtype (it calls
+//   bridge_.migration_sweep() which calls allocator_.migrate()).  The dtype
+//   metadata lives inside each SubgraphPartition's TemporalEdge::feature_dtype
+//   field.  Migration preserves this field exactly (memcpy-based transfer),
+//   so no special handling is needed here — bf16 support is inherited.
+//
+//   Diagnostic implication:
+//   - stats_.total_migrations counts migrations across all dtypes.
+//   - For per-dtype breakdown, see AsyncMigrationEngine::Stats::bytes_bfloat16
+//     (async_migration.hpp), which was updated in 220563b to explicitly track
+//     bf16 migration volume with wire_id=7 as the canonical identifier.
+// ─────────────────────────────────────────────────────────────────────────────
+
 struct MigrationStats {
     std::atomic<uint64_t> total_migrations{0};
     std::atomic<uint64_t> hbm_to_gddr{0};

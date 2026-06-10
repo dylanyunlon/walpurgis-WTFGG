@@ -356,6 +356,153 @@ inline int embedding_dtype_align_count(EmbeddingDtype dt) {
     return static_cast<int>(16 / embedding_dtype_element_size(dt));
 }
 
+// ─── 220563b migration: EmbeddingDtype bidirectional ID registry ─────────────
+//
+// cugraph-gnn commit 220563b "Explicitly support bf16 in feature store":
+//
+//   BEFORE (feature_store.py):
+//     for k, v in [
+//         (torch.int32,   0), (torch.float32, 1), (torch.int64, 2),
+//         (torch.float64, 3), (torch.int16,   4), (torch.float16, 5),
+//         (torch.int8,    6),                     // ← bf16 missing
+//     ]:
+//         dtypes[k] = v
+//         dtype_ids[v] = k
+//
+//   AFTER (220563b):
+//     for k, v in [
+//         ...
+//         (torch.int8,     6),
+//         (torch.bfloat16, 7),                    // ← added
+//     ]:
+//
+// The fix: bfloat16 was simply absent from the dtype↔id table.  Any
+// attempt to store a bf16 tensor in the feature store silently fell
+// through to a missing-key error at runtime, rather than being caught
+// at registration time.
+//
+// Design principle (from the commit):
+//   - Each dtype gets a stable integer ID for serialization / IPC.
+//   - The two-table design (dtype→id AND id→dtype) enables O(1) lookup
+//     in both directions — needed by the loader for encode/decode.
+//   - Adding a new dtype is a one-line change in the registration loop;
+//     the bidirectional structure enforces consistency.
+//
+// Our C++ adaptation:
+//   - EmbeddingDtypeRegistry: mirrors the Python dtypes / dtype_ids pair.
+//   - IDs 0-2 mirror the existing EmbeddingDtype enum values for
+//     forward-compatibility; the registry adds WIRE IDs (uint8_t) that
+//     may differ from enum ordinals for backward-compat reasons.
+//   - lookup_id(dtype) / lookup_dtype(id): bidirectional O(1) lookup.
+//   - register_dtype(): explicit registration call, mirroring the Python
+//     loop. Called once at program init (or by test code).
+//   - BF16 wire ID = 7: matches the Python constant (cugraph_pyg
+//     feature_store.py:dtype_ids[7] == torch.bfloat16).
+//
+// 断点调试: register_dtype() prints each registration so test code can
+// confirm the table is populated before the first allocate() call.
+// lookup_id() prints a WARN on missing dtype so call sites cannot
+// silently proceed with the wrong wire ID.
+
+struct EmbeddingDtypeRegistry {
+    // dtype → wire_id  (encode direction)
+    static constexpr uint8_t INVALID_ID = 0xFF;
+
+    uint8_t dtype_to_id[8];   // indexed by EmbeddingDtype ordinal (0-7)
+    EmbeddingDtype id_to_dtype[8];  // indexed by wire_id
+
+    // 断点调试: track which IDs have been registered
+    bool registered[8];
+
+    EmbeddingDtypeRegistry() {
+        for (int i = 0; i < 8; ++i) {
+            dtype_to_id[i]  = INVALID_ID;
+            id_to_dtype[i]  = EmbeddingDtype::FLOAT;  // sentinel
+            registered[i]   = false;
+        }
+    }
+
+    void register_dtype(EmbeddingDtype dt, uint8_t wire_id) {
+        uint8_t ord = static_cast<uint8_t>(dt);
+        dtype_to_id[ord]       = wire_id;
+        id_to_dtype[wire_id]   = dt;
+        registered[wire_id]    = true;
+        // 断点调试: confirm each registration
+        const char* name = "unknown";
+        switch (dt) {
+            case EmbeddingDtype::FLOAT: name = "float32"; break;
+            case EmbeddingDtype::HALF:  name = "float16"; break;
+            case EmbeddingDtype::BF16:  name = "bfloat16"; break;
+        }
+        fprintf(stderr,
+            "[EmbeddingDtypeRegistry] register: dtype=%s wire_id=%u\n",
+            name, (unsigned)wire_id);
+    }
+
+    // dtype → wire ID  (encode direction, mirrors Python dtypes[k])
+    uint8_t lookup_id(EmbeddingDtype dt) const {
+        uint8_t id = dtype_to_id[static_cast<uint8_t>(dt)];
+        if (id == INVALID_ID) {
+            // 220563b: missing dtype in registry → runtime error is better
+            // than silent corruption. Mirrors Python KeyError on dtypes[k].
+            fprintf(stderr,
+                "[EmbeddingDtypeRegistry] WARN: lookup_id for unregistered dtype=%u\n",
+                (unsigned)dt);
+        }
+        return id;
+    }
+
+    // wire ID → dtype  (decode direction, mirrors Python dtype_ids[v])
+    EmbeddingDtype lookup_dtype(uint8_t wire_id) const {
+        if (wire_id >= 8 || !registered[wire_id]) {
+            fprintf(stderr,
+                "[EmbeddingDtypeRegistry] WARN: lookup_dtype for unknown wire_id=%u\n",
+                (unsigned)wire_id);
+            return EmbeddingDtype::FLOAT;  // safe fallback
+        }
+        return id_to_dtype[wire_id];
+    }
+};
+
+// Singleton registry — call init_embedding_dtype_registry() once at startup.
+// Mirrors the Python module-level loop in feature_store.py that runs at import.
+//
+// Wire ID assignments (matching cugraph_pyg feature_store.py after 220563b):
+//   int32   → 0   float32 → 1   int64  → 2   float64 → 3
+//   int16   → 4   float16 → 5   int8   → 6   bfloat16→ 7  ← 220563b addition
+//
+// We only carry the three trainable float dtypes (FLOAT/HALF/BF16).
+// Non-trainable integer dtypes would need EmbeddingDtype enum extension
+// (see the FORWARD-LOOKING comment on embedding_dtype_is_trainable()).
+inline EmbeddingDtypeRegistry& get_embedding_dtype_registry() {
+    static EmbeddingDtypeRegistry registry;
+    return registry;
+}
+
+// init_embedding_dtype_registry: one-shot setup mirroring feature_store.py loop.
+// 220563b: the key fix is that BF16 wire_id=7 is NOW explicitly registered
+// (it was the missing entry before the patch).
+//
+// Call at program startup or before any feature-store encode/decode:
+//   init_embedding_dtype_registry();
+inline void init_embedding_dtype_registry() {
+    static bool done = false;
+    if (done) return;
+    done = true;
+
+    auto& reg = get_embedding_dtype_registry();
+    // Mirrors the Python loop in feature_store.py after commit 220563b:
+    //   (torch.float32,  1) → EmbeddingDtype::FLOAT  wire_id=1
+    //   (torch.float16,  5) → EmbeddingDtype::HALF   wire_id=5
+    //   (torch.bfloat16, 7) → EmbeddingDtype::BF16   wire_id=7 ← 220563b
+    reg.register_dtype(EmbeddingDtype::FLOAT, 1);  // torch.float32
+    reg.register_dtype(EmbeddingDtype::HALF,  5);  // torch.float16
+    reg.register_dtype(EmbeddingDtype::BF16,  7);  // torch.bfloat16 ← 220563b
+    // 断点调试: dump complete table after init
+    fprintf(stderr,
+        "[EmbeddingDtypeRegistry] init complete: FLOAT→1 HALF→5 BF16→7\n");
+}
+
 enum class MemoryTier : uint8_t {
     HBM   = 0,   // H100 High-Bandwidth Memory (3.35 TB/s)
     GDDR  = 1,   // A6000 GDDR6 (768 GB/s)

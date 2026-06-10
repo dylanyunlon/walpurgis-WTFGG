@@ -214,11 +214,42 @@ static inline int tb_emb_align_count(uint8_t dtype) {
 
 // Print-debug: show dtype dispatch selection for a given feature_dtype.
 // Called during partition scan to confirm correct dispatch path.
+//
+// ── 220563b migration note ───────────────────────────────────────────────────
+// 220563b "Explicitly support bf16 in feature store" completed the dtype
+// coverage by adding bfloat16 to the registration loop.  Before 220563b, the
+// dtype_names array here would only have entries for float32 and float16 —
+// querying with feature_dtype=2 (bf16) would have fallen through to "unknown",
+// silently disabling the dispatch path.
+//
+// Now with 220563b, the complete set is:
+//   dtype=0 → float32  wire_id=1  (align_count=4)
+//   dtype=1 → float16  wire_id=5  (align_count=8)
+//   dtype=2 → bfloat16 wire_id=7  (align_count=8)  ← 220563b addition
+//
+// Wire IDs match cugraph_pyg/data/feature_store.py post-220563b:
+//   dtypes[torch.bfloat16] = 7   dtype_ids[7] = torch.bfloat16
+//
+// This function is the cross-system validation point: if the wire_id printed
+// here does not match the Python feature_store.py registry, a dtype mismatch
+// has been introduced and features will be deserialized incorrectly.
+//
+// 断点调试: wire_id is printed alongside name and align_count so the complete
+// encode/decode identity is visible in a single log line.
 inline void debug_dtype_dispatch(uint8_t feature_dtype, const char* op) {
-    const char* dtype_names[] = {"float32", "float16", "bfloat16"};
-    const char* name = (feature_dtype < 3) ? dtype_names[feature_dtype] : "unknown";
-    printf("[DEBUG b58ea19 dispatch] op=%s feature_dtype=%s align=%d\n",
-           op, name, tb_emb_align_count(feature_dtype));
+    // 220563b: three-entry table — float32/fp16/bf16 all first-class citizens.
+    // bf16 (dtype=2) was the missing entry before the patch.
+    struct DtypeInfo { const char* name; uint8_t wire_id; };
+    static const DtypeInfo info[3] = {
+        {"float32",  1},   // torch.float32  → wire_id=1
+        {"float16",  5},   // torch.float16  → wire_id=5
+        {"bfloat16", 7},   // torch.bfloat16 → wire_id=7 ← 220563b
+    };
+    const char* name    = (feature_dtype < 3) ? info[feature_dtype].name    : "unknown";
+    uint8_t     wire_id = (feature_dtype < 3) ? info[feature_dtype].wire_id : 0xFF;
+    int         align   = tb_emb_align_count(feature_dtype);
+    printf("[DEBUG 220563b dispatch] op=%s feature_dtype=%s wire_id=%u align=%d\n",
+           op, name, (unsigned)wire_id, align);
 }
 }
 

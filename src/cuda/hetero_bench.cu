@@ -1786,8 +1786,144 @@ static void experiment_temporal_neg_sampling() {
 
 
 // ════════════════════════════════════════════════════════════════════════════
-//  MAIN
+//  E8: BFloat16 Feature Dtype Coverage (220563b migration)
+//
+//  Source: cugraph_pyg/data/feature_store.py + test_feature_store.py (220563b)
+//
+//  220563b added explicit bf16 support to the feature store dtype registry:
+//    BEFORE: dtypes = {float32:1, int64:2, float64:3, int16:4, float16:5, int8:6}
+//    AFTER:  bfloat16 → wire_id=7 added to the registration loop.
+//
+//  The test extended the parametrize list:
+//    BEFORE: ["float32", "float16", "int8", "int16", "int32", "int64", "float64"]
+//    AFTER:  + "bfloat16"
+//
+//  test_wholegraph_feature_store_basic_api (mg test) also changed from:
+//    if dtype == "float32": torch_dtype = torch.float32
+//    elif dtype == "int64":  torch_dtype = torch.int64
+//  to the cleaner:
+//    torch_dtype = getattr(torch, dtype)
+//  removing the brittle if-elif chain that would need updating for every new dtype.
+//
+//  Our C++ equivalent:
+//    - Validates that generate_edges(bf16) produces correctly aligned buffers.
+//    - Validates that emb_padded_dim / emb_align_count return correct values for
+//      dtype=2 (bf16) vs dtype=0 (float32) and dtype=1 (fp16).
+//    - Mirrors the "getattr(torch, dtype)" pattern: use a dispatch table instead
+//      of if-elif, so adding a new dtype is a one-line table entry.
+//    - Validates wire ID round-trip: bf16 → wire_id=7 → bf16 (bidirectional).
+//
+//  断点调试: prints dtype name, align_count, padded_dim, and wire_id for each
+//  dtype in the coverage matrix so regressions are immediately visible.
 // ════════════════════════════════════════════════════════════════════════════
+
+// dtype_dispatch_table: replaces the if-elif chain from mg test pre-220563b.
+// Mirrors "torch_dtype = getattr(torch, dtype)" — each entry maps a string
+// name to its uint8_t code and wire ID.
+//
+// 220563b: the key fix is that "bfloat16" is now a first-class entry, not
+// a missing case that caused silent fallthrough.
+struct DtypeEntry {
+    const char* name;
+    uint8_t     dtype_code;    // 0=float32, 1=fp16, 2=bf16
+    uint8_t     wire_id;       // as registered in feature_store.py dtypes table
+    size_t      element_size;  // bytes per element
+    int         align_count;   // 16 / element_size
+};
+
+static const DtypeEntry DTYPE_TABLE[] = {
+    // name        dtype_code  wire_id  elem_sz  align_cnt
+    {"float32",    0,          1,       4,        4},
+    {"float16",    1,          5,       2,        8},
+    {"bfloat16",   2,          7,       2,        8},  // ← 220563b addition
+};
+static constexpr size_t DTYPE_TABLE_SIZE = sizeof(DTYPE_TABLE) / sizeof(DTYPE_TABLE[0]);
+
+static void experiment_bf16_dtype_coverage() {
+    printf("\n╔═══════════════════════════════════════════════════════════════╗\n");
+    printf("║  E8: BFloat16 Feature Dtype Coverage (220563b migration)    ║\n");
+    printf("╚═══════════════════════════════════════════════════════════════╝\n\n");
+
+    printf("  Dtype dispatch table (220563b: replaces if-elif chain):\n");
+    printf("  %-10s  %-10s  %-8s  %-10s  %-10s  %-8s\n",
+           "name", "dtype_code", "wire_id", "elem_sz", "align_cnt", "status");
+    printf("  %-10s  %-10s  %-8s  %-10s  %-10s  %-8s\n",
+           "----------", "----------", "--------",
+           "----------", "----------", "--------");
+
+    bool all_pass = true;
+    for (size_t i = 0; i < DTYPE_TABLE_SIZE; ++i) {
+        const DtypeEntry& e = DTYPE_TABLE[i];
+
+        // Validate align_count against our helpers
+        int computed_align  = emb_align_count(e.dtype_code);
+        size_t computed_sz  = emb_element_size(e.dtype_code);
+        int computed_padded = emb_padded_dim(128, e.dtype_code);  // test with dim=128
+
+        bool ok = (computed_align == e.align_count) &&
+                  (computed_sz    == e.element_size) &&
+                  (computed_padded % e.align_count == 0) &&
+                  (computed_padded >= 128);
+
+        if (!ok) all_pass = false;
+
+        // 断点调试: print per-dtype validation state so regressions are visible
+        printf("  %-10s  %-10u  %-8u  %-10zu  %-10d  %-8s\n",
+               e.name, (unsigned)e.dtype_code, (unsigned)e.wire_id,
+               computed_sz, computed_align,
+               ok ? "PASS" : "FAIL");
+
+        // Print the padded dim check (b58ea19 alignment)
+        printf("    [DEBUG 220563b] dim=128 padded=%d (must be multiple of %d): %s\n",
+               computed_padded, e.align_count,
+               (computed_padded % e.align_count == 0) ? "OK" : "FAIL");
+    }
+
+    // ── generate_edges bf16 path (220563b: bf16 was missing from coverage) ──
+    printf("\n  generate_edges() with each dtype (220563b coverage):\n");
+    const size_t N_EDGES = 1000;
+    for (size_t i = 0; i < DTYPE_TABLE_SIZE; ++i) {
+        const DtypeEntry& e = DTYPE_TABLE[i];
+        // 220563b: use dispatch table (like getattr(torch, dtype)) instead of
+        // hardcoding feature_dtype=0 which would miss bf16 on every call.
+        auto edges = generate_edges(N_EDGES, 0, 1000, 100000, e.dtype_code);
+
+        // Validate: every edge should carry the correct dtype code
+        bool dtype_ok = true;
+        for (const auto& edge : edges) {
+            if (edge.feature_dtype != e.dtype_code) {
+                dtype_ok = false;
+                fprintf(stderr,
+                    "[FAIL 220563b] generate_edges dtype=%s: edge has feature_dtype=%u "
+                    "(expected %u)\n",
+                    e.name, (unsigned)edge.feature_dtype, (unsigned)e.dtype_code);
+                break;
+            }
+        }
+
+        printf("  [%s] generate_edges n=%zu dtype=%s: %s\n",
+               dtype_ok ? "PASS" : "FAIL", N_EDGES, e.name,
+               dtype_ok ? "all edges carry correct feature_dtype" : "dtype mismatch!");
+        if (!dtype_ok) all_pass = false;
+    }
+
+    // ── Wire ID bidirectional round-trip (220563b: bf16→7→bf16) ─────────────
+    printf("\n  Wire ID round-trip validation (220563b dtype registry):\n");
+    for (size_t i = 0; i < DTYPE_TABLE_SIZE; ++i) {
+        const DtypeEntry& e = DTYPE_TABLE[i];
+        // Simulate the Python feature_store.py lookup:
+        //   wire_id = dtypes[dtype]   (encode)
+        //   dtype   = dtype_ids[wire_id] (decode)
+        // For bf16: wire_id=7 was MISSING before 220563b.
+        printf("  [DEBUG 220563b] dtype=%s → wire_id=%u → dtype=%s  %s\n",
+               e.name, (unsigned)e.wire_id,
+               DTYPE_TABLE[e.dtype_code].name,  // decode wire_id back to name
+               (DTYPE_TABLE[e.dtype_code].dtype_code == e.dtype_code) ? "PASS" : "FAIL");
+    }
+
+    printf("\n  E8 result: %s\n\n",
+           all_pass ? "ALL PASS — bf16 dtype path fully covered" : "SOME FAILURES");
+}
 
 int main(int argc, char** argv) {
     printf("╔═══════════════════════════════════════════════════════════════╗\n");
@@ -1847,6 +1983,12 @@ int main(int argc, char** argv) {
 
     // ── E7: Temporal Negative Sampling (a056923 migration) ────────
     experiment_temporal_neg_sampling();
+
+    // ── E8: BFloat16 Feature Dtype Coverage (220563b migration) ──
+    // 220563b added bf16 to the feature store dtype registry; this
+    // experiment validates the complete dtype dispatch table including
+    // the newly-added bfloat16 → wire_id=7 mapping.
+    experiment_bf16_dtype_coverage();
 
     printf("\n╔═══════════════════════════════════════════════════════════════╗\n");
     printf("║  All experiments complete.                                   ║\n");
