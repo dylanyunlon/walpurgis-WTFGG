@@ -709,4 +709,118 @@ private:
 };
 
 
+// ════════════════════════════════════════════════════════════════════════════
+//  a056923 migration: safe seed deduplication with associated time tensor
+//
+//  Source: distributed_sampler.py (cugraph-gnn a056923), lines 556-571.
+//
+//  Original bug (pre-a056923):
+//    leftover_seeds, lui = leftover_seeds.unique_consecutive(return_inverse=True)
+//    if leftover_time is not None:
+//        leftover_time = leftover_time[lui]         ← WRONG index
+//
+//  Two distinct bugs:
+//    1. unique_consecutive was called BEFORE the leftover_time guard,
+//       so an empty leftover_seeds tensor caused a crash/assert in some
+//       PyTorch builds (unique_consecutive on empty → undefined behavior).
+//    2. leftover_time was indexed by the INVERSE index (lui) rather than by
+//       the UNIQUE mask, selecting one representative time per group.
+//       Indexing by lui gives group_size-many values instead of num_unique-many,
+//       making leftover_time and leftover_seeds shape-mismatched afterward.
+//
+//  a056923 fix:
+//    if leftover_time is not None:
+//        if leftover_seeds.numel() == 0:
+//            assert leftover_time.numel() == 0   ← guard empty case
+//            leftover_seeds_unique_mask = []
+//        else:
+//            leftover_seeds_unique_mask = [True] + (seeds[1:] != seeds[:-1])
+//        leftover_seeds, lui = leftover_seeds.unique_consecutive(...)
+//        leftover_time = leftover_time[leftover_seeds_unique_mask]  ← correct
+//    else:
+//        leftover_seeds, lui = leftover_seeds.unique_consecutive(...)
+//
+//  C++ translation:
+//    - seeds and times are sorted std::vector<uint64_t> / std::vector<int64_t>
+//    - We compute the unique-consecutive mask (first-occurrence flags)
+//    - Guard empty case explicitly (assert times.empty() if seeds empty)
+//    - Return {unique_seeds, unique_times, inverse_index} so callers can
+//      reconstruct group assignments (parallel to lui in the Python fix)
+//
+//  断点调试: prints input/output sizes and detected duplicate count so
+//  the distributed sampler can verify deduplication correctness.
+
+struct DeduplicatedSeeds {
+    std::vector<uint64_t> seeds;    // unique-consecutive seeds
+    std::vector<int64_t>  times;    // corresponding representative times (one per unique seed)
+    std::vector<size_t>   inv_idx;  // inverse index: inv_idx[i] = position in seeds[] for original seeds[i]
+};
+
+// deduplicate_seeds_with_time: safe equivalent of Python unique_consecutive
+// + time indexing from a056923 distributed_sampler.py fix.
+//
+// Precondition: seeds must be SORTED (unique_consecutive only removes adjacent
+// duplicates, matching PyTorch's semantics). If seeds is unsorted, duplicates
+// at non-adjacent positions will NOT be removed — same as PyTorch behavior.
+//
+// Knuth review checklist:
+//   - Empty seeds:  returns empty result, asserts times empty ✓
+//   - No duplicates: returns input unchanged, inv_idx = 0,1,2,... ✓
+//   - All same:     returns {seeds[0]}, times[0], inv_idx all 0 ✓
+//   - times.size() must == seeds.size() when non-empty ✓ (assert)
+//   - Concurrent:   function is pure (no shared state), safe for concurrent
+//     calls from different worker threads on disjoint seed ranges ✓
+inline DeduplicatedSeeds deduplicate_seeds_with_time(
+        const std::vector<uint64_t>& seeds,
+        const std::vector<int64_t>&  times)
+{
+    // a056923 guard: empty seeds → empty times (assert mirrors the Python assert)
+    if (seeds.empty()) {
+        printf("[DEBUG a056923 deduplicate_seeds_with_time] empty seeds"
+               " -> skip dedup (times.size=%zu expected 0)\n", times.size());
+        assert(times.empty() &&
+               "deduplicate_seeds_with_time: times must be empty when seeds is empty"
+               " (a056923 distributed_sampler.py:559 assertion)");
+        return {};
+    }
+
+    // times must match seeds in length when non-empty
+    const bool has_times = !times.empty();
+    if (has_times) {
+        assert(times.size() == seeds.size() &&
+               "deduplicate_seeds_with_time: seeds and times must have equal length");
+    }
+
+    DeduplicatedSeeds result;
+    result.seeds.reserve(seeds.size());
+    if (has_times) result.times.reserve(seeds.size());
+    result.inv_idx.resize(seeds.size());
+
+    // Build unique-consecutive mask (a056923: [True] + (seeds[1:] != seeds[:-1]))
+    // mask[0] = true (first element is always unique)
+    // mask[i] = (seeds[i] != seeds[i-1]) for i > 0
+    size_t unique_idx = 0;
+    result.seeds.push_back(seeds[0]);
+    if (has_times) result.times.push_back(times[0]);
+    // result.inv_idx[0] will be written in the loop below (unique_idx starts at 0)
+
+    for (size_t i = 0; i < seeds.size(); ++i) {
+        if (i > 0 && seeds[i] != seeds[i - 1]) {
+            // New unique value — mask[i] = true
+            ++unique_idx;
+            result.seeds.push_back(seeds[i]);
+            if (has_times) result.times.push_back(times[i]);
+        }
+        // inv_idx[i] = position in unique_seeds for seeds[i]
+        result.inv_idx[i] = unique_idx;
+    }
+
+    size_t n_dupes = seeds.size() - result.seeds.size();
+    printf("[DEBUG a056923 deduplicate_seeds_with_time]"
+           " input=%zu unique=%zu duplicates=%zu has_times=%d\n",
+           seeds.size(), result.seeds.size(), n_dupes, (int)has_times);
+
+    return result;
+}
+
 }  // namespace philemon

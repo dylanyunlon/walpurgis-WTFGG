@@ -741,6 +741,86 @@ public:
         return total;
     }
 
+    // ═══ a056923 migration: NodeTimeFunc + TemporalComparison ═══
+    // a056923 (cugraph-gnn "Support Temporal Negative Sampling"):
+    //   - graph_store.py: renamed __etime_attr → __time_attr (unified edge+node time)
+    //   - Added _get_ntime_func(): returns lambda (node_type, node_id) → timestamp tensor
+    //     Used by neg_sample() to filter negative candidates by node creation time.
+    //   - link_neighbor_loader.py / neighbor_loader.py:
+    //     temporal_comparison strings changed: spaces → underscores
+    //     "monotonically decreasing" → "monotonically_decreasing"
+    //     "strictly increasing"      → "strictly_increasing"
+    //     etc.  The PyG/cuGraph-PLC API was updated; old space-separated
+    //     strings silently fell through the enum comparison.
+    //
+    // Our C++ equivalent:
+    //   - NodeTimeFunc: std::function<int64_t(uint64_t node_id)>
+    //     replaces the Python lambda; called during temporal negative sampling
+    //     to retrieve a node's creation timestamp from the feature store.
+    //   - TemporalComparison enum: strongly-typed replacement for the
+    //     space/underscore-separated string API, eliminating silent mismatches.
+    //   - get_node_time_func(): returns nullptr when no node_time store registered
+    //     (parallel to Python returning None when __time_attr is None).
+    //
+    // 断点调试: get_node_time_func() prints registration state on every call
+    // so sampling callers can verify node-time availability before the loop.
+
+    // NodeTimeFunc: (node_id) → int64_t timestamp.
+    // Wraps the node feature store lookup for the temporal neg sampling loop.
+    // Parallel to Python: lambda node_type, node_id: feature_store[node_type, attr_name][node_id]
+    // Here we keep it single-type (homogeneous); heterogeneous callers instantiate
+    // one NodeTimeFunc per node_type (see neg_sample_temporal below).
+    using NodeTimeFunc = std::function<int64_t(uint64_t node_id)>;
+
+    // TemporalComparison: replaces the space-separated string API that caused
+    // silent bugs in a056923.  Callers must use this enum — no raw strings.
+    //
+    // a056923 fix: "monotonically decreasing" → "monotonically_decreasing"
+    // (PyG NeighborSampler enum changed, old strings were silently ignored,
+    //  causing temporal sampling to fall back to non-temporal mode.)
+    //
+    // Knuth review note: the enum values deliberately mirror the PyG string
+    // names (with underscores) so a future Python binding can round-trip them
+    // with a simple snake_case → enum lookup.
+    enum class TemporalComparison : uint8_t {
+        strictly_increasing      = 0,
+        monotonically_increasing = 1,
+        strictly_decreasing      = 2,
+        monotonically_decreasing = 3,  // DEFAULT — most common for link prediction
+        last                     = 4,  // for temporal_strategy='last'
+    };
+
+    // Default temporal comparison (a056923: was "monotonically decreasing" string).
+    static constexpr TemporalComparison kDefaultTemporalComparison =
+        TemporalComparison::monotonically_decreasing;
+
+    // Register a node-time lookup function for this bridge's node population.
+    // Call once after feature store is populated. Pass nullptr to clear.
+    // Not thread-safe — must be called before any concurrent sampling starts.
+    void set_node_time_func(NodeTimeFunc fn) {
+        node_time_func_ = std::move(fn);
+        node_time_registered_.store(static_cast<bool>(node_time_func_),
+                                    std::memory_order_release);
+        printf("[DEBUG a056923 set_node_time_func] node_time_func %s\n",
+               node_time_func_ ? "REGISTERED" : "CLEARED");
+    }
+
+    // _get_ntime_func equivalent (a056923 graph_store.py:_get_ntime_func).
+    // Returns nullptr if no node-time store registered (non-temporal mode).
+    // 断点调试: printf gated behind PHILEMON_DEBUG_NTIME to avoid hot-path
+    // overhead — get_node_time_func() may be called in the inner sampling loop.
+    const NodeTimeFunc* get_node_time_func() const {
+#ifdef PHILEMON_DEBUG_NTIME
+        if (!node_time_func_) {
+            printf("[DEBUG a056923 get_node_time_func] no node_time registered"
+                   " -> non-temporal negative sampling\n");
+        } else {
+            printf("[DEBUG a056923 get_node_time_func] node_time_func available\n");
+        }
+#endif
+        return node_time_func_ ? &node_time_func_ : nullptr;
+    }
+
     // ═══ Temporal Neighbor Sampling (from cugraph-gnn d4b52c9 + 4005ab1 + a056923) ═══
     // cugraph-gnn在GraphStore加了edge timestamp (etime)支持,
     // 然后在DistributedNeighborSampler加了temporal=True模式:
@@ -1210,6 +1290,21 @@ private:
     mutable std::shared_mutex   part_mu_;      // M005: protects partitions_
     mutable SeqLock             seq_lock_;     // M007: wait-free reader seqlock
     std::vector<SubgraphPartition> partitions_;
+
+    // a056923: node-time lookup function (nullptr = non-temporal mode).
+    // set_node_time_func() / get_node_time_func() provide the public API.
+    //
+    // Thread-safety: node_time_func_ is a std::function, which has no atomic
+    // guarantees. The registered_ flag is atomic for safe concurrent reads of
+    // the "is temporal mode active" check. The function itself MUST be set
+    // before any concurrent sampling thread calls get_node_time_func() —
+    // this is a setup-time invariant, not enforced at runtime.
+    //
+    // Callers in the sampling loop should cache the result of
+    // get_node_time_func() once at batch start and reuse it, avoiding
+    // repeated std::function copy overhead.
+    NodeTimeFunc                node_time_func_;
+    std::atomic<bool>           node_time_registered_{false};
 
     // M013: partition-level augmented interval skip list. Rebuilt per flush.
     //
