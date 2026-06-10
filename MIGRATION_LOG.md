@@ -1,4 +1,99 @@
 
+## migrate c07eea7: [FEA] New MovieLens Example, Add Timing to Taobao
+
+- **Upstream commit**: c07eea7 (cugraph-gnn, NVIDIA)
+- **Commit message**: `[FEA] New MovieLens Example, Add Timing to Taobao`
+- **Upstream diff** (3 files changed):
+  - `python/cugraph-pyg/cugraph_pyg/examples/movielens_mnmg.py` — 新增全新 MovieLens 多机多卡示例
+  - `python/cugraph-pyg/cugraph_pyg/examples/taobao_mnmg.py` — 新增 `balance_shuffle_edge_split` 函数 + timing
+  - `python/cugraph-pyg/cugraph_pyg/loader/link_loader.py` — 修复 `get_edge_label_index` 调用的类型包裹逻辑
+
+- **Walpurgis 迁移状态**:
+
+  | 上游文件 | 上游变化 | Walpurgis 状态 |
+  |---|---|---|
+  | `movielens_mnmg.py` | 全新文件（初版）| **超前迁移**：walpurgis 318ae6c 版本已包含 DDP、EncoderShapeGuard、CugraphWorkerSession 等增强，无需覆盖 |
+  | `taobao_mnmg.py` | 新增 `balance_shuffle_edge_split` + timing | **已覆盖**：walpurgis f2b7f50 迁移时已实现 EdgeShuffler + perf_counter 全链路 |
+  | `link_loader.py` | `isinstance(edge_label_index, torch.Tensor)` 条件包裹 | **新增迁移** → `src/walpurgis/dataloader/link_loader_edge_index_guard.py` |
+
+- **link_loader.py 修复详解**:
+
+  上游旧代码（c07eea7 之前）:
+  ```python
+  ) = torch_geometric.loader.utils.get_edge_label_index(
+      data,
+      (None, edge_label_index),   # ← 无论类型如何，一律包裹
+  )
+  ```
+
+  上游新代码（c07eea7）:
+  ```python
+  ) = torch_geometric.loader.utils.get_edge_label_index(
+      data,
+      (None, edge_label_index)
+      if isinstance(edge_label_index, torch.Tensor)
+      else edge_label_index,      # ← tuple 类型直接透传
+  )
+  ```
+
+  **Bug 根因**:
+  `get_edge_label_index` 第二参数协议：
+  - `torch.Tensor` → 需包裹为 `(None, tensor)` 表示类型未指定
+  - `(edge_type, tensor)` tuple → 直接透传，内含类型信息
+  旧代码对 tuple 输入二次包裹为 `(None, (edge_type, tensor))`，
+  导致 `input_type` 解析为 `None`，`_vertex_offsets` 以 `None` 索引 → `KeyError: None`，
+  错误指向库内部，用户无从定位。
+
+- **Knuth 审查**:
+  1. **diff 对比源**:
+     | 上游 c07eea7 | Walpurgis 迁移 |
+     |---|---|
+     | 内联 `isinstance` 条件表达式一行 | `resolve_edge_label_input()` 命名函数 |
+     | 无文档说明两种类型路径 | docstring 详述路径 A（Tensor）/ 路径 B（tuple）|
+     | 错误时 PyG 内部 KeyError | `EdgeLabelInputError` 专用异常，携带类型与 shape |
+     | 无调试输出 | `_dbg_edge_label_input()` 在 WALPURGIS_DEBUG=1 时打印两侧对比 |
+     | 无事后校验 | `assert_resolved_input_compatible()` 检查 drop_last 与边数兼容性 |
+     | 无可执行验证 | `_smoke_test()` 覆盖路径 A / B / 无效类型 / drop_last 四个断言 |
+
+  2. **用户角度 bug**:
+     - 最常见用法：`LinkNeighborLoader(edge_label_index=(("user","rates","movie"), tensor))`
+       `edge_label_index` 是 tuple，旧代码包裹后变为 `(None, (edge_type, tensor))`。
+       `get_edge_label_index` 内部 `input_type = arg[0]` 得到 `None`，
+       后续 `data[1]._vertex_offsets[None]` → `KeyError: None`。
+       stack trace 深入 PyG + cugraph-pyg 内部，用户第一反应是版本兼容问题，
+       而非自己传入参数的类型问题。
+     - 只有传裸 Tensor（同构图）时旧代码偶然正确，
+       异构图（hetero）是 cugraph-pyg 的核心使用场景，bug 覆盖面极广。
+     - `drop_last=True` 但边数不足时，旧代码等到 DataLoader 迭代阶段才发现空 batch，
+       训练循环无输出，用户以为程序挂起。新增 `assert_resolved_input_compatible` 提前报错。
+
+  3. **系统角度安全**:
+     - `isinstance(edge_label_index, torch.Tensor)` 纯 Python 类型判断，
+       无 GPU 操作，无性能开销，不影响训练吞吐。
+     - 判断分支二选一：Tensor → 包裹；非 Tensor → 透传。
+       未来若支持 `EdgeIndex` 等新类型，`else` 透传策略仍能正确工作，
+       只要 `get_edge_label_index` 上游能处理即可。
+     - 旧代码的双重嵌套 `(None, (edge_type, tensor))` 不会在 Python 层报错，
+       错误被推迟到 C++ / CUDA 节点偏移计算层，错误信息完全不可读。
+     - Walpurgis `EdgeLabelInputError` 在 Python 层拦截，错误位置明确，
+       类型与 shape 信息完整，便于 CI 捕获和用户自查。
+
+### Walpurgis 迁移位置
+
+**文件: `src/walpurgis/dataloader/link_loader_edge_index_guard.py`** — 新增
+
+**迁移要点**:
+- `resolve_edge_label_input(edge_label_index)`: 封装 c07eea7 的 isinstance 分发，
+  给「无声的类型判断」一个名字和文档，路径 A（Tensor）/ 路径 B（tuple）明确分离
+- `EdgeLabelInputError`: 专用异常，携带输入类型与 shape，替代下游 KeyError/AttributeError
+- `_dbg_edge_label_input()`: 断点调试出口，WALPURGIS_DEBUG=1 时打印输入→输出对比
+- `assert_resolved_input_compatible()`: 事后 drop_last 兼容性校验，
+  提前捕获「边数不足」配置错误，避免迭代阶段静默空 batch
+- `_smoke_test()`: 四个断言覆盖路径 A / B / 无效类型 / drop_last，
+  运行 `python -m walpurgis.dataloader.link_loader_edge_index_guard` 验证
+
+---
+
 ## migrate f2b7f50: [BUG] Fix shuffle on single GPU in Taobao Example
 
 - **Upstream commit**: f2b7f50 (cugraph-gnn, NVIDIA)
