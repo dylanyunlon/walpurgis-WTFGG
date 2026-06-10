@@ -19,6 +19,12 @@ import torch
 import numpy as np
 from collections import defaultdict, OrderedDict
 
+# ─── migrate 539d0ad: 暴露 tensor 子包 ───────────────────
+# 原 commit: "Expose cugraph_pyg.tensor Subpackage"
+# 对应 walpurgis: import walpurgis.tensor
+# 鲁迅: 一扇门推开了, 屋里才有光。
+import walpurgis.tensor  # noqa: E402  (子包需在全局调试开关初始化后延迟亦可, 但提前注册更清晰)
+
 # ─── 全局调试开关 ─────────────────────────────────────────
 _DEBUG_ENV = os.environ.get("WALPURGIS_DEBUG", "0")
 _DEBUG_ALL = _DEBUG_ENV.strip() == "1"

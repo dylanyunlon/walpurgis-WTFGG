@@ -1,4 +1,61 @@
 
+## migrate 539d0ad: Expose cugraph_pyg.tensor Subpackage
+
+- **上游 commit**: 539d0ad (cugraph-gnn, NVIDIA)
+- **Commit 描述**: `Expose cugraph_pyg.tensor Subpackage`
+- **上游 diff**: 仅 1 行 — `python/cugraph-pyg/cugraph_pyg/__init__.py` 加入 `import cugraph_pyg.tensor`
+- **子包文件** (已存在于上游, 此 commit 首次暴露):
+  - `tensor/__init__.py` — 导出 DistTensor, DistEmbedding, DistMatrix, is_empty, empty
+  - `tensor/dist_tensor.py` — WholeGraph 分布式张量/embedding 接口
+  - `tensor/dist_matrix.py` — WholeGraph 分布式稀疏矩阵接口 (COO/CSC)
+  - `tensor/utils.py` — WG 张量创建辅助函数
+
+- **Walpurgis 迁移状态**:
+
+  | 上游文件 | 上游变化 | Walpurgis 状态 |
+  |---|---|---|
+  | `cugraph_pyg/__init__.py` | `+import cugraph_pyg.tensor` | **已迁移** → `src/walpurgis/__init__.py` 加入 `import walpurgis.tensor` |
+  | `tensor/__init__.py` | 新增文件 | **已迁移** → `src/walpurgis/tensor/__init__.py` (加 debug import 断点) |
+  | `tensor/dist_tensor.py` | 新增文件 | **已迁移+改写** → 全链路断点 + 文件路径错误提示 + 越界守护 |
+  | `tensor/dist_matrix.py` | 新增文件 | **已迁移+改写** → `_local_range()` 提取 + local_col/local_row 断点 |
+  | `tensor/utils.py` | 新增文件 | **已迁移+改写** → assert→raise, has_nvlink 环境变量兜底, 文件存在性断点 |
+
+- **鲁迅拿法20%改写要点**:
+
+  | 改写点 | 上游写法 | Walpurgis 写法 |
+  |---|---|---|
+  | 无调试出口 | 所有函数无任何 print/log | `_dbg()` 断点函数, `WALPURGIS_DEBUG=1` 时输出进程/时间/参数 |
+  | `assert` 校验 | `assert len(shape) == 2` (被 `-O` 跳过) | `raise ValueError(...)` (不可跳过) |
+  | `has_nvlink_network` 环境变量 | `int(os.environ["LOCAL_WORLD_SIZE"])` → KeyError | `os.environ.get(...)` + 空字符串兜底 |
+  | 未知文件扩展名报错 | "Unsupported source type" | 列出已支持格式 (.pt/.npy/list) 的可读提示 |
+  | `local_col/local_row` 代码重复 | 两个属性各有一份相同的分片公式 | 提取为 `_local_range(sz, world_size, rank)` |
+  | `copy_host_global_tensor_to_local` 越界 | 无越界检查 | `end_idx > host_tensor.shape[0]` → `IndexError` |
+  | `chunked` backend | 落入 else 报 Unsupported | 明确提示 "chunked 在 WG API 中尚未稳定" |
+  | import 诊断 | 无 | `tensor/__init__.py` 加载时打印已注册符号及其 module |
+
+- **Knuth 审查**:
+
+  1. **diff 对比源**:
+     上游 diff 本身只有 1 行 (`+import cugraph_pyg.tensor`)。真正的代码在子包四个文件中。
+     对比最关键的偏差: `dist_matrix.py` 的 `local_col/local_row` 属性包含完全相同的分片公式两份——
+     上游未提取成函数, 任何修改必须同步两处, 是典型的 DRY 违反; Walpurgis 版提取为 `_local_range()`。
+
+  2. **用户角度 bug**:
+     - `DistTensor(src="weights.bin")` — 上游报 "Unsupported source type", 用户不知道
+       该传 `.pt` 还是别的。Walpurgis 版枚举支持格式。
+     - `has_nvlink_network()` 在非 torchrun 启动的单卡推理场景下 (`LOCAL_WORLD_SIZE` 未设置)
+       触发 `KeyError`, 上游静默崩溃; Walpurgis 版给出兜底值并打印提示。
+     - `copy_host_global_tensor_to_local` 当 partition 不均时若 `host_tensor` 行数不足,
+       上游 `tensor[start:end]` 切片静默截断 (不报错, 末尾 rank 拿到全 0); Walpurgis 版提前检测并 raise。
+
+  3. **系统角度安全**:
+     - `assert` 在 Python `-O` 优化模式下被完全跳过, 上游 `create_wg_dist_tensor_from_files`
+       和 `create_wg_dist_tensor` 中多处 `assert` 作为唯一校验 — 生产环境优化编译时失去所有保护。
+       Walpurgis 版全部替换为 `raise`。
+     - `torch.load(src, mmap=True)` 在 PyTorch ≥ 2.0 下无 `weights_only` 参数会触发 FutureWarning,
+       且加载任意文件路径存在反序列化风险 (pickle)。当前版本保持与上游一致,
+       **建议后续迁移加入 `weights_only=True`** 或先校验文件哈希。
+
 ## migrate d306c72: Use PyTorch MemPool and Disable RMM Pool Allocator to Fix Broken Tests
 
 - **Upstream commit**: d306c72 (cugraph-gnn, NVIDIA, PR #237)
