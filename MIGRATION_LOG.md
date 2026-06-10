@@ -1,4 +1,70 @@
 
+## migrate 4088267: Add Graph Property prediction model to cugraph-pyg
+
+- **Upstream commit**: 4088267 (cugraph-gnn, NVIDIA)
+- **Commit message**: `Add Graph Property prediction model to cugraph-pyg`
+- **Upstream diff** (1 file added):
+  - `python/cugraph-pyg/cugraph_pyg/examples/dist_gin_sg.py` — 新增，486 行
+    - `DistTensorGraphDataset(Dataset)`: 从 DistTensor 按图粒度提取单图，含向量化节点重编号 + 标签缓存
+    - `custom_collate_fn`: 预分配张量 + 向量化边偏移 batch 拼接，避免逐图 cat
+    - `GIN(torch.nn.Module)`: GINConv × num_layers → global_add_pool → MLP 分类头
+    - `load_data()`: TUDataset 加载 + OneHotDegree 合成特征 + DistTensor/FeatureStore 构建
+    - `train()` / `test()`: 单 epoch 训练 / 评估
+    - `main()`: dist init → argparse → load_data → split → DataLoader → GIN → training loop → timing 汇总
+
+- **Knuth 审查**:
+  1. **diff 对比源**:
+     | 上游 4088267 | Walpurgis 迁移 |
+     |---|---|
+     | `load_data()` 返回 5 个裸值元组，调用方靠位置解包 | `GraphBundle` dataclass，字段命名消除歧义，`build()` 类方法集中构建逻辑 |
+     | `parse_args()` 散落超参覆盖逻辑混在 `main()` 中（3处 if != default 判断）| `GinArgs` dataclass，`_resolve_hyperparams()` 集中覆盖，`validate()` 前置检查 |
+     | `setup_distributed()` + `main()` 尾部裸调 `dist.destroy_process_group()`，异常路径不执行 | `GinTrainer` context manager，`__exit__` 保证 dist 清理 |
+     | `DistTensorGraphDataset` 无 split 标识，DEBUG 无法区分 train/test 访问 | 加 `split_name` 参数，DEBUG 输出含 split 标识 |
+     | 无调试信息 | 全链路 `WALPURGIS_DEBUG=1` 断点 print，覆盖参数解析/图构建/每 batch 前向/每 epoch loss+acc |
+
+  2. **用户角度 bug**:
+     - `main()` 超参覆盖逻辑：`args.batch_size != 32` 判断使用硬编码默认值作边界，
+       若用户恰好传入 `--batch_size 32`，意图明确却被 dataset 默认值覆盖，
+       行为与用户预期相反；`GinArgs._resolve_hyperparams()` 保留此语义但加 DEBUG 输出
+     - `edge_ptr = data.ptr`：`data.ptr` 是节点粒度的 CSR 指针（图→节点边界），
+       不是边粒度指针；而 `__getitem__` 用 `edge_ptr[idx]` 作为 `edge_ids` 的边界，
+       若 PyG Batch 的 `ptr` 含义为节点而非边，则 `edge_ids` 超出 `dist_edge_index` 范围，
+       导致越界访问（上游无注释说明，需运行验证）
+     - `_cached_labels` 只缓存 `graph_indices` 长度 < 1000 的情况，
+       `__getitem__(idx)` 访问的是缓存数组下标而非 `graph_indices[idx]`，
+       当 `graph_indices` 为非连续切片时，标签与图不对齐（静默错误）
+
+  3. **系统角度安全**:
+     - `data_root` 来自用户命令行，上游无路径合法性检查；
+       `GinArgs.validate()` 增加 `..` 路径穿越检测
+     - `dist.init_process_group(init_method="env://")` 依赖 `MASTER_ADDR`/`MASTER_PORT` 环境变量，
+       未设置时抛不明确的 `ValueError`；`GinTrainer.__enter__` 加 DEBUG 输出 rank/world_size 辅助诊断
+     - `node_to_local` 的大小依赖 `nodes_in_subgraph.max().item() + 1`，
+       若图 id 空间很大（全局节点编号未重编），分配巨型 tensor 导致 OOM；
+       上游无保护，迁移保留但加 DEBUG 输出 `num_nodes` 便于监控
+
+### Walpurgis 迁移位置
+
+**文件: `src/walpurgis/examples/graph_prop/dist_gin_sg.py`** — 新增，GIN 图属性预测
+
+**迁移要点**:
+- `GinArgs`: dataclass 封装 argparse，`_resolve_hyperparams()` 集中超参覆盖，`validate()` 前置安全检查
+- `GraphBundle`: 值对象封装 DistTensor + FeatureStore 构建，`build()` 类方法替代裸 `load_data()` 5 元组返回
+- `GinTrainer`: context manager 封装 dist 生命周期，`__exit__` 保证异常路径也清理进程组
+- 全链路 `WALPURGIS_DEBUG=1` 断点 print，覆盖:
+  GinArgs 参数解析 → GraphBundle 图构建 edge/feature shape →
+  DistTensorGraphDataset 标签缓存/每图节点边统计 →
+  custom_collate_fn batch shape →
+  GIN forward 输入输出 shape →
+  train 每 batch loss/shape → test 每 batch correct/pred →
+  GinTrainer 每 epoch loss+acc → 最终汇总 median/mean timing
+
+**改写20%（鲁迅拿法）**:
+- `GinTrainer` context manager 替代 `setup_distributed()` 裸函数 + `main()` 末尾裸调 `destroy_process_group`
+- `GraphBundle.build()` 集中图存储构建，替代 `load_data()` 返回 5 元组的散落解包
+- `GinArgs` dataclass 封装 argparse + 超参覆盖 + validate()，替代 `parse_args()` + `main()` 内 3 处 if 判断
+- `DistTensorGraphDataset` 加 `split_name` 参数，DEBUG 输出含 train/test 标识，替代无名匿名实例
+- 全链路 DEBUG print 覆盖原版零日志输出
 ## migrate 539d0ad: Expose cugraph_pyg.tensor Subpackage
 
 - **上游 commit**: 539d0ad (cugraph-gnn, NVIDIA)
