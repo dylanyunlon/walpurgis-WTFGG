@@ -24,7 +24,10 @@ fi
 
 COOKIE=$(grep -oP "(?<=-b ')[^']*" "$RAW_CURL" || echo "")
 ORG_ID=$(grep -oP 'organizations/\K[^/]+' "$RAW_CURL" | head -1)
-ORIGIN=$(grep -oP "(?<=-H 'origin: )\S+" "$RAW_CURL" | head -1 || echo "https://claude.hk.cn")
+ORIGIN=$(grep -oP "(?<=-H 'origin: )[^']+" "$RAW_CURL" | head -1 || echo "https://claude.hk.cn")
+# 浏览器头: claude.hk.cn 校验UA/referer, 从raw_curl同步
+UA=$(grep -oP "(?<=-H 'user-agent: )[^']+" "$RAW_CURL" | head -1 || echo "Mozilla/5.0")
+COMMON_H=(-H "user-agent: ${UA}" -H "referer: ${ORIGIN}/" -H "accept-language: zh-CN,zh;q=0.9" -H "anthropic-client-platform: web_claude_ai")
 
 if [ -z "$COOKIE" ] || [ -z "$ORG_ID" ]; then
     echo "ERROR: Cannot extract cookie/org"; exit 1
@@ -32,7 +35,7 @@ fi
 
 # ── org 动态解析: raw_curl.txt里的orgid可能过期, 以cookie实际所属org为准 ──
 ORG_LIVE=$(curl -s "${ORIGIN}/api/organizations" \
-    -H "accept: application/json" -b "$COOKIE" 2>/dev/null | python3 -c "
+    -H "accept: application/json" "${COMMON_H[@]}" -b "$COOKIE" 2>/dev/null | python3 -c "
 import sys, json
 try:
     orgs = json.load(sys.stdin)
@@ -68,7 +71,7 @@ if [ -n "${CONV_ID:-}" ]; then
     echo "Conv (reuse): $CONV_ID"
 else
     CREATE_RESP=$(curl -s -X POST "${ORIGIN}/api/organizations/${ORG_ID}/chat_conversations" \
-        -H "Content-Type: application/json" -H "origin: ${ORIGIN}" -b "$COOKIE" \
+        -H "Content-Type: application/json" -H "origin: ${ORIGIN}" "${COMMON_H[@]}" -b "$COOKIE" \
         --data-raw '{"name":"","model":"claude-sonnet-4-6","is_temporary":false}' 2>/dev/null)
     CONV_ID=$(echo "$CREATE_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin).get('uuid',''))" 2>/dev/null || echo "")
     if [ -z "$CONV_ID" ]; then
@@ -82,7 +85,7 @@ OUTPUT_FILE="${SCRIPT_DIR}/submodel_response_$(date +%Y%m%d_%H%M%S).txt"
 
 curl -s -N "${ORIGIN}/api/organizations/${ORG_ID}/chat_conversations/${CONV_ID}/completion" \
     -H "accept: text/event-stream" -H "content-type: application/json" \
-    -H "origin: ${ORIGIN}" -b "$COOKIE" \
+    -H "origin: ${ORIGIN}" "${COMMON_H[@]}" -b "$COOKIE" \
     --data-raw "{
         \"prompt\":${ESCAPED_PROMPT},\"timezone\":\"Asia/Shanghai\",\"model\":\"claude-sonnet-4-6\",
         \"effort\":\"medium\",\"thinking_mode\":\"off\",
