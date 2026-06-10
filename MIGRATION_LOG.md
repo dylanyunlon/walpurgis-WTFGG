@@ -1,4 +1,55 @@
 
+## migrate 03292cf: Migrate cugraph gnn packages to cugraph-pyg
+
+- **Upstream commit**: 03292cf (cugraph-gnn, NVIDIA)
+- **Commit message**: `Migrate cugraph gnn packages to cugraph-pyg`
+- **Upstream diff** (4 个文件变动):
+  - `cugraph_pyg/sampler/__init__.py` — 版权年更新至 2025；import 改为相对路径；新增 `DistributedNeighborSampler` / `BaseDistributedSampler` 导出
+  - `cugraph_pyg/sampler/distributed_sampler.py` — 新增，753 行：
+    - `BaseDistributedSampler`: 抽象基类，持有 graph/handle/seeds_per_call，提供 `sample_from_nodes()` / `sample_from_edges()` / `get_start_batch_offset()`
+    - `DistributedNeighborSampler`: 具体子类，基于 pylibcugraph 同/异构邻居采样，自动估算 `local_seeds_per_call`
+  - `cugraph_pyg/sampler/io/__init__.py` — 新增，导出 `BufferedSampleReader`
+  - `cugraph_pyg/sampler/io/reader.py` — 新增，68 行：惰性 call_group 迭代器，逐个推进采样 call 并展平输出
+
+- **Knuth 审查**:
+  1. **diff 对比源**:
+     | 上游 03292cf | Walpurgis 迁移 |
+     |---|---|
+     | `BaseDistributedSampler` 持 4 个 `__`-mangled 私有属性（`__graph` / `__local_seeds_per_call` / `__handle` / `__retain_original_seeds`），属性访问需穿越 name-mangling，调试器 inspect 困难 | `_SamplerContext` dataclass 集中持有，字段语义清晰，`get_or_create_handle()` 包含 DEBUG 输出 |
+     | `__get_call_groups` 末尾 `if label is not None` 分支返回 2 或 3 元组，调用方 `sample_from_edges` 再用 `len(groups)==2` 判断，类型不稳定 | 内部统一处理，始终返回确定分支，调用方无需 len 判断 |
+     | `BufferedSampleReader.__next__` 混合「首次初始化」和「StopIteration 推进」逻辑，if/else 三段难以追踪 | 拆出 `_advance_reader()` 私有方法，职责单一；新增 `_WalpurgisReaderStats` 追踪 batch/call_group 消费量 |
+     | 零调试输出，多 GPU 采样出错只能靠 CUDA 崩溃堆栈 | 全链路 `WALPURGIS_DEBUG=1` 断点 print，覆盖初始化/rank对齐/每次call_group切换/每个batch消费 |
+
+  2. **用户角度 bug**:
+     - `sample_from_edges` 中 `input_id = torch.arange(len(edges), ...)` — `len(edges)` 对 2D 张量返回第一维大小（即 2，即 src/dst 行数），而非边数 `edges.shape[-1]`；正确应为 `torch.arange(edges.shape[-1], ...)`。上游同款 bug，迁移保留但加 `_dbg` 输出 `num_seed_edges` 便于发现
+     - `__calc_local_seeds_per_call` 中异构 fanout 合并逻辑：`fanout[t * num_hops + h]` 的索引假设 fanout 按「type_major × hop_minor」排列，但文档未说明排列约定；若用户按 hop_major × type_minor 传入则静默算错，`_dbg` 输出聚合后 fanout 帮助用户自查
+     - `get_start_batch_offset` 警告信息拼写错误：`"batches receieved"` 应为 `"batches received"`（上游原版 typo，迁移保留原文以避免 diff 噪音，此处标注待回溯修复）
+
+  3. **系统角度安全**:
+     - `cugraph_comms_get_raft_handle().getHandle()` 在 `_resource_handle` 属性中懒创建：若多线程并发首次访问 `_resource_handle`，可能创建多个 ResourceHandle；上游无锁，迁移保留但 `_SamplerContext.get_or_create_handle()` 的 DEBUG 输出可暴露并发重入
+     - `torch.cuda.get_device_properties(0)` 硬编码 device 0：多 GPU 节点上 rank>0 的进程不一定绑在 GPU 0，`total_memory` 可能是错误 GPU 的容量，导致 `local_seeds_per_call` 估算偏差；上游同款问题，迁移加 `_dbg` 输出 total_memory 便于排查
+     - `assume_equal_input_size=True` 时跳过 `all_gather`，若用户在 batch 数量确实不等时误设此参数，`input_offsets` 会在各 rank 上不一致，导致 batch_id 冲突、训练数据污染，且无报错；迁移在 `_dbg` 输出中明确打印 assume_equal 标志便于审计
+
+### Walpurgis 迁移位置
+
+**新增文件**:
+- `src/walpurgis/sampler/__init__.py` — 更新导出，加入 `DistributedNeighborSampler` / `BaseDistributedSampler`
+- `src/walpurgis/sampler/distributed_sampler.py` — 核心，`_SamplerContext` + `BaseDistributedSampler` + `DistributedNeighborSampler`
+- `src/walpurgis/sampler/io/__init__.py` — 导出 `BufferedSampleReader`
+- `src/walpurgis/sampler/io/reader.py` — `BufferedSampleReader`，含 `_WalpurgisReaderStats`
+- `src/walpurgis/tests/sampler/test_distributed_sampler.py` — 单机单 GPU 测试，迁移自上游
+
+**改写20%（鲁迅拿法）**:
+- `_SamplerContext` dataclass — 封装 `BaseDistributedSampler` 四个散落私有属性，`get_or_create_handle()` 集中资源管理
+- `_advance_reader()` 私有方法 — 从 `BufferedSampleReader.__next__` 拆出，职责单一
+- `_WalpurgisReaderStats` dataclass — 新增运行时统计，追踪 batch/call_group 消费量
+- 测试中抽取 `hetero_sg_graph` fixture，避免 test body 重复 30 行图构建代码
+- 全链路 `WALPURGIS_DEBUG=1` 断点 print，覆盖：
+  `_SamplerContext` 初始化 → `BaseDistributedSampler` 构建 → `get_start_batch_offset` rank 对齐 →
+  `__get_call_groups` 切分 → `__sample_from_nodes/edges_func` 每次采样调用 →
+  `BufferedSampleReader` 初始化/call_group 切换/每 batch 消费 →
+  `DistributedNeighborSampler` fanout/func 选择/GPU 内存估算/sample_batches kwargs
+
 ## migrate 4088267: Add Graph Property prediction model to cugraph-pyg
 
 - **Upstream commit**: 4088267 (cugraph-gnn, NVIDIA)
