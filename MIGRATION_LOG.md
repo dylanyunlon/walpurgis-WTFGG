@@ -50,6 +50,69 @@
   build_mem_pool_session入口 → RmmMemPoolContext构造 → build_pool allocator地址 →
   pool创建 → session.__enter__激活 → session.__exit__显存摘要 →
   validate一致性检查
+## migrate 81b7074: [FEA] Update MAG example to show fp16/bf16 support
+
+- **Upstream commit**: 81b7074 (cugraph-gnn, NVIDIA)
+- **Commit message**: `[FEA] Update MAG example to show fp16/bf16 support`
+- **Upstream diff** (1 file modified):
+  - `python/cugraph-pyg/cugraph_pyg/examples/mag_lp_mnmg.py` — 745行
+    - 新增 `_DTYPE_CHOICES` 元组 + `parse_dtype()` 将字符串映射为 `torch.dtype`
+    - `Classifier.__init__` 新增 `dtype` 参数，`self.dtype` 保存；
+      `wgth.create_embedding` 第4参数从硬编码 `torch.float32` 改为传入 `dtype`
+    - `Classifier.forward`：`w_dtype = self.paper_lin.weight.dtype`，
+      `batch["paper"].x.to(w_dtype)` 保证输入与权重 dtype 匹配；
+      三处 `torch.zeros` 新增 `device=x_paper.device, dtype=x_paper.dtype`，
+      消除硬编码 `device="cuda"`
+    - `feature_store["paper","x",None]` 写入前 `.to(dtype)`
+    - betweenness centrality 写 feature store 时 `.to(dtype)`（原 `.to(float32)`）
+    - 边特征更新：变量名 `stype/dtype` → `src_type/dst_type`（原变量名遮蔽 `dtype` 参数 bug）；
+      `.to(dtype)` 在 `.reshape()` 前执行
+    - `--dtype` argparse 参数，default=`bfloat16`，choices=`_DTYPE_CHOICES`
+    - `model.to(device, dtype)` 双参数
+    - embedding inference loop 中 `feature_store["paper","x1",None]` 新增 `dtype=dtype`；
+      三处 `torch.zeros` 新增 `dtype=dtype`；`plin = model.module.paper_lin` 提取变量
+    - 输出 parquet 前 `.to(torch.float32)` 保证 cudf 兼容性
+
+- **功能说明**:
+  通过 `--dtype float16/bfloat16/float32` 控制模型权重与特征张量的精度，
+  支持低精度训练以节省显存/提升吞吐，同时保证 cudf 输出前强转 float32 维持兼容性。
+  关键修复：变量名 `dtype` 遮蔽同名参数 bug（`stype, _, dtype = etype.edge_type`
+  导致后续 dtype 被覆盖为字符串）在本 commit 一并修复。
+
+### Walpurgis 迁移位置
+
+**新增文件:**
+- `src/walpurgis/examples/mag/mag_lp_mnmg.py`
+
+**迁移要点**:
+- `DTypeRegistry`（parse_dtype 强化）: KeyError → 友好 ValueError + 候选列表
+- `NodeZeroInitializer`: 封装 `torch.zeros(n, hidden_channels, device=ref.device, dtype=ref.dtype)`，
+  消除 `forward()` 和 embedding inference loop 中共 6 处重复
+- `_dbg(tag, msg)`: 统一调试出口，`WALPURGIS_DEBUG=1` 时才打印，零侵入生产路径
+- `_register_wholegraph_embeddings()`: 提取为独立方法，含 `sorted()` 确定性保证 + `_dbg`
+- 变量名 `stype/dtype` → `src_type/dst_type`（沿用上游 81b7074 修复，保持语义清晰）
+
+**改写20%（鲁迅拿法）**:
+- `parse_dtype()` KeyError → ValueError，附候选列表（上游无提示）
+- `NodeZeroInitializer` 对象替代 6 处 `device=..., dtype=...` 内联重复
+- `_dbg()` 全链路断点 print，16个覆盖点:
+  parse_dtype → Classifier.__init__ → _register_wholegraph_embeddings →
+  Classifier.forward（w_dtype / x_paper.shape / zeros shape） →
+  init_pytorch_worker → main args dump / dtype resolved / global_rank info /
+  node_counts / paper feature dtype / bc shape→dtype / edge_attr etype /
+  model constructed / train edges shape / ix_start-end / local_x0 shape /
+  ex_loader plin dtype / concat→float32 for cudf / parquet written
+- `_register_wholegraph_embeddings()` 提取独立方法，可独立测试
+- `NodeZeroInitializer.make()` 在 embedding inference loop 复用，消除重复
+
+**Knuth审查三问**:
+1. diff对比源: dtype 传播路径全覆盖（feature_store写入/zeros初始化/model.to/cupy输出）；
+   变量名遮蔽 bug 已修复（src_type/dst_type）；cudf float32 强转保留
+2. 用户角度bug: `parse_dtype("floatXX")` 原抛 `KeyError: 'floatXX'`，
+   现抛 `ValueError: 不认识的 dtype 'floatXX'，可用选项: [...]`
+3. 系统角度安全: cupy/cudf 不支持 bfloat16，输出前强转 float32 是必要安全门；
+   `WALPURGIS_DEBUG=1` 断点 print 不影响生产路径；`sorted()` 保证跨 rank 嵌入注册顺序
+
 ## migrate 05fe6f4: [FEA] Knowledge Graph/Graph Database Renumbering
 
 - **Upstream commit**: 05fe6f4 (cugraph-gnn, NVIDIA)
