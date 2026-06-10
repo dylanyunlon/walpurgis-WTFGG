@@ -3059,3 +3059,25 @@ if d > 0:           # 整除时 d==0，跳过切片，保留完整 perm
 3. **系统角度安全**: 无安全影响；文档中无硬编码密钥、路径、凭证或敏感信息；删除操作仅减少冗余历史文档
 
 **迁移决策**: SKIP — 纯 `readme_pages/` 文档删除，涉及 cuGraph 0.x 时代 C++ API 过渡说明，与 Walpurgis 时空图 GNN 研究项目无任何关联，无可迁移内容
+
+## migrate f19fc8c: [SKIP] remove build/ci for packages — 纯 CI/conda 基础设施删除，Walpurgis 无对应结构
+
+**上游 commit**: `f19fc8c` (Alexandria Barghi, abarghi@nvidia.com)  
+**上游描述**: remove build/ci for packages  
+**日期**: 2024-06-11
+
+**diff 分析**:
+- 变更范围: 36 个文件，1063 行全量删除，0 行新增
+- 两类删除：
+  1. `ci/` 目录下 16 个 shell 脚本 — `build_cpp.sh`、`build_docs.sh`、`build_wheel_*.sh`、`run_ctests.sh`、`run_*_pytests.sh`、`test_wheel_*.sh`、`wheel_smoke_test_*.py`，全部是 RAPIDS CI 流水线的 conda/wheel 构建与测试入口
+  2. `conda/recipes/` 下 20 个文件 — `libcugraph`、`cugraph`、`pylibcugraph`、`nx-cugraph`、`cugraph-equivariant`、`cugraph-service` 六个 conda 包的 `meta.yaml`、`build.sh`、`conda_build_config.yaml`、安装脚本，包含大量 CUDA 版本矩阵（CUDA 11/12 双分支）、`sccache` S3 配置、`rapids-conda-retry mambabuild` 调用
+
+**Knuth 三维审查**:
+
+1. **diff 对比源**: 所有被删文件均为 RAPIDS cugraph 全栈基础设施（C++/CUDA 多 GPU 图算法库）的 CI 运维脚本，涵盖：`rapids-configure-conda-channels`、`rapids-generate-version`、`rapids-upload-conda-to-s3`、CMake Ninja 构建、openmpi 多 GPU 测试、DGL/PyG conda channel 配置。Walpurgis 是纯 Python 时空图 GNN 研究项目，无 `ci/` 目录，无 `conda/recipes/`，无 C++ 编译步骤，无 RAPIDS 版本管理体系；`wheel_smoke_test_nx-cugraph.py` 中的 `nxcg.betweenness_centrality` 与 Walpurgis 的 `WalpurgisModel` 无任何调用关系；`wheel_smoke_test_pylibcugraph.py` 中的 `SGGraph`/`pagerank` cuPy 测试与 Walpurgis PyG 数据流无交集
+
+2. **用户角度 bug**: 纯基础设施删除，无运行时逻辑，不影响任何用户可感知行为。`build_docs.sh` 中有一处防御性检查 `python -c "import cugraph; print(f'Using cugraph: {cugraph}')"` 保证文档构建前 import 可用——此模式在 Walpurgis 现有 `train_walpurgis.py` 已有对应实践，无需补充。`ci/run_ctests.sh` 的 `ctest --no-tests=error` flag 阻止测试目录缺失时静默通过——Walpurgis 使用 pytest，该细节不适用
+
+3. **系统角度安全**: `ci/*.sh` 脚本中大量引用 `AWS_ACCESS_KEY_ID`、`AWS_SECRET_ACCESS_KEY`、`AWS_SESSION_TOKEN`、`SCCACHE_BUCKET`、`SCCACHE_REGION` 等敏感环境变量——删除操作实为正向安全收益，减少 CI 凭证暴露面。`conda/recipes/libcugraph/meta.yaml` 中 `SCCACHE_S3_KEY_PREFIX` 含架构标注注释 `# [aarch64]` / `# [linux64]`，是 conda-build 条件渲染语法而非实际路径泄露。Walpurgis 不引入任何此类 CI secret，无安全继承风险
+
+**迁移决策**: SKIP — 36 个文件全为 RAPIDS cugraph CUDA C++ 全栈的 CI/conda 打包基础设施历史存档，与 Walpurgis 纯 Python GNN 研究项目技术栈在每一层均无交集。Walpurgis 项目无 `ci/`、无 `conda/recipes/`、无 CMake/C++ 构建、无 RAPIDS 版本管理，强行迁移任何文件均为引入无效噪音。无任何可迁移内容。
