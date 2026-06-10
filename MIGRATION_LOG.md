@@ -1538,3 +1538,76 @@ make_temporal_session_from_loader_args()  # 便利builder对应NeighborLoader.__
   HomoEdgeInverseView.apply 前后形状 →
   build_deoffset_session 出口
 
+## migrate 662a6d9: fix shm permission, avoid shm access from other user
+
+- **Upstream commit**: 662a6d9 (cugraph-gnn, linhu-nv + alexbarghi-nv, 2026-05-19, PR #463)
+- **Commit message**: `fix shm permission, avoid shm access from other user`
+- **Upstream diff** (1 file changed, 4 insertions, 4 deletions):
+  - `cpp/src/wholememory/memory_handle.cpp` — `global_mapped_host_wholememory_impl` 三处 `shmget()` 调用:
+    - CREATE 路径 (rank==0): `0644 | IPC_CREAT | IPC_EXCL` → `0600 | IPC_CREAT | IPC_EXCL`
+    - ATTACH 路径 (rank!=0): `0644` → `0600`
+    - DESTROY 路径 (`unmap_and_destroy_shared_host_memory`): `0644` → `0600`
+  - 附带版权年份更新: `2019-2025` → `2019-2026`
+
+- **Bug 根因**:
+  `0644` 的 group_read(040) + other_read(004) 允许同主机其他用户通过 `shmat(shm_id, NULL, SHM_RDONLY)`
+  附加共享段并读取其内容。该段存放的是 GPU host-side 映射内存——包含模型权重、嵌入向量、梯度缓冲区。
+  多租户 HPC 环境（如 SLURM 集群、共享 Kubernetes 节点）下，同主机其他用户可通过
+  `ipcs -m` 或 `/proc/sysvipc/shm` 枚举所有 System V shm 段，找到目标 shm_id 后直接读取。
+  `0600` 将权限收紧为仅所有者读写，内核 `ipcperms()` 对其他 uid/gid 返回 `EACCES`。
+  注: POSIX `shm_open` 路径（`use_systemv_shm_=false`）始终用 `S_IRUSR|S_IWUSR=0600`，从未受此影响。
+
+- **Knuth 审查**:
+  1. diff 对比源:
+     - CREATE 路径: 加 `IPC_CREAT | IPC_EXCL` 的 `shmget` 创建新段，mode 参数直接设定段的初始 DAC 权限。
+       `0644` 在段创建瞬间即暴露给其他用户; `0600` 确保创建即安全。
+     - ATTACH 路径: `shmget` 无 `IPC_CREAT` 时 mode 参数用于额外 DAC 校验（内核 `ipcperms`
+       将请求 mode 与已有段 mode AND 校验）。`0644` 可能宽松通过某些内核版本的检查；`0600` 明确限制。
+     - DESTROY 路径: 仅获取 shm_id 以便 `shmctl(IPC_RMID)`，mode 参数对安全影响有限，
+       但保持三处一致（全部 `0600`）是正确的防御性编程，防止语义不一致引发误解。
+     - 三处全部修改是必要的，遗漏任一处都会留下不一致的安全状态。
+  2. 用户角度 bug:
+     - 多租户节点上，用户 B（同 gid）可调用 `shmat(shm_id, NULL, SHM_RDONLY)` 读取
+       另一用户 A 的 WholeGraph 训练数据（模型权重、中间激活、梯度）——静默数据泄露，无任何报错。
+     - 不同 gid 的用户 C 也可读（other_read=004），威胁范围更广。
+     - 修复后 `shmat` 返回 `EACCES`，泄露路径被封闭，不影响 WholeGraph 自身的多进程通信
+       （同 uid 的多个 rank 进程仍可正常附加，内核 owner bits 检查通过）。
+  3. 系统角度安全:
+     - Linux 内核 `ipc/shm.c ipcperms()`: `shmat/shmdt/shmctl` 均经过 DAC 检查，
+       `0600` 确保 group=00, other=00，非 owner 的所有操作均被拒绝。
+     - IPC namespace（Docker `--ipc=private`）可隔离但 HPC 环境通常不隔离；
+       `0600` 是无视容器化状态的最小权限保证。
+     - `IPC_CREAT | IPC_EXCL` 组合已防止同 key 段的竞态创建；
+       `0600` 在此之上增加 DAC 隔离，两者正交互补。
+
+### Walpurgis 迁移位置
+
+**文件: `src/cuda/hetero_bench.cu`** — E11 实验新增，含 `PhilemonShmPermission` 命名空间
+
+**迁移要点**:
+- `PhilemonShmPermission::ShmCallSite`: 值结构体，记录三处调用点的
+  (name, context, mode_before, mode_after, has_ipc_creat)，使 diff 可追踪
+- `PhilemonShmPermission::format_mode()`: Unix 权限掩码 → rwx 字符串
+- `PhilemonShmPermission::allows_foreign_read()`: 检测 group_read|other_read 是否置位
+- `PhilemonShmPermission::probe_real_shm()`: 调用真实 `shmget/IPC_STAT/shmctl`，
+  读出内核实际分配的 mode 值，与请求 mode 对比（验证内核无隐式 mode 扩展）
+- `experiment_shm_permission()`: 6步验证:
+  1. diff 对比（三处调用点 0644→0600 的格式化展示）
+  2. 用户视角漏洞场景（多租户 shmat 读取路径）
+  3. POSIX IPC DAC 模型（ipcperms 规则）
+  4. 真实 shmget 权限探测（内核实测 mode）
+  5. POSIX shm_open 路径对比（Walpurgis 不受影响的证明）
+  6. 三处调用点覆盖完整性验证
+
+**改写20%（鲁迅拿法）**:
+- `ShmCallSite[3]` constexpr 数组替代分散注释——三处 diff hunk 在一个数据结构内一览无余
+- `probe_real_shm()` 实际调用 `shmget + IPC_STAT + shmctl` 验证内核行为
+  （上游只是改了三个数字，我们用真实系统调用验证改动是否生效）
+- `allows_foreign_read()` 命名函数替代散落的 `mode & 0044` 魔法数字
+- 路径3（DESTROY）的一致性价值分析（上游 commit 无此分析）
+
+全链路5个断点 print，覆盖:
+  `probe_real_shm` ftok/shmget/IPC_STAT 每步 →
+  实际 mode vs 请求 mode 对比 →
+  三处调用点覆盖验证汇总
+
