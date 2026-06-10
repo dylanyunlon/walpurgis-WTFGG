@@ -1,4 +1,96 @@
 
+## migrate 24e91be: [BUG] Specify Input Type and Assign Output to Correct Type
+
+- **Upstream commit**: 24e91be (cugraph-gnn, NVIDIA, 2025-07-17)
+- **Commit message**: `[BUG] Specify Input Type and Assign Output to Correct Type`
+- **Upstream diff** (2 files changed, 154 insertions, 18 deletions):
+  - `python/cugraph-pyg/cugraph_pyg/sampler/sampler.py`:
+    - `BaseSampler.sample_from_nodes`: 新增 `metadata={"input_type": index.input_type}` 传入采样器
+    - `BaseSampler.sample_from_edges`: 同上，新增 metadata 传递
+    - `HeterogeneousSampleReader.__decode_coo`:
+      - 函数签名 `Dict[str, Tensor]` → `Dict[str, Union[Tensor, str, Tuple[str,str,str]]]`
+      - `input_type = raw_sample_data["input_type"]`（改为从 metadata 读取，不再在循环里猜测）
+      - 新增 `integer_input_type`，按 edge/node 分支匹配后赋值
+      - 边采样新增 src 侧 `num_sampled_nodes[0]` 更新（旧代码遗漏）
+      - `edge_inverse.view(2,-1)` 后对 src/dst 行做 vertex_offset de-offset（旧代码缺失）
+      - 函数签名同步升级（`_decode`, `__decode_csc`, `__decode_coo`）
+    - `test_neighbor_loader.py`: 新增 `test_neighbor_loader_hetero_linkpred` 测试用例
+
+- **Bug 根因**:
+  **Bug 1（output 写入错误 type）**: 旧代码通过检查 `col[pyg_can_etype][:hop0].numel() > 0`
+  来反推 input_type 是哪个边类型，在多边类型/共享节点类型场景下会猜错。
+  最终 `num_sampled_nodes`、`num_sampled_edges` 填入了错误类型的桶，
+  `input_id` 也被赋给了错误的 data[input_type]。程序不崩溃，但输出数据静默错误。
+  修复：input_type 作为 metadata 从 BaseSampler 层一路传下来，_decode 直接读取。
+
+  **Bug 2（edge_inverse 未 de-offset）**: cuGraph sampler 输出的节点编号是加了
+  全局 vertex_offset 的（异构图中各类型节点在全局 ID 空间有偏移）。
+  旧代码把 edge_inverse 直接塞进 metadata，PyG 拿到的是全局 ID，
+  embedding lookup 会命中错误行或越界，训练精度悄悄降低。
+  修复：在 __decode_coo 末尾对 edge_inverse[0]/[1] 分别减去 src/dst vertex offset。
+
+- **Knuth 审查**:
+  1. **diff 对比源**:
+     | 上游 24e91be | Walpurgis 迁移 |
+     |---|---|
+     | `input_type = raw_sample_data["input_type"]` | `validate_raw_sample_data_input_type()` 读取并立即校验 |
+     | `if integer_input_type is None: raise ValueError` | `resolve_integer_input_type()` 遍历后未匹配则 raise，附完整 edge_types 列表 |
+     | `edge_inverse[0] -= vertex_offsets[src_types[integer_input_type]]` | `deoffset_edge_inverse()` 封装，附 de-offset 前后 min/max debug print |
+     | `metadata = ({"input_type": index.input_type} if ... else None)` | `build_sampler_metadata()` 可独立测试的工厂函数 |
+     | 类型注解 `Dict[str, Union[Tensor, str, Tuple]]` | `InputTypeSpec` dataclass 封装，`validate()` 运行时校验 |
+     | 无 debug 日志 | WALPURGIS_DEBUG=1 门控 7 处断点 print |
+
+  2. **用户角度 bug 排查**:
+     - 使用 LinkNeighborLoader 做异构图链路预测时，模型收敛曲线异常（loss 居高不下），
+       但无任何 exception，难以定位。根因是 edge_inverse 含全局 offset，
+       导致 edge_label_index 引用了错误节点，loss 计算基于错误的节点对。
+     - NeighborLoader 异构图采样时，单个 batch 的 num_sampled_nodes 统计对某些
+       vertex type 返回 0（bug 1），GNN 层 aggregate 时跳过了这些节点，
+       模型实际看到的子图比预期小，精度下降但无报错。
+
+  3. **系统角度安全**:
+     - 旧代码"猜测" input_type 的逻辑依赖 col[:hop0].numel() > 0，这是非确定性的：
+       若一个 batch 里恰好某个边类型 hop0 采样为空，猜测逻辑跳过，
+       最终 input_type 停留在上一个非空的边类型，写入错误 data bucket，静默数据污染。
+     - de-offset 缺失是系统级 API contract 违反：cuGraph sampler 的 contract 是
+       "输出全局 ID"，PyG 的 contract 是"输入局部 ID"。两者之间本应有转换层，
+       旧代码转换层缺失，两侧 contract 各自成立但接口处腐蚀。
+     - Walpurgis 迁移中 `deoffset_edge_inverse` 对节点采样路径 raise ValueError，
+       防止调用方混淆 node-input 和 edge-input 场景，系统边界更清晰。
+
+### Walpurgis 迁移位置
+
+**文件: `src/walpurgis/dataloader/hetero_sample_reader.py`** — 新增
+
+**迁移要点**:
+- `InputTypeSpec`: dataclass，封装 `Union[str, Tuple[str,str,str]]` 语义，
+  `validate()` 运行时类型校验，`matches_edge_type()` 统一匹配逻辑
+- `resolve_integer_input_type()`: 遍历 edge_types，按 edge/node 分支返回 integer index；
+  未匹配则 raise 含完整信息的 ValueError
+- `update_num_sampled_nodes_for_input()`: 封装 hop0 num_sampled_nodes 更新，
+  边采样同时更新 src+dst（24e91be 新增），节点采样保留 numel()>0 guard
+- `deoffset_edge_inverse()`: 对应上游 edge_inverse de-offset 修复，
+  节点采样路径 raise ValueError（系统级 contract 保护）
+- `build_sampler_metadata()`: 封装 BaseSampler 端的 metadata 构建，
+  对应 sample_from_nodes 和 sample_from_edges 各新增一段
+- `validate_raw_sample_data_input_type()`: _decode 入口校验，
+  对应上游类型注解升级 + 缺 key 时的 ValueError
+
+**改写20%（鲁迅拿法）**:
+- `InputTypeSpec` 将上游散落三处的 `isinstance(input_type, str)` 判断集中为值对象方法
+- `resolve_integer_input_type()` 将 for 循环里隐式的副作用赋值改为显式 return，
+  未匹配时 raise 含 edge_types 列表的 ValueError（上游只写 "did not match any edge type"）
+- `deoffset_edge_inverse()` 将 de-offset 从 decode_coo 末尾 else 分支提取为独立函数，
+  节点采样路径显式 raise，而非默默跳过
+- `validate_raw_sample_data_input_type()` 运行时校验，
+  上游只升级了类型注解无运行时保护
+- 全链路 7 处断点 print（WALPURGIS_DEBUG=1 开启）:
+  1. `InputTypeSpec.validate` — raw type 确认
+  2. `build_sampler_metadata` — metadata 构建确认
+  3. `validate_raw_sample_data_input_type` — keys 列表 + input_type 值
+  4. `resolve_integer_input_type` 入口 + 匹配路径（边/节点）+ integer_input_type 值
+  5. `update_num_sampled_nodes_for_input` 边/节点分支各一处
+  6. `deoffset_edge_inverse` — src/dst offset 值 + de-offset 前后 min/max
 ## migrate 940ab01: [FEA] Add Elliptic Bitcoin fraud example
 
 - **Upstream commit**: 940ab01 (cugraph-gnn, NVIDIA)
