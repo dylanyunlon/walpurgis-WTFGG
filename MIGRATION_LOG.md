@@ -2514,3 +2514,72 @@ if d > 0:           # 整除时 d==0，跳过切片，保留完整 perm
 - 注释标注 `std::unary_function` 弃用原因 + C++17 删除时间线
 
 ---
+
+## migrate d43e6c1: [BUG] Fix warnings, fix MNMG graph store test, Matrix Accessors
+
+- **Upstream commit**: d43e6c1 (cugraph-gnn, NVIDIA, 2025-2026)
+- **Commit message**: `[BUG] Fix warnings, fix MNMG graph store test, Matrix Accessors`
+- **Upstream diff** (3 files changed):
+  - `python/cugraph-pyg/cugraph_pyg/tensor/dist_matrix.py`:
+    - `local_col` / `local_row`: 删除 `get_local_tensor()` 调用，改为手工按 rank 切片:
+      `q = sz // world_size; r = sz % world_size`
+      `ix = arange(q*rank+rank, q*(rank+1)+rank+1) if rank < r else arange(q*rank+r, q*(rank+1)+r)`
+    - `local_coo`: `torch.stack(self.get_local_tensor())` → `torch.stack([self.local_col, self.local_row])`
+    - 版权年份 2025 → 2025-2026
+  - `python/cugraph-pyg/cugraph_pyg/data/graph_store.py`:
+    - `num_vertices` 4 处赋值增加 `int()` 强制转换，防止 numpy 标量污染 dict
+    - `num_vertices[edge_attr.edge_type[1]]` → `num_vertices[edge_attr.edge_type[2]]`
+      **关键 bug**: edge_type[1] 是关系名（如 "knows"），edge_type[2] 才是 dst 顶点类型（如 "person"）
+  - `python/cugraph-pyg/cugraph_pyg/tests/data/test_graph_store_mg.py`:
+    - `src/dst` 增加 `.to(torch.int64)` 强转，防止 int32 NCCL 类型不匹配
+    - 验证逻辑从局部直接比较改为 `all_gather sizes → all_gather rei → concat → assert`
+    - 版权年份 2024-2025 → 2024-2026
+
+- **Knuth 审查**:
+  1. **diff 对比源**:
+     | 上游 d43e6c1 | Walpurgis 迁移 |
+     |---|---|
+     | `local_col/row` 内联 `q, r, ix` 公式（重复两次）| `SlicePartitioner.compute_indices()` 策略对象，一次提取 |
+     | `local_coo: torch.stack([self.local_col, self.local_row])` | 委托 `WalpurgisDistMatrix` property，复用 SlicePartitioner |
+     | `num_vertices[t] = int(max(...)) if t in ... else int(...)` | `VertexCountRegistry.update_from_size()` 封装 + 类型断言 |
+     | `num_vertices[edge_type[2]] = int(...)` 裸写 | `VertexCountRegistry.get_dst_type_key()` 明确提取 [2] |
+     | 测试内联 all_gather 3 步逻辑 | `GatheredEdgeVerifier.gather_edge_index()` + `verify_against()` |
+
+  2. **用户角度 bug**:
+     - `edge_type[1]` vs `edge_type[2]` 是 silent typo，编译无错、运行时
+       `num_vertices["knows"] = 34` 写入关系名为键，后续 `num_vertices["person"]` KeyError，
+       错误信息完全看不出是哪里写错了键，排查成本极高。
+     - `get_local_tensor()` 是 WholeGraph 私有 API，文档无保证，若上游改变其返回
+       （如增加 padding row），`local_coo` 静默返回错误维度，GNN 训练 loss 异常
+       但无报错，用户只能从 metric 下降中猜测。
+     - 旧测试局部比较：rank-0 与 rank-1 各自验证自己的切片正确，但若
+       all_gather 后全局顺序错位（如 edge_type[1] bug 导致 src/dst 混淆），
+       两 rank 都通过，bug 静默进入生产。
+
+  3. **系统角度安全**:
+     - `int()` 强制转换是 numpy 2.x 兼容的必要防御：`numpy.int64.__hash__` 在 2.x 中
+       与 `int.__hash__` 不同，dict 键查找 `num_vertices["person"]` 在 3.9+ numpy 2.x
+       下可能找不到由 `numpy.int64("person")` 写入的键（虽然字符串键此处无 numpy 问题，
+       但值若是 numpy 标量则 max() 返回 numpy.int64，后续 `num_vertices[t] = numpy.int64(34)`
+       与 `if num_vertices[t] > 0` 的 Python int 比较在极端情况下行为改变）。
+     - 手工切片公式数学可证（总长 = r*(q+1) + (world_size-r)*q = q*world_size + r = sz ✓），
+       与 WholeGraph 版本升级解耦，是更安全的长期做法。
+
+### Walpurgis 迁移位置
+
+**文件: `src/walpurgis/core/dist_matrix.py`** — 新增
+
+**迁移要点**:
+- `SlicePartitioner`: `compute_indices(sz, rank, world_size)` 提取 d43e6c1 切片公式，
+  `slice_tensor()` 一步到位，消除 local_col / local_row 的代码重复
+- `VertexCountRegistry`: `update_from_size()` 封装 int() 转换 + max 更新，
+  `get_dst_type_key()` 明确提取 edge_type[2] 防止 [1] 混淆，`update_from_index()` 处理边索引推断
+- `GatheredEdgeVerifier`: `gather_edge_index()` 封装 all_gather 三步，
+  `verify_against()` 全局断言，替代旧测试局部比较盲区
+- `WalpurgisDistMatrix`: `local_col` / `local_row` / `local_coo` property 委托 SlicePartitioner，
+  语义清晰，与上游 DistMatrix 接口兼容
+- 12 个 WALPURGIS_DEBUG=1 断点，覆盖全链路:
+  断点1-3: SlicePartitioner 切片计算 →
+  断点4-6: VertexCountRegistry 类型安全更新 + dst_key 提取 →
+  断点7-9: GatheredEdgeVerifier all_gather + 全局验证 →
+  断点10-12: WalpurgisDistMatrix local_col / local_row / local_coo property
