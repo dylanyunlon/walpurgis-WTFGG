@@ -122,6 +122,64 @@
 - 全链路6个 `WALPURGIS_DEBUG=1` 断点 print, 覆盖:
   RandomStateConfig构造 → rank0_generate原始seed → broadcast前后对比 →
   final_seed+rank偏移 → SamplerRandomState构造 → make_*_random_state入口
+## migrate 8bf2012: [FEA] Support Link Prediction and Negative Sampling in DGL
+
+- **Upstream commit**: 8bf2012 (cugraph-gnn, NVIDIA)
+- **Commit message**: `[FEA] Support Link Prediction and Negative Sampling in DGL`
+- **Upstream diff** (4 files changed):
+  - `graph.py` — 新增 `__edge_lookup_table`, `_clear_graph()`, `_to_numeric_etype()`,
+    `_edge_lookup_table` property, `find_edges()`, `global_uniform_negative_sampling()`;
+    删除遗留 `print(u,)` 调试语句
+  - `tests/conftest.py` — 新增 `create_karate_bipartite()` + `karate_bipartite` fixture
+  - `tests/test_graph.py` — 新增 `test_graph_find`, `test_graph_uniform_negative_sample`;
+    重构 `test_graph_make_heterogeneous_graph` 使用 fixture
+  - `tests/test_graph_mg.py` — 新增 MG 版 find/neg_sampling 测试; 补 `destroy_process_group()`
+
+- **功能说明**:
+  为 cuGraph-DGL Graph 类添加链路预测所需的两个核心方法:
+  1. `find_edges(eid, etype)`: 给定边ID序列返回对应 (src, dst) 节点对; 内部依赖
+     `pylibcugraph.EdgeIdLookupTable` 懒加载缓存; 结果减 vertex_offset 转为局部节点ID。
+  2. `global_uniform_negative_sampling(num_samples, ...)`: 构造图中不存在的 (src, dst) 对;
+     异构图用 bias 掩码确保 src 采样只命中 src 类型节点、dst 采样只命中 dst 类型节点;
+     支持多GPU (all_reduce + 顶点切分); exclude_self_loops 过滤自环。
+  `_clear_graph()` 统一清理3个缓存字段 (原代码4处散落2行赋值, 新增 edge_lookup_table 后防漏清)。
+
+- **Knuth 审查**:
+  1. diff对比源: `_clear_graph()` 替代4处散落的2行赋值; `_to_numeric_etype` 排序键必须与
+     C层 EdgeIdLookupTable 索引约定严格一致 (排序不同则 lookup 返回错误节点对);
+     `find_edges` 减 vertex_offset 是关键正确性要求 (全局ID → 局部ID)
+  2. 用户角度bug: `[:num_samples]` 截断是 TODO workaround (rapidsai/cugraph#4672),
+     多GPU时各 rank 负样本可能重叠降低多样性但不崩溃; `redundancy` 参数静默忽略无报错
+  3. 系统角度安全: `_clear_graph()` 遗漏清理 `__edge_lookup_table` → C层悬空指针 CUDA fault;
+     多GPU `array_split` 当 world_size > 顶点数时产生空 bias → negative_sampling 返回0样本
+
+### Walpurgis 迁移位置
+
+**文件: `src/walpurgis/models/link_pred_neg_sampling.py`** — 新增
+
+**迁移要点**:
+- `GraphClearSession`: 封装 `_clear_graph()` 三字段清理为可审计会话;
+  `validate_cleared()` 调试时验证无缓存泄漏 (Python 无此校验)
+- `EdgeTypeIndex`: 封装 `_to_numeric_etype()` 为带缓存的值对象;
+  `dump_table()` 使全部 etype→index 映射可见 (Python 内联 dict comprehension 无此能力)
+- `EdgeLookupSession`: 封装 `_edge_lookup_table` property + `find_edges()` 逻辑;
+  `_resolve_col_names()` 消除 "sources"/"destinations" 魔法字符串内联
+- `NegBiasPlan` + `_BiasBuilder`: 对应 `global_uniform_negative_sampling()` 掩码构建树;
+  三条路径提取为 `_homo()` / `_hetero_same_type()` / `_hetero_diff_type()` 静态方法
+- `WalpurgisNegSamplingSession`: build_bias_plan() + execute() 两阶段分离;
+  多GPU切分逻辑提取为 `apply_multi_gpu_split()`; 空 bias 空数组警告
+- `KarateGraphBipartiteFactory`: 对应 conftest.py `create_karate_bipartite()`;
+  `_partition_edges()` + `_offset_edges()` 分离分区和偏移转换关注点
+
+**改写20%（鲁迅拿法）**:
+- `GraphClearSession.validate_cleared()`: 新增 use-after-free 防御性验证 (Python 无)
+- `EdgeTypeIndex.dump_table()`: 新增映射表 dump (类比 fp16_grad_dedup dump_dispatch_table)
+- `EdgeLookupSession._resolve_col_names()`: 提取 src/dst 列名魔法字符串为方法
+- `NegBiasPlan.validate()`: 新增 bias/vertices 长度一致性检查 + WARN 打印
+- `WalpurgisNegSamplingSession.apply_multi_gpu_split()`: 提取多GPU切分 + 空数组警告
+- 全链路7处断点 print (WALPURGIS_DEBUG=1 门控):
+  EdgeTypeIndex映射表 → EdgeLookupSession.find_edges入口+列名选择 →
+  _BiasBuilder路径选择+concat大小 → WalpurgisNegSamplingSession截断量+self-loop过滤数量
 
 ## migrate c3799ae: [BUG] Use memory pool in movielens example
 
