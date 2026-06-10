@@ -194,11 +194,15 @@ struct FeatureDtypeTolerance {
     float rtol;
 };
 
+// 220563b: feature_dtype field uses our internal ids (0=float32, 1=fp16, 2=bf16).
+// The wire-protocol ids from DtypeRegistry (float32=0, float16=5, bf16=7) are
+// distinct — only used for cross-language serialization.
+// This function operates on internal ids (same as before), not wire ids.
 inline FeatureDtypeTolerance feature_dtype_tolerance(uint8_t dtype) {
     switch (dtype) {
-        case 1: return {5e-3f, 5e-3f};  // fp16
-        case 2: return {2e-2f, 2e-2f};  // bf16
-        default: return {1e-5f, 1e-5f}; // fp32
+        case 1: return {5e-3f, 5e-3f};  // fp16 (internal id=1, wire id=5)
+        case 2: return {2e-2f, 2e-2f};  // bf16 (internal id=2, wire id=7 per 220563b)
+        default: return {1e-5f, 1e-5f}; // fp32 (internal id=0, wire id=0)
     }
 }
 

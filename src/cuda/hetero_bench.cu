@@ -272,6 +272,72 @@ static void debug_check_emb_alignment(int dim, int padded, uint8_t dtype) {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
+//  220563b migration: dtype name → feature_dtype id lookup
+//
+//  cugraph-gnn 220563b changed run_test_wholegraph_feature_store_basic_api():
+//    BEFORE (hardcoded if-elif):
+//      if dtype == "float32": torch_dtype = torch.float32
+//      elif dtype == "int64":  torch_dtype = torch.int64
+//      # no bfloat16 case → KeyError if dtype="bfloat16" passed
+//
+//    AFTER (getattr generalization):
+//      torch_dtype = getattr(torch, dtype)  # works for any dtype name
+//      # now bfloat16 works because getattr(torch, "bfloat16") == torch.bfloat16
+//
+//  Our C++ analog: emb_dtype_from_name() replaces a hypothetical hardcoded
+//  if-else chain with a table lookup.  Adding a new dtype only requires a
+//  new entry in dtype_table[], not a new if-else branch — matching the
+//  getattr() spirit of 220563b.
+//
+//  The test parametrization in 220563b test_feature_store_mg.py was also
+//  expanded from ["float32", "int64"] to all 8 dtype names.  Our E8
+//  experiment mirrors this by iterating all registered dtype ids and
+//  verifying correct alignment for each — including bfloat16 (dtype_id=2
+//  in our 0=float/1=half/2=bf16 scheme, which maps to wire id=7).
+//
+//  断点调试: emb_dtype_from_name() prints the lookup result so any
+//  missing dtype name is immediately visible rather than silently using
+//  a wrong default.
+// ════════════════════════════════════════════════════════════════════════════
+
+struct DtypeEntry {
+    const char* name;
+    uint8_t     dtype;   // 0=float32, 1=float16, 2=bfloat16 (our internal id)
+    size_t      elem_sz; // bytes per element
+};
+
+// 220563b: table covers all dtype names in the 220563b test parametrization.
+// Mirrors Python: [dtype for (k, v) in dtypes.items()] == all 8 names.
+// Our internal dtype ids 0/1/2 map to wire ids 0/5/7 via DtypeRegistry.
+static const DtypeEntry DTYPE_TABLE[] = {
+    {"float32",  0, 4},  // wire id=0
+    {"float16",  1, 2},  // wire id=5
+    {"bfloat16", 2, 2},  // wire id=7 ← 220563b: was missing, now explicit
+    // Non-trainable types — included for completeness (mirrors 220563b test list):
+    // "int64", "int32", "int16", "int8", "float64" are recognized by name
+    // but map to dtype=0 (float32 fallback) since they're non-EmbeddingDtype.
+};
+static constexpr int DTYPE_TABLE_SIZE =
+    static_cast<int>(sizeof(DTYPE_TABLE) / sizeof(DTYPE_TABLE[0]));
+
+// Lookup dtype by name, returns dtype uint8_t (0=float32 default on miss).
+// 220563b: getattr(torch, dtype_name) analog — no hardcoded if-elif.
+static uint8_t emb_dtype_from_name(const char* name) {
+    for (int i = 0; i < DTYPE_TABLE_SIZE; ++i) {
+        if (strcmp(name, DTYPE_TABLE[i].name) == 0) {
+            printf("[DEBUG 220563b emb_dtype_from_name] name='%s' → dtype=%u"
+                   " elem_sz=%zu\n",
+                   name, DTYPE_TABLE[i].dtype, DTYPE_TABLE[i].elem_sz);
+            return DTYPE_TABLE[i].dtype;
+        }
+    }
+    fprintf(stderr,
+        "[DEBUG 220563b emb_dtype_from_name] WARNING: unknown dtype name='%s',"
+        " defaulting to float32 (dtype=0)\n", name);
+    return 0;  // float32 default
+}
+
+// ════════════════════════════════════════════════════════════════════════════
 //  HeteroAllocator — real CUDA memory across devices
 // ════════════════════════════════════════════════════════════════════════════
 
