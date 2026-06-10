@@ -2221,3 +2221,54 @@ if d > 0:           # 整除时 d==0，跳过切片，保留完整 perm
   断点9-10: DtypeNegotiator encode/negotiate →
   断点11-12: FeatureStoreFactory resolve 路径选择 →
   断点13-14: EdgelistBuilder 各 edge-type sizes + 最终 shape/eid range
+
+## migrate 757992f: Improving the taobao_mnmg example
+
+- **Upstream commit**: 757992f (cugraph-gnn, NVIDIA, 2025)
+- **Commit message**: `Improving the taobao_mnmg example`
+- **Upstream diff** (1 file changed, 6 insertions, 3 deletions):
+  - `python/cugraph-pyg/cugraph_pyg/examples/taobao_mnmg.py`:
+    - `train()` 新增 `max_iter=None` 参数，循环内 `if max_iter is not None and i >= max_iter: break`
+    - 进度打印 `{time}` → `{time:.4f}` 精度 4 位
+    - `total_loss += float(loss)` → `float(loss.detach())` 切断计算图，修复隐式显存泄漏
+    - `argparse` 新增 `--max_iter` 参数
+    - 主循环 `train(model, optimizer, train_loader)` → `train(..., args.max_iter)`
+
+- **Knuth 审查**:
+  1. **diff 对比源**:
+     | 上游 757992f | Walpurgis 迁移 |
+     |---|---|
+     | `train(..., max_iter=None)` | `train(..., cfg: TrainConfig)` |
+     | `if max_iter is not None and i >= max_iter: break` 内联 | `IterGuard(cfg.max_iter).should_stop(i)` 封装 |
+     | `float(loss.detach())` 裸调 | `safe_loss_item(loss)` 带值域断言 [0, +inf) |
+     | `return total_loss / total_examples` 标量 | `return TrainResult` 数据类，保留各分量 |
+     | `argparse.Namespace` 裸访问 | `TrainConfig` dataclass + `__post_init__` 校验 |
+     | `:.4f` 进度打印直接 print | `_dbg()` 统一调试出口，`WALPURGIS_DEBUG=1` 开关 |
+
+  2. **用户角度 bug**:
+     - `--max_iter 0` 时上游行为：`i=0` 立即 break，`total_examples=0`，
+       `return 0/0` → `ZeroDivisionError`，无任何提示。
+       `TrainConfig.__post_init__` 增加 `max_iter >= 1 或 None` 校验。
+     - `loss.detach()` 后若产生 `NaN`（学习率过大 + 梯度爆炸），
+       `total_loss` 累加 `NaN`，最终打印 `Loss: nan`，上游无报警。
+       `safe_loss_item()` 每步断言 `0 <= v < inf`，提前定位发散。
+     - `max_iter` 分布式一致性：各 rank batch 数量不同时，
+       rank-A 提前截断而 rank-B 仍在迭代，DDP AllReduce 导致 NCCL 超时。
+       上游同样有此隐患，`IterGuard` TODO 注明修复思路（截断前广播 stop 信号）。
+
+  3. **系统角度安全**:
+     - `float(loss)` 隐式持有整个前向计算图，每步累加一个图节点引用，
+       epoch 越长显存线性增长，最终 OOM。`loss.detach()` 零拷贝断开 `grad_fn`，
+       GC 在每步 `backward()` 后立即回收，是大规模分布式训练的必要做法。
+     - `safe_loss_item()` 值域断言 `[0, +inf)` 保证 NaN/Inf 不静默进入累加器。
+
+### Walpurgis 迁移位置
+
+**文件: `src/walpurgis/examples/taobao/taobao_mnmg.py`** — 新增
+
+**迁移要点**:
+- `TrainConfig`: dataclass 封装超参，`__post_init__` 校验 `max_iter >= 1 or None`，`lr > 0`，`epochs >= 1`
+- `TrainResult`: dataclass 封装单 epoch 结果，`.avg_loss` property 含 ZeroDivisionError guard
+- `IterGuard`: 封装 max_iter 截断逻辑，`should_stop(i)` 可单元测试，TODO 注明分布式一致性隐患
+- `safe_loss_item()`: `loss.detach()` + 值域断言 `[0, +inf)`，NaN/Inf 立即 `RuntimeError`
+- `_dbg()`: `WALPURGIS_DEBUG=1` 调试出口，覆盖全链路断点 print
