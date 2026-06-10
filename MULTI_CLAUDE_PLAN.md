@@ -1,5 +1,7 @@
 # Walpurgis Multi-Claude 开发计划
 
+## ✅ Phase 2 全部完成 (M301-M450) — Claude-6 (M426-M450) 收尾于 2026-06
+
 ## 状态总结 (Claude-7 当前 — 本轮主控)
 
 ### SOTA 对比 (METR-LA, avg 12 horizons)
@@ -191,11 +193,13 @@ cat experiments/results/summary.json
 - 备注: SYNTH 3-epoch CPU run显示种子间有波动属正常; 服务器200 epoch完整训练方可评估真实稳定性
 - 任务文件: tasks/task_claude5_M401_M425.md
 
-### 第六位 Claude (M426-M450) — 待执行
+### 第六位 Claude (M426-M450) ✅ 已完成
 **角色**: 论文最终收尾
-- 汇总所有数据 → 完善tex
-- pdflatex编译验证
-- 最终commit + push
+- ablation.json → 新增 Table (tab:ablation): baseline MAE=5.04 / no_adp_emb=5.28 (+4.8%) / no_temp_attn=6.28 (+24.7%)
+- multi_seed.json → 确认 seed123=6.68, seed456=5.78, mean±std=6.23±0.45 (3ep CPU SYNTH)
+- 插入 §RQ3b: Forecasting Module Ablation (消融表 + 多种子稳定性段落)
+- pdflatex 两遍编译通过 (10 pages, 304 KB, 零 Error)
+- 最终 commit + push → Phase 2 全部完成
 - 任务文件: tasks/task_claude6_M426_M450.md
 
 ---
