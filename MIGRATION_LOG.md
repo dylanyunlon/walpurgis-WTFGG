@@ -44,6 +44,62 @@
   args.validate 参数 dump → node 文件路径 → local_num_nodes →
   all_gather前后 → cumsum offset → renumber_store.put/get →
   edge 文件路径(bug-fix 标注) → src/dst 映射 → 写出路径确认
+## migrate fbea7cb: Fix append unique
+
+- **Upstream commit**: fbea7cb (cugraph-gnn, linhu-nv, 2026-04-01, PR #423)
+- **Commit message**: `Fix append unique`
+- **Upstream diff** (2 files changed, 36 insertions, 75 deletions):
+  - `wholememory_binding.pyx` — 6个 `python_cb_wrapper_*` cdef 函数:
+    废弃手工 `PyTuple_New / Py_INCREF / PyTuple_SetItem / PyObject_CallObject / Py_DECREF`，
+    改用 Cython 原生 `<object>` 转型后直接调用 Python 函数；
+    `temp_malloc / output_malloc` 不再传 `PyWholeMemoryTensorDescription` / `PyMemoryAllocType` 对象，
+    改传 `(py_shape: tuple, py_dtype: int, py_malloc_type_int: int)`。
+  - `wholegraph_env.py` — `torch_malloc_env_fn` 签名同步更新:
+    旧 `(tensor_desc: PyWholeMemoryTensorDescription, malloc_type: PyMemoryAllocType, ...)`
+    → 新 `(shape: tuple, dtype_int: int, malloc_type_int: int, ...)`;
+    内部 `malloc_type.get_type()` 改为 `int(wmb.WholeMemoryMemoryAllocType.Mat*)` 比较;
+    `tensor_desc.dtype` 改为 `wmb.WholeMemoryDataType(dtype_int)` 重建枚举。
+
+- **Bug 根因**:
+  标题 "append unique" 指向 `PyTuple_SetItem` 的 steal-reference 语义问题。
+  CPython 文档: `PyTuple_SetItem` 对传入 item "steals" 引用 (不额外 incref)。
+  旧代码在 `Py_INCREF(item)` 后调用 `SetItem` → tuple 持有那份引用；
+  `Py_DECREF(args)` 时 tuple 析构减1，但外部的 `+1 INCREF` 永不归还 → **引用计数泄漏**。
+  `output_malloc` 中更有 `SetItem(0, <object><PyObject*>py_tensor_desc)` 多余往返转换，
+  与 `temp_malloc` 版本行为不对称，存在 **潜在 double-free 风险**。
+  新代码全部交由 Cython 编译器管理引用计数，根除上述问题。
+
+### Walpurgis 迁移位置
+
+**文件: `src/walpurgis/models/wholememory_cb.py`** — 新建
+
+**迁移要点**:
+- `WholememoryCallbackSpec`: 值对象，描述6个回调函数的签名契约
+  (name, arg_names, doc)，替代上游靠命名约定隐式维护一致性的模式。
+- `WholememoryTensorParams`: 封装 fbea7cb 后三散参 `(shape, dtype_int, malloc_type_int)`，
+  提供 `alloc_decision() → (device, pinned)` 和 `to_torch_dtype()` 便利方法。
+- `WholememoryAllocMode(IntEnum)`: 对应 `WholeMemoryMemoryAllocType` 枚举值，
+  供 `alloc_decision()` 映射表使用，替代上游内联三路 if/elif/assert。
+- `WholememoryCallbackBridge`: 静态类，封装 `create_context / destroy_context /
+  malloc / free / output_malloc / output_free` 6个方法，
+  对应 fbea7cb 后 `wholegraph_env.py` 的 `torch_*_env_fn` 函数族。
+- `CALLBACK_SPECS`: dict，6个 `WholememoryCallbackSpec` 实例，全局可查阅。
+- `test_wholememory_cb_migration()`: 自检函数，5项检验。
+
+**改写20%（鲁迅拿法）**:
+- `WholememoryCallbackSpec` 值对象: 上游6个函数签名散落两文件，靠命名约定维护；
+  我们用冻结 dataclass 显式化契约，`validate_call_args()` 运行时校验参数数量。
+- `WholememoryTensorParams.alloc_decision()` 映射表替代三路 if/elif/assert:
+  上游 `wholegraph_env.py` 是 `if malloc_type_int == int(MatDevice)... elif... else assert`;
+  我们改写为 `_ALLOC_MAP: dict[int, (device, pinned)]`，O(1) 查找 + 越界 ValueError。
+- `WholememoryCallbackBridge` 静态类封装: 上游6个顶层函数直接散在模块里；
+  我们聚合为一个类的静态方法，`cb_label="temp"/"output"` 参数统一 DEBUG 标签区分。
+- `output_malloc / output_free` 显式别名方法: 上游 temp/output 两路通过
+  `create_context()` 分别注册同一 Python 函数，调用侧无法区分路径；
+  我们用命名别名使 output 路径在 DEBUG print 中有独立标签，便于追踪。
+- 全链路8个 `WALPURGIS_DEBUG=1` 断点 print，覆盖:
+  create_context 入口/返回 → destroy_context → malloc 入参/device决策/data_ptr →
+  free 前 tensor.shape → output_malloc/output_free 同上 (前缀 [OUTPUT])。
 
 ### 质量审查 (Knuth 标准)
 
@@ -119,6 +175,44 @@
   has been reinitialized")。RMM pool 初始化在 barrier 后，所有 rank 同步完成。
   cupy.cuda.set_allocator(rmm_cupy_allocator) 是进程内全局状态，torchrun 每进程
   独立，无跨进程 race。
+| 上游 fbea7cb | Walpurgis 迁移 |
+|---|---|
+| `fn = <object> wrapped_global_context.temp_create_context_fn; py_memory_context = fn(ctx)` | `WholememoryCallbackBridge.create_context(global_context)` |
+| `fn(mem_ctx, ctx)` (destroy/free) | `destroy_context / free` 静态方法 + DEBUG print |
+| `py_shape = tuple([...]); py_dtype = int(...); py_malloc_type_int = int(...); res_ptr = fn(...)` | `WholememoryTensorParams.from_callback_args()` + `alloc_decision()` + `to_torch_dtype()` |
+| `if malloc_type_int == int(MatDevice): ... elif ... else: assert MatPinned` | `_ALLOC_MAP: dict[int,(device,pinned)]` + 越界 ValueError |
+| output_malloc 与 temp_malloc 共用同实现，调用侧靠注册顺序区分 | `output_malloc(cb_label="output")` 显式别名 |
+| 签名一致性靠命名约定维护 | `WholememoryCallbackSpec.validate_call_args()` 运行时校验 |
+
+**2. 用户角度 bug 排查**
+
+- **fbea7cb 修复后新风险**: `temp_malloc` 回调现在传 `(shape, dtype_int, malloc_type_int)` 三个
+  plain int/tuple，若调用方误传顺序 (如把 `dtype_int` 传到 `malloc_type_int` 位置)，
+  Cython 侧无类型检查，Python 侧会静默接受整数比较失败 → `alloc_decision()` 越界。
+  缓解: `WholememoryTensorParams.alloc_decision()` 越界时抛出带诊断信息的 `ValueError`，
+  比上游 `assert` 更友好（assert 在优化模式下被禁用）。
+- **`to_torch_dtype()` 枚举重建风险**: `wmb.WholeMemoryDataType(dtype_int)` 若 `dtype_int`
+  是非法值，会抛出 `ValueError`；上游直接内联，同样会抛。我们的封装不增加新风险，
+  DEBUG print 会在抛出前打印 `dtype_int` 值，便于定位。
+- **output_malloc 旧代码 double-free 风险 (已修复)**: 旧代码 `SetItem(0, <object><PyObject*>py_tensor_desc)`
+  对已是 Python 对象的 `py_tensor_desc` 做了多余 `void*` 往返；
+  `Py_INCREF` 后 steal 再加外部 `py_tensor_desc` 局部变量的引用，
+  对象在 `Py_DECREF(args)` 后是否立即析构取决于外部变量生命周期，
+  存在提前析构风险。fbea7cb 已修复，Walpurgis 迁移版本无此路径。
+
+**3. 系统角度内存并发安全**
+
+- `WholememoryCallbackSpec` / `CALLBACK_SPECS`: 模块级常量，`frozen=True` dataclass，
+  并发只读完全安全，无可变共享状态。
+- `WholememoryTensorParams`: 每次 malloc 回调构造一个新实例，无跨调用共享，
+  线程安全语义同上游散参传递（每次调用独立栈帧）。
+- `WholememoryCallbackBridge` 静态方法: 无实例状态，所有状态在参数中传递，
+  并发调用安全（与上游顶层函数等价）。
+- `_ALLOC_MAP` (在 `alloc_decision` 内定义): 每次调用重建 dict，无跨调用共享；
+  可提升为模块级常量以避免重复构造（性能优化，当前不是热路径）。
+- `WholememoryCallbackBridge.malloc` DEBUG 路径: `memory_context.get_tensor()` 在
+  `free` 之后调用可能返回 None；我们用 `try/except` 保护，不引入新 crash 风险。
+- `_StubMemoryContext`: 仅在 torch 不可用时使用（测试路径），无并发使用场景。
 
 ## migrate 8b3b67f: [BUG] Mask out unwanted vertices during negative sampling
 
