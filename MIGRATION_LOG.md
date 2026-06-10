@@ -2137,3 +2137,87 @@ if d > 0:           # 整除时 d==0，跳过切片，保留完整 perm
    分布式场景各 rank perm 长度不一致，allreduce shape mismatch
    直接崩溃 NCCL，且错误信息指向 collective 而非根因 `perm[:-0]`。
 
+---
+
+## migrate 07ce63f: [FEA] Support Unified WholeGraph FeatureStore and GraphStore
+
+- **Upstream commit**: 07ce63f (cugraph-gnn, NVIDIA, 2025-04-22)
+- **Commit message**: `[FEA] Support Unified WholeGraph FeatureStore and GraphStore`
+- **Upstream diff** (19 files changed, 2267 insertions, 296 deletions):
+  - `tensor/__init__.py` (新增): 导出 DistTensor, DistEmbedding, DistMatrix, is_empty, empty
+  - `tensor/dist_tensor.py` (新增, 545行): WholeGraph 分布式 tensor 封装，1D/2D，scatter/gather，nccl/vmm 后端
+  - `tensor/dist_matrix.py` (新增, 148行): COO 格式稀疏分布式矩阵，内部用两个 DistTensor(_col, _row)
+  - `tensor/utils.py` (新增, 216行): create_wg_dist_tensor / copy_host_global_tensor_to_local / has_nvlink_network / is_empty / empty
+  - `data/feature_store.py`: WholeFeatureStore → FeatureStore，memory_type 废弃，__make_wg_tensor 全重构，自动 all_gather + 分片
+  - `data/graph_store.py`: 新增 NewGraphStore (434行)，基于 DistMatrix，支持 SG/SNMG/MNMG
+  - `data/__init__.py`: GraphStore 变为工厂函数，is_multi_gpu=True → wgth.init + NewGraphStore
+  - `loader/*.py` (4文件): isinstance 检查扩展为 (GraphStore, NewGraphStore)
+  - `examples/gcn_dist_mnmg.py`: 废弃 wg_mem_type/in_memory 参数，WholeFeatureStore → FeatureStore
+  - `examples/rgcn_link_class_mnmg.py`: 去掉磁盘分区，改用 WholeGraph 广播，节点 0 持有完整数据 → all ranks
+  - `tests/`: 全部补 os.environ["LOCAL_WORLD_SIZE"]，新增 test_dist_tensor_mg.py / test_dist_matrix_mg.py
+
+- **Knuth 审查**:
+  1. **diff 对比源**:
+     | 上游 07ce63f | Walpurgis 迁移 |
+     |---|---|
+     | `__backend = "vmm" if ... else "nccl"` 散落在两处 __init__ | `BackendSelector.select()` 统一封装，携带 reason 字段 |
+     | `__features = {}` / `__edge_indices = {}` 裸 dict | `UnifiedStoreRegistry` 带 debug 打印 + 键格式校验 |
+     | `__make_wg_tensor` 里 `if dim==1 / elif dim==2` 内嵌分支 | `TensorDimStrategy.build()` 携带 dim_type + 构造参数 |
+     | `_encode_dtype/_decode_dtype` 内嵌函数 + 手工 all_gather | `DtypeNegotiator.encode/decode/negotiate()` 可单独测试 |
+     | `GraphStore()` 工厂函数内联 path 判断 | `FeatureStoreFactory.resolve()` 返回 (path, store)，路径可观测 |
+     | `__get_edgelist()` 私有方法，逻辑混合偏移计算 | `EdgelistBuilder.build()` 静态方法，断点打印各 edge-type 局部边数 |
+     | 无 WALPURGIS_DEBUG 断点 | 14 个断点，覆盖后端选择/dtype协商/维度决策/scatter/edgelist构建 |
+
+  2. **用户角度 bug**:
+     - `int(os.environ["LOCAL_WORLD_SIZE"])` 在裸 `python` 运行时抛 `KeyError`，
+       而非友好提示"请用 torchrun 运行"。测试代码通过 `os.environ["LOCAL_WORLD_SIZE"]=str(world_size)`
+       绕过，但生产用户容易踩坑。`BackendSelector.from_env()` 在 KeyError 时
+       可包装为更清晰的错误信息。
+     - `FeatureStore._put_tensor` 对 `attr.index` 的处理：
+       `if attr.is_set("index") and attr.index is not None` 与旧代码
+       `if attr.is_set("index")` 存在语义差异——旧代码 index 设为 None 仍触发分支，
+       新代码要求 index 非 None。若用户显式传 `attr.index=None`，
+       新代码走整体 scatter 路径（正确），旧代码走异常/忽略路径，行为改变是有意设计。
+     - `rgcn` 例子用 `empty(dim=2)` 给空 rank 传占位符，依赖 `is_empty()` 检测，
+       若下游不识别空 tensor 形状 `(0, 1)` 可能静默错误。
+
+  3. **系统角度安全**:
+     - `NewGraphStore.__get_edgelist` 按 `sorted(keys)` 排序 edge-type，
+       依赖 Python tuple 字典序，需保证所有 rank 排序结果完全一致；
+       若不同 rank 注册了不同的 edge-type 子集，sorted_keys 可能不同，
+       导致 edge_type_array 编号不一致 → graph 构建静默错误，属隐患。
+     - `_num_vertices` 的 `edge_attr.edge_type[2]` 应为目标顶点类型，
+       但在 `else` 分支里出现 `num_vertices[edge_attr.edge_type[1]]`（关系类型名）
+       而非 `[2]`（目标类型），疑似笔误，上游代码 L540 可能是 bug：
+       `num_vertices[edge_attr.edge_type[1]]` 用关系名作顶点类型键，
+       后续 `_vertex_offsets` 排序时会引入非顶点类型的键，导致偏移计算混乱。
+     - `has_nvlink_network()` 内部调用 `wgth.comm.get_global_communicator("nccl")`，
+       若 WholeGraph 尚未初始化会抛异常，而此函数在 `__init__` 中被调用，
+       即 NewGraphStore 构造前必须先初始化 WholeGraph，否则构造函数崩溃；
+       工厂函数 `GraphStore(is_multi_gpu=True)` 已在构造前调用 `wgth.initialize.init()`，
+       但直接实例化 `NewGraphStore()` 则没有此保护。
+
+### Walpurgis 迁移位置
+
+**文件: `src/walpurgis/core/unified_store.py`** — 新增
+
+**迁移要点**:
+- `BackendSelector`: `select(local_world_size, world_size)` 封装 vmm/nccl 决策，
+  携带 reason 字段，`from_env()` 自动读取环境变量
+- `UnifiedStoreRegistry`: 封装 `__features` / `__edge_indices` dict，
+  put/get/remove 带 debug 打印
+- `TensorDimStrategy`: `build(tensor_dim, global_row_count, trailing_dim)` 封装
+  1D→DistTensor / 2D→DistEmbedding 分支，`instantiate()` 创建实例
+- `DtypeNegotiator`: `encode/decode/negotiate()` 封装 all_gather dtype 协商，
+  空 rank 过滤（sizes>0 mask）
+- `FeatureStoreFactory`: `resolve(is_multi_gpu, args, kwargs)` 封装工厂三条路径，
+  返回 (path_name, store_instance)
+- `EdgelistBuilder`: `build(edge_indices, vertex_offsets, is_multi_gpu, weight_attr)` 静态方法，
+  按 sorted edge-type 构造 {src/dst/eid/etp/wgt} dict，注明 PyG vs cuGraph src/dst 约定反转
+- 14 个 WALPURGIS_DEBUG=1 断点，覆盖全链路:
+  断点1-2: BackendSelector 决策 →
+  断点3-5: UnifiedStoreRegistry put/get/remove →
+  断点6-8: TensorDimStrategy build/instantiate →
+  断点9-10: DtypeNegotiator encode/negotiate →
+  断点11-12: FeatureStoreFactory resolve 路径选择 →
+  断点13-14: EdgelistBuilder 各 edge-type sizes + 最终 shape/eid range
