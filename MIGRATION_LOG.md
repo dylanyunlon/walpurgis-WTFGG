@@ -3035,3 +3035,27 @@ if d > 0:           # 整除时 d==0，跳过切片，保留完整 perm
 与 Walpurgis 纯 Python GNN 研究项目技术栈完全不匹配。Walpurgis 已有针对自身项目特征
 （ML 模型检查点、传感器图数据集、实验日志、迁移工具产物）精心设计的 `.gitignore`，
 强行合并上游规则只会引入无效噪音并破坏现有数据集白名单逻辑。无任何可迁移内容。
+
+## migrate 793bc03: [SKIP] update readme — 上游纯文档删除，Walpurgis 无对应结构
+
+**上游 commit**: `793bc03` (Alexandria Barghi, abarghi@nvidia.com)  
+**上游描述**: update readme  
+**日期**: 2024-06-11
+
+**diff 分析**:
+- 变更范围: 6 个文件，188 行删除，0 行新增
+- 全部位于 `readme_pages/` 目录，无任何 `.py`/`.cu`/`.cpp` 源码改动
+- 删除文件清单:
+  1. `readme_pages/TRANSITIONGUIDE.md` — cuGraph 0.11/0.12 Python/C++ API 迁移指南（67 行）
+  2. `readme_pages/cugraph_ops.md` — cuGraphOps 闭源 GNN 原语库介绍（17 行）
+  3. `readme_pages/cugraph_python.md` — cuGraph Python 包概述，含顶点 ID 重编号说明（24 行）
+  4. `readme_pages/cugraph_service.md` — Graph-as-a-Service 目标与架构图（28 行）
+  5. `readme_pages/data_types.md` — cuGraph 支持数据类型列表（46 行），末尾有空白节点 `##`（未完成内容）
+  6. `readme_pages/libcugraph.md` — libcugraph C/C++ 底层库简介（6 行）
+
+**Knuth 审查**:
+1. **diff 对比源**: 6 个文件均为纯 Markdown 文档，内容面向 cuGraph 0.11/0.12 时代 CUDA C++ 用户；Walpurgis 项目无 `readme_pages/` 目录，无 cuGraph Python/C++ API 封装层，无 `gdf_column`/`cugraph::Graph` 等 C++ 类型；所删文档与 Walpurgis 代码库在结构和技术层面均无交集
+2. **用户角度 bug**: 纯文档删除，无运行时代码，不影响任何用户行为；`data_types.md` 中存在空白节点 `## NetworkX Graph Objects`（无内容）和裸 `##`（无标题无内容）——上游删除这些未完成内容是合理的技术债清理，与 Walpurgis 无关
+3. **系统角度安全**: 无安全影响；文档中无硬编码密钥、路径、凭证或敏感信息；删除操作仅减少冗余历史文档
+
+**迁移决策**: SKIP — 纯 `readme_pages/` 文档删除，涉及 cuGraph 0.x 时代 C++ API 过渡说明，与 Walpurgis 时空图 GNN 研究项目无任何关联，无可迁移内容
