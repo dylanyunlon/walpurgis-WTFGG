@@ -62,6 +62,46 @@
     } while (0)
 
 // ════════════════════════════════════════════════════════════════════════════
+//  6ea54ab migration: WM_CUDA_DEBUG_SYNC_STREAM equivalent
+//
+//  cugraph-gnn commit 6ea54ab (Fix scatter_op_impl_mapped.cu warnings) fixed
+//  two nvcc diagnostics in wholememory_scatter_mapped():
+//    #128-D: "loop is not reachable" — WM_CUDA_CHECK(cudaStreamSynchronize)
+//            was placed after a bare `return`, making it dead code.
+//    #940-D: "missing return statement at end of non-void function" — the
+//            function fell off the end without an explicit success return.
+//
+//  The fix wraps the scatter call in WHOLEMEMORY_RETURN_ON_FAIL(...), then
+//  replaces the dead cudaStreamSynchronize with WM_CUDA_DEBUG_SYNC_STREAM,
+//  and adds an explicit `return WHOLEMEMORY_SUCCESS`.
+//
+//  WM_CUDA_DEBUG_SYNC_STREAM is a *conditional* sync: it calls
+//  cudaStreamSynchronize only when WHOLEMEMORY_BUILD_DEBUG is defined.
+//  In release builds it expands to nothing — the stream sync is removed
+//  from the hot path entirely.
+//
+//  Our analog: PHILEMON_DEBUG_SYNC_STREAM(stream).  Define
+//  PHILEMON_DEBUG_SYNC at compile time to enable stream sync in
+//  scatter_sync_if_host() and the migration engine.  In release builds
+//  the macro is a no-op, matching the 6ea54ab intent.
+//
+//  断点调试: when PHILEMON_DEBUG_SYNC is set, the macro prints a trace line
+//  before synchronizing so the exact call site is always visible in logs.
+// ════════════════════════════════════════════════════════════════════════════
+
+#ifdef PHILEMON_DEBUG_SYNC
+#  define PHILEMON_DEBUG_SYNC_STREAM(stream)                                   \
+    do {                                                                        \
+        fprintf(stderr,                                                         \
+            "[PHILEMON_DEBUG_SYNC_STREAM] %s:%d stream=%p\n",                  \
+            __FILE__, __LINE__, (void*)(stream));                               \
+        CUDA_CHECK(cudaStreamSynchronize(stream));                              \
+    } while (0)
+#else
+#  define PHILEMON_DEBUG_SYNC_STREAM(stream) ((void)0)
+#endif
+
+// ════════════════════════════════════════════════════════════════════════════
 //  Data structures (mirrors the CPU-only version but GPU-aware)
 // ════════════════════════════════════════════════════════════════════════════
 
@@ -329,20 +369,38 @@ public:
         CUDA_CHECK(cudaMemcpyAsync(dst, src, size, cudaMemcpyDefault, stream));
     }
 
-    // ═══ 466b5b9 migration: explicit scatter-to-host synchronization ═══
-    // Call this after copy_async when dst_tier == HOST_DRAM, at the last
-    // scatter before user-visible host memory access.
-    // Mirrors scatter_op_impl_mapped.cu:
-    //   WM_CUDA_CHECK(cudaStreamSynchronize(stream));  // added in 466b5b9
+    // ═══ 6ea54ab + 466b5b9 migration: scatter-to-host stream sync ═══
     //
-    // Separation of concerns: copy_async stays async (correct for E4 bandwidth),
-    // scatter_sync_if_host provides the mandatory barrier at the interface boundary.
+    // 466b5b9 added WM_CUDA_CHECK(cudaStreamSynchronize(stream)) to
+    // wholememory_scatter_mapped(), but placed it AFTER the bare `return`,
+    // making it dead code.  nvcc warned:
+    //   #128-D: loop is not reachable  (the sync line)
+    //   #940-D: missing return statement at end of non-void function
+    //
+    // 6ea54ab fixed this by:
+    //   1. Wrapping the scatter call in WHOLEMEMORY_RETURN_ON_FAIL(...)
+    //      so errors propagate and the function has a reachable end.
+    //   2. Replacing the dead WM_CUDA_CHECK(cudaStreamSynchronize) with
+    //      WM_CUDA_DEBUG_SYNC_STREAM(stream) — a no-op in release builds,
+    //      active only when WHOLEMEMORY_BUILD_DEBUG is defined.
+    //   3. Adding explicit `return WHOLEMEMORY_SUCCESS`.
+    //
+    // Implication: in 6ea54ab release builds, wholememory_scatter_mapped()
+    // does NOT synchronize the stream.  Callers that need host-visibility
+    // must manage synchronization themselves (at the Python boundary etc.).
+    //
+    // Our analog: scatter_sync_if_host() now uses PHILEMON_DEBUG_SYNC_STREAM.
+    // In release builds (no -DPHILEMON_DEBUG_SYNC), this is a no-op,
+    // matching 6ea54ab semantics.  Enable with -DPHILEMON_DEBUG_SYNC to
+    // trace stream synchronization during development.
+    //
+    // 断点调试: when PHILEMON_DEBUG_SYNC is set, PHILEMON_DEBUG_SYNC_STREAM
+    // prints "[PHILEMON_DEBUG_SYNC_STREAM] file:line stream=0x..." before sync.
     void scatter_sync_if_host(DeviceTier dst_tier, cudaStream_t stream) {
         if (dst_tier == DeviceTier::HOST_DRAM) {
-            // 断点调试: 打印D2H scatter sync触发，确认466b5b9 barrier位置正确
-            printf("[DEBUG 466b5b9 scatter_sync_if_host] dst=HOST_DRAM, "
-                   "cudaStreamSynchronize(stream=%p)\n", (void*)stream);
-            CUDA_CHECK(cudaStreamSynchronize(stream));
+            // 6ea54ab: use debug-conditional sync (WM_CUDA_DEBUG_SYNC_STREAM analog).
+            // Release builds: no-op.  Debug builds: trace + synchronize.
+            PHILEMON_DEBUG_SYNC_STREAM(stream);
         }
     }
 

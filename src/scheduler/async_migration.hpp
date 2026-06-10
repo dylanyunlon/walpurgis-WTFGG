@@ -447,38 +447,53 @@ public:
         // GPU mode would be: cudaMemcpyAsync(dst, src, size, kind, stream_);
         std::memcpy(dst_ptr, src_ptr, size);
 
-        // ═══ 466b5b9 migration: stream sync before scatter reaches host memory ═══
-        // cugraph-gnn bug (466b5b9): scatter output can be on host (emb_device='cpu').
-        // Without explicit sync, the GPU stream is still in-flight when CPU reads
-        // the destination buffer -> stale/partial data.
+        // ═══ 6ea54ab + 466b5b9 migration: scatter-to-host stream sync ═══
         //
-        // Fix (scatter_op_impl_mapped.cu line added in 466b5b9):
-        //   WM_CUDA_CHECK(cudaStreamSynchronize(stream));
+        // History:
+        //   466b5b9: Added `WM_CUDA_CHECK(cudaStreamSynchronize(stream))` to
+        //   wholememory_scatter_mapped() in cugraph-gnn.  However, it was placed
+        //   AFTER a bare `return scatter_func(...)`, so it was dead code.
+        //   nvcc issued two warnings:
+        //     #128-D: loop is not reachable   <- the sync was unreachable
+        //     #940-D: missing return statement at end of non-void function
         //
-        // walpurgis adaptation:
-        //   GPU mode  -> cudaStreamSynchronize(migration_stream_) [see TODO]
-        //   CPU mode  -> memcpy is synchronous, but we add:
-        //               (a) std::atomic_thread_fence(seq_cst) for memory ordering
-        //               (b) first/last byte integrity check for debug visibility
-        //               (c) stderr print so the fence is always traceable
+        //   6ea54ab (Fix scatter_op_impl_mapped.cu warnings) corrected this:
+        //     - Wrapped scatter_func() in WHOLEMEMORY_RETURN_ON_FAIL(...).
+        //     - Replaced dead cudaStreamSynchronize with WM_CUDA_DEBUG_SYNC_STREAM.
+        //     - Added explicit `return WHOLEMEMORY_SUCCESS`.
         //
-        // Note: unlike gather (output stays on GPU device memory), D2H scatter
-        // is the ONLY path that requires this barrier. Matches 466b5b9 commit:
-        // "Unlike the gather operation, where the output is always in device
-        // memory, host side synchronization is unnecessary [for gather]."
+        //   WM_CUDA_DEBUG_SYNC_STREAM expands to cudaStreamSynchronize *only*
+        //   when WHOLEMEMORY_BUILD_DEBUG is defined; it is a no-op in release.
+        //
+        // Implication for walpurgis:
+        //   The mandatory D2H barrier from 466b5b9 was *never actually present*
+        //   in any build — it was dead code from the start.  6ea54ab clarifies
+        //   that the sync is a debug-only aid, not a correctness requirement at
+        //   this layer.  Callers that need host memory visibility after scatter
+        //   (e.g. the Python GNN training loop) must ensure their own barrier.
+        //
+        //   In our CPU-mode simulation below, the memcpy() is synchronous so
+        //   host visibility is guaranteed without a separate fence.  The
+        //   thread fence is retained only under PHILEMON_DEBUG_SYNC, mirroring
+        //   the WM_CUDA_DEBUG_SYNC_STREAM conditional pattern from 6ea54ab.
+        //
+        // 断点调试: fence trigger is printed only when PHILEMON_DEBUG_SYNC is set,
+        // avoiding stderr flood in hot loops.  First/last byte integrity check
+        // is also debug-only.
         if (pm.dst_tier == MemoryTier::DRAM) {
-            // 断点调试: 每次DRAM scatter都打印fence触发，确认466b5b9 barrier生效
+#ifdef PHILEMON_DEBUG_SYNC
             fprintf(stderr,
-                "[466b5b9 scatter-sync] alloc=%lu size=%zu %d->DRAM "
-                "inserting host memory fence (GPU: cudaStreamSynchronize)\n",
+                "[6ea54ab/466b5b9 scatter-sync DEBUG] alloc=%lu size=%zu "
+                "%d->DRAM inserting seq_cst fence (debug-only, mirrors "
+                "WM_CUDA_DEBUG_SYNC_STREAM)\n",
                 (unsigned long)alloc_id, size, static_cast<int>(src_tier));
 
-            // CPU-mode memory fence: ensures all stores from memcpy() above are
-            // visible to any thread that reads pm.completed == true.
-            // GPU mode equivalent: cudaStreamSynchronize(migration_stream_);
+            // CPU-mode debug fence: matches WM_CUDA_DEBUG_SYNC_STREAM semantics.
+            // GPU mode equivalent: cudaStreamSynchronize(migration_stream_)
+            // guarded by WHOLEMEMORY_BUILD_DEBUG.
             std::atomic_thread_fence(std::memory_order_seq_cst);
 
-            // 诊断: 验证写入完整性 — 首尾字节校验
+            // 诊断: first/last byte integrity check (debug builds only)
             auto* src_bytes = static_cast<const uint8_t*>(src_ptr);
             auto* dst_bytes = static_cast<const uint8_t*>(dst_ptr);
             bool fence_ok = (size == 0) ||
@@ -486,20 +501,21 @@ public:
                  dst_bytes[size - 1] == src_bytes[size - 1]);
             if (!fence_ok) {
                 fprintf(stderr,
-                    "[466b5b9 FENCE FAIL] alloc=%lu size=%zu src_tier=%d "
-                    "dst_tier=DRAM -- scatter data inconsistent: "
-                    "src[0]=%02x dst[0]=%02x src[last]=%02x dst[last]=%02x\n",
+                    "[6ea54ab SCATTER INTEGRITY FAIL] alloc=%lu size=%zu "
+                    "src_tier=%d dst=DRAM: src[0]=%02x dst[0]=%02x "
+                    "src[last]=%02x dst[last]=%02x\n",
                     (unsigned long)alloc_id, size, static_cast<int>(src_tier),
                     src_bytes[0], dst_bytes[0],
                     src_bytes[size-1], dst_bytes[size-1]);
             } else {
                 fprintf(stderr,
-                    "[466b5b9 fence OK] alloc=%lu size=%zu integrity verified\n",
+                    "[6ea54ab fence OK] alloc=%lu size=%zu integrity verified\n",
                     (unsigned long)alloc_id, size);
             }
-            // TODO (GPU mode): replace the fence above with:
+            // TODO (GPU mode): replace with:
             //   CudaRtLoader::syms().cudaStreamSync_fn(migration_stream_);
-            // This is the exact cudaStreamSynchronize(stream) from 466b5b9.
+            // guarded by #ifdef PHILEMON_DEBUG_SYNC, matching WM_CUDA_DEBUG_SYNC_STREAM.
+#endif  // PHILEMON_DEBUG_SYNC
         }
         pm.completed = true;  // in CPU mode, memcpy is synchronous
 
