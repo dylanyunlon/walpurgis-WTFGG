@@ -3081,3 +3081,66 @@ if d > 0:           # 整除时 d==0，跳过切片，保留完整 perm
 3. **系统角度安全**: `ci/*.sh` 脚本中大量引用 `AWS_ACCESS_KEY_ID`、`AWS_SECRET_ACCESS_KEY`、`AWS_SESSION_TOKEN`、`SCCACHE_BUCKET`、`SCCACHE_REGION` 等敏感环境变量——删除操作实为正向安全收益，减少 CI 凭证暴露面。`conda/recipes/libcugraph/meta.yaml` 中 `SCCACHE_S3_KEY_PREFIX` 含架构标注注释 `# [aarch64]` / `# [linux64]`，是 conda-build 条件渲染语法而非实际路径泄露。Walpurgis 不引入任何此类 CI secret，无安全继承风险
 
 **迁移决策**: SKIP — 36 个文件全为 RAPIDS cugraph CUDA C++ 全栈的 CI/conda 打包基础设施历史存档，与 Walpurgis 纯 Python GNN 研究项目技术栈在每一层均无交集。Walpurgis 项目无 `ci/`、无 `conda/recipes/`、无 CMake/C++ 构建、无 RAPIDS 版本管理，强行迁移任何文件均为引入无效噪音。无任何可迁移内容。
+## migrate fc5c0e6: [SKIP] remove property graph page — 上游纯文档删除，Walpurgis 无对应结构
+
+**上游 commit**: `fc5c0e6` (Alexandria Barghi, abarghi@nvidia.com)  
+**上游描述**: remove property graph page  
+**日期**: 2024-06-11
+
+**diff 分析**:
+- 变更范围: 1 个文件，54 行删除，0 行新增
+- 文件路径: `readme_pages/property_graph.md`
+- 全部为纯 Markdown 文档内容，无任何 `.py`/`.cu`/`.cpp` 源码改动
+
+**diff 逐行深读**:
+
+文件由三部分构成：
+
+1. **头部图文块**（第 1-9 行）: 居中 HTML `<img>` 引用 `../img/pg_example.png`，左对齐 H1 "Property Graph"；纯展示内容，无逻辑
+
+2. **概念描述段**（第 11-14 行）: 解释 PropertyGraph 是数据模型而非图类型，是 cuGraph 生态中封装所有图类型的 meta-graph，链接 Dataversity 外部定义。**注意**：描述中将 PropertyGraph 定性为"originally created for database systems"——这是历史准确性问题，Property Graph 概念确实来自图数据库（Neo4j 等），与 RAPIDS cuGraph GPU 加速定位有微妙语义张力，但该段只是描述性文字，无代码影响
+
+3. **功能列举段**（第 16-22 行）: 5 个 bullet 列出 PropertyGraph 能力：
+   - 多边/节点类型
+   - 基于属性的子图提取
+   - GPU 内存与 host 存储扩展（GNN-centric storage extensions）
+   - 派生数据（分析结果）写回属性图
+   - 通过 [CuGraph Service](./cugraph_service.md) 远程共享访问
+   
+   **注意**: 链接 `./cugraph_service.md` 指向的文件已在上游 `793bc03` 中被删除——此处形成了悬空引用。上游在 `fc5c0e6` 中删除 `property_graph.md` 本身，悬空引用随之消失，属于合理清理
+
+4. **代码示例块**（第 24-54 行）: 完整 Python 示例，演示 PropertyGraph 两阶段分析：
+   ```python
+   from cugraph.experimental import PropertyGraph
+   from cugraph.experimental.datasets import karate
+   # 构建图 → edgelist → PropertyGraph → Louvain社区发现
+   # → 分区属性写回 → extract_subgraph × 2 → pagerank × 2
+   ```
+   **注意**: 代码中存在两处空格排版问题：
+   - `pG. add_edge_data(...)` — 方法调用 `pG.` 与 `add_edge_data` 之间有多余空格
+   - `pG. select_vertices(...)` — 同上
+   - `pageranks0.sort_values (by=...)` — 函数调用括号前有多余空格
+   
+   这些是上游文档本身的排版 bug，从未修复，随文件删除一并消除
+
+**Knuth 审查**:
+1. **diff 对比源**:
+   | 上游 fc5c0e6 `readme_pages/property_graph.md` | Walpurgis 现有结构 |
+   |---|---|
+   | 演示 `from cugraph.experimental import PropertyGraph` | Walpurgis 无 `cugraph.experimental` 依赖；PropertyGraph 是 cuGraph 专有 API，Walpurgis 使用 PyG/DGL 图抽象 |
+   | 代码示例依赖 `cudf`、`cugraph`、karate 内置数据集 | Walpurgis 使用 `torch`、`numpy`；数据集通过 `datasets/` 目录管理，无 karate 图 |
+   | `readme_pages/` 目录结构 | Walpurgis 项目无 `readme_pages/` 目录，文档结构完全不同 |
+   | 演示 Louvain 社区发现 → 子图提取 → PageRank 两阶段分析 | Walpurgis 核心是时空图 GNN（METR-LA 交通预测），无社区发现/PageRank 使用场景 |
+   | 图片引用 `../img/pg_example.png` | Walpurgis 无 `img/` 目录，引用路径在 Walpurgis 下直接 404 |
+
+2. **用户角度 bug**:
+   - 代码示例中 `pG. add_edge_data(df, vertex_col_names=("src", "dst"))` 的多余空格在某些严格 linter（如 `pycodestyle E211`）下会报 `whitespace before '('`；文档示例代码不规范，但随文件删除消除，无遗留影响
+   - 代码示例使用 `from cugraph.experimental import PropertyGraph`——`experimental` 命名空间在 cuGraph 新版本中 API 稳定性无保证；上游删除该文档可能与 `PropertyGraph` API 迁移/废弃有关（与同批次删除 `cugraph_service.md` 的模式一致，均为清理已废弃功能文档）
+   - 若有用户按文档示例编写代码并已提交到下游项目，删除该页会导致链接 404；但这是上游的文档维护决策，与 Walpurgis 无关
+
+3. **系统角度安全**:
+   - 纯 Markdown 文档删除，无运行时代码，无安全影响
+   - 代码示例中无硬编码密钥、API token、路径或凭证信息
+   - `PropertyGraph` 示例无网络请求、无文件系统写入、无进程间通信——即使迁移该代码也无安全面扩展
+
+**迁移决策**: SKIP — 纯 `readme_pages/property_graph.md` 文档删除，内容依赖 `cugraph.experimental.PropertyGraph` 专有 API 与 `cudf` GPU DataFrame，与 Walpurgis 时空图 GNN 项目技术栈（PyG/DGL + PyTorch + METR-LA 数据集）完全不匹配；Walpurgis 无 `readme_pages/` 目录结构，无任何可迁移内容，无需创建或删除任何文件
