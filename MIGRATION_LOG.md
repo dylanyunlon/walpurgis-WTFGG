@@ -1,4 +1,80 @@
 
+## migrate d306c72: Use PyTorch MemPool and Disable RMM Pool Allocator to Fix Broken Tests
+
+- **Upstream commit**: d306c72 (cugraph-gnn, NVIDIA, PR #237)
+- **Commit message**: `Use PyTorch MemPool and Disable RMM Pool Allocator to Fix Broken Tests`
+- **Upstream diff** (2 files changed):
+  - `python/cugraph-pyg/cugraph_pyg/examples/gcn_dist_mnmg.py`:
+    - `init_pytorch_worker` L48: `pool_allocator=True` → `False`
+    - `__main__` L394-425: 数据加载 / barrier / 模型创建 / run_train 包裹进
+      `with torch.cuda.use_mem_pool(torch.cuda.MemPool(rmm_torch_allocator.allocator())):`
+    - `dist.barrier()` 从 with 块外移入 with 块内
+  - `python/cugraph-pyg/cugraph_pyg/examples/rgcn_link_class_mnmg.py`:
+    - `init_pytorch_worker` L44: `pool_allocator=True` → `False`
+    - `__main__` L278-392: 全部主逻辑包裹进 use_mem_pool context
+
+- **Bug 根因**:
+  `pool_allocator=True` 时 RMM 建立独立内存池，PyTorch 亦有自己的 caching allocator，
+  两个 pool 同时活跃，显存碎片化导致 OOM 或 CUDA illegal memory access。
+  CI 环境（4-8GB 卡）seeds_per_call=20000 时确定性触发。
+  `use_mem_pool(MemPool(rmm_torch_allocator.allocator()))` 将 PyTorch tensor 分配
+  重定向到 RMM allocator，消除双 pool 竞争，统一内存管控。
+  `dist.barrier()` 必须在 context 内执行，否则某 rank 先退出 with 块销毁 allocator，
+  其他 rank 仍在 context 内访问，导致跨 rank 内存损坏。
+
+- **Knuth 审查**:
+  1. **diff 对比源**:
+     | 上游 d306c72 | Walpurgis 迁移 |
+     |---|---|
+     | 裸 `with torch.cuda.use_mem_pool(...)` 包裹 100+ 行 | `MemoryContext` dataclass，`__enter__`/`__exit__` 命名，调试打印 allocator 地址 + pool 引用计数 |
+     | `init_pytorch_worker` 散落 import cupy / Device / set_allocator | `WorkerInit` dataclass，5 步分别命名 `_init_rmm` / `_init_cupy` / `_init_torch_device` / `_init_cugraph_comms` / `_init_wholegraph` |
+     | 4 段 `print + assignment` 混合的广播序列 | `GraphBroadcaster` dataclass，`_broadcast_edge_rel_type` / `_broadcast_edge_index` / `_broadcast_splits` / `_broadcast_neg_splits` 四方法 |
+     | 4 个 `os.path.join` 散落 `__main__` | `DataConfig` dataclass，`edge_path` / `feature_path` / `label_path` / `meta_path` 属性 |
+     | 无调试信息 | 全链路 `WALPURGIS_DEBUG=1` 断点 print，覆盖 allocator 生命周期 / 每步 broadcast shape / epoch loss / val/test acc |
+
+  2. **用户角度 bug**:
+     - `pool_allocator=True` 多卡训练偶发 `CUDA illegal memory access`，
+       错误指向随机行（embedding lookup / conv），与业务逻辑无关，难以定位
+     - `nvidia-smi` 显示仍有空闲显存但 OOM，
+       原因是两 pool 碎片化导致最大连续块不足，用户误增 batch_size → 更快 OOM
+     - rgcn 示例 `nr = [0, 0]` 在非 rank=0 进程初始化，
+       旧代码 `dist.barrier()` 在 with 块外，极端情况下 barrier 完成但 allocator
+       已被另一进程释放，跨 rank 内存损坏；新代码将 barrier 移入 with 块修复
+
+  3. **系统角度安全**:
+     - `rmm_torch_allocator.allocator()` 返回 capsule，`MemPool` 持有引用，
+       with 块退出后 MemPool 析构，RMM 侧内存归还；
+       `MemoryContext.__exit__` 在 DEBUG 模式下打印 pool 引用计数，帮助排查 use-after-free
+     - `pool_allocator=False` 下 RMM 仍作为 cupy 的 allocator（cupy 侧不变），
+       cupy tensor 和 torch tensor 统一走 RMM device allocator，无双重 free 风险
+     - rgcn: `del dataset_obj`（rank=0）在 with 块内，CUDA tensor 归还给 MemPool，
+       不挂起；`splits_storage` FeatureStore 及其内部 tensor 生命周期全程在 with 块内
+
+### Walpurgis 迁移位置
+
+**文件 1: `src/walpurgis/examples/gcn/gcn_dist_mnmg.py`** — 新增
+**文件 2: `src/walpurgis/examples/rgcn/rgcn_link_class_mnmg.py`** — 新增
+
+**迁移要点**:
+- `MemoryContext`: dataclass 封装 `torch.cuda.use_mem_pool(MemPool(...))` 生命周期，
+  DEBUG 模式打印 allocator capsule id / pool 引用计数 / 进入退出时间戳
+- `WorkerInit`: dataclass 封装 `init_pytorch_worker`，5 步分别命名 + `_dbg`，
+  `_init_rmm` 内联注释说明 `pool_allocator=False` 是 d306c72 核心修复
+- `DataConfig`: dataclass 封装路径四元组，`debug_print()` 集中输出
+- `GraphBroadcaster`（rgcn 专用）: dataclass 封装 4 段广播，每步打印 tensor shape
+- 全链路 `WALPURGIS_DEBUG=1` 断点 print，覆盖:
+  MemoryContext 进入/退出 + pool 引用计数 →
+  WorkerInit 各子步状态 →
+  load_partitioned_data / GraphBroadcaster 各 broadcast shape →
+  run_train epoch / loss / val acc / test acc / mrr
+
+**改写 20%（鲁迅拿法）**:
+- `MemoryContext` dataclass 替代裸 `with torch.cuda.use_mem_pool(...)` 内联
+- `WorkerInit` dataclass 替代散落 import 的裸函数
+- `DataConfig` dataclass 替代四个散落 `os.path.join`
+- `GraphBroadcaster` dataclass 替代 rgcn 中 4 段混合 print+assignment
+- `_dbg()` 统一调试出口，替代散落 `print(..., flush=True)` 裸调
+- `acc_val / acc_test` 零除防御（eval loader 为空时返回 0.0）
 ## migrate c07eea7: [FEA] New MovieLens Example, Add Timing to Taobao
 
 - **Upstream commit**: c07eea7 (cugraph-gnn, NVIDIA)
