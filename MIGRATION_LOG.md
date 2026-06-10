@@ -2953,3 +2953,23 @@ if d > 0:           # 整除时 d==0，跳过切片，保留完整 perm
   断点4: DeprecationPolicy.register（注册事件）→
   断点5: DeprecationPolicy.get（查找事件）→
   断点6: DeprecationPolicy.call_all_summary（批量调用统计柱状图）
+
+## migrate 0c1b857: [SKIP] remove docs — 纯文档删除，无迁移价值
+
+**上游 commit**: `0c1b857` (Alexandria Barghi, abarghi@nvidia.com)
+**上游描述**: remove docs
+
+**diff 分析**:
+- 变更范围: 1854 个文件，508700 行删除，0 行新增
+- 全部位于 `docs/cugraph/` 目录下
+- 删除内容分三类:
+  1. `docs/cugraph/build/doctrees/` — Sphinx 构建产物，`.doctree` 二进制缓存文件（cugraph/cugraph-dgl/cugraph-pyg/wholegraph/cugraph-ops/plc 各模块 API 文档树）
+  2. `docs/cugraph/libwholegraph/*.xml` — Doxygen 生成的 C++ 源码 XML，含 wholegraph CSR 采样、WholeMemory 内存管理 API 的完整符号树（`wholememory_8h.xml`、`wholegraph__op_8h.xml` 等约百个文件）
+  3. `docs/cugraph/source/` — Sphinx RST/MD 源文档，含 wholegraph 安装指南、API 索引、配置说明
+
+**Knuth 审查**:
+1. **diff 对比源**: 无任何 `.py`/`.cu`/`.cpp`/`.h` 源码改动，全部是文档产物
+2. **用户角度 bug**: 无运行时影响，文档删除不影响任何功能行为
+3. **系统安全**: 无安全隐患，删除本地 docs 目录不影响库的正确性
+
+**迁移决策**: SKIP — 纯文档目录清理，Walpurgis 有独立文档体系，无任何可迁移内容
