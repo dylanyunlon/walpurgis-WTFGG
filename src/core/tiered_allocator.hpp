@@ -48,6 +48,7 @@
 
 #include <cstdint>
 #include <cstddef>
+#include <cstdio>          // fprintf, stderr — used by PHILEMON_RETURN_ON_FAIL and debug paths
 #include <cassert>
 #include <cstring>
 #include <atomic>
@@ -228,6 +229,63 @@ private:
 //   inline bool nvmlFabricSymbolLoaded = NvmlFabricSymbolLoaded();
 // Call once at program start (or lazily on first use).
 inline bool cuda_rt_symbols_loaded = CudaRtLoader::loaded();
+
+// ─── 6ea54ab migration: PHILEMON_RETURN_ON_FAIL macro ───────────────────────
+//
+// cugraph-gnn commit 6ea54ab (Fix compiler warnings in scatter_op_impl_mapped.cu):
+//
+//   BEFORE (466b5b9):
+//     return scatter_func(input, input_desc, indices, indices_desc,
+//                         wholememory_gref, wholememory_desc, stream, scatter_sms);
+//     WM_CUDA_CHECK(cudaStreamSynchronize(stream));   // ← DEAD CODE (warning #128-D)
+//     // function falls off end without explicit return   ← warning #940-D
+//
+//   AFTER (6ea54ab):
+//     WHOLEMEMORY_RETURN_ON_FAIL(scatter_func(...));  // propagate on error
+//     WM_CUDA_DEBUG_SYNC_STREAM(stream);              // no-op in release builds
+//     return WHOLEMEMORY_SUCCESS;                      // explicit success path
+//
+// Our analog: PHILEMON_RETURN_ON_FAIL wraps any bool-returning operation
+// inside migrate() and allocate().  On failure it prints a diagnostic (断点调试)
+// and returns false immediately — same early-exit semantics as
+// WHOLEMEMORY_RETURN_ON_FAIL without the wholememory_error_code_t type.
+//
+// Usage pattern (mirrors scatter_op_impl_mapped.cu post-6ea54ab):
+//
+//   bool migrate(uint64_t id, MemoryTier target) {
+//       PHILEMON_RETURN_ON_FAIL_BOOL(some_operation(), id, "migrate");
+//       PHILEMON_DEBUG_SYNC_ALLOC(id);    // no-op unless PHILEMON_DEBUG_SYNC
+//       return true;                       // explicit success — no implicit fall-off
+//   }
+//
+// 断点调试: when PHILEMON_DEBUG_MIGRATE is defined, every call prints
+// alloc_id, target tier, and call site (file:line), matching the
+// fprintf(stderr) style used throughout this codebase.
+
+#define PHILEMON_RETURN_ON_FAIL_BOOL(expr, alloc_id, op_name)                  \
+    do {                                                                         \
+        if (!(expr)) {                                                           \
+            fprintf(stderr,                                                      \
+                "[PHILEMON_RETURN_ON_FAIL] %s:%d op=%s alloc=%lu → FAIL\n",    \
+                __FILE__, __LINE__, (op_name),                                   \
+                (unsigned long)(alloc_id));                                      \
+            return false;                                                        \
+        }                                                                        \
+    } while (0)
+
+// PHILEMON_DEBUG_SYNC_ALLOC: mirrors WM_CUDA_DEBUG_SYNC_STREAM from 6ea54ab.
+// In release builds: no-op (matching 6ea54ab intent — sync removed from hot path).
+// In debug builds (-DPHILEMON_DEBUG_SYNC): prints alloc_id + call site.
+// No actual stream sync here (CPU-only allocator); on GPU path replace with
+// cudaStreamSynchronize(dma_stream_) inside the #ifdef block.
+#ifdef PHILEMON_DEBUG_SYNC
+#  define PHILEMON_DEBUG_SYNC_ALLOC(alloc_id)                                   \
+    fprintf(stderr,                                                              \
+        "[PHILEMON_DEBUG_SYNC_ALLOC] %s:%d alloc=%lu\n",                        \
+        __FILE__, __LINE__, (unsigned long)(alloc_id))
+#else
+#  define PHILEMON_DEBUG_SYNC_ALLOC(alloc_id)  ((void)0)
+#endif
 
 // ─── Memory Tier Definitions ────────────────────────────────────────────────
 // Mirrors NCCL's topology-aware device placement (ncclTopoGraph).
@@ -598,16 +656,52 @@ public:
     // 绕过"先全量拷进GPU"这一步。显存峰值从O(N*dim)降到接近0。
     // 我们的对应: DRAM→HBM迁移时, 先在DRAM侧做pinned标记,
     // 让异步引擎走DMA路径而不是full memcpy。
+    // ═══ 6ea54ab migration: PHILEMON_RETURN_ON_FAIL_BOOL pattern applied ═══
+    //
+    // Before this change, migrate() had two silent failure paths:
+    //   (a) registry_.find() miss  → bare `return false`  (no diagnostic)
+    //   (b) budget exhausted       → bare `return false`  (no diagnostic)
+    //   (c) posix_memalign failure → bare `return false`  (no diagnostic)
+    //
+    // Analogous to 6ea54ab's fix in scatter_op_impl_mapped.cu, where the
+    // original `return scatter_func(...)` silently swallowed errors and left
+    // the stream in an undefined state.  6ea54ab wrapped the call in
+    // WHOLEMEMORY_RETURN_ON_FAIL so errors emit a diagnostic and propagate.
+    //
+    // Here we apply the same pattern: each early-exit now emits a
+    // [PHILEMON_RETURN_ON_FAIL] trace line (断点调试), and the success path
+    // ends with PHILEMON_DEBUG_SYNC_ALLOC + explicit `return true`.
+    //
+    // 断点调试: compile with -DPHILEMON_DEBUG_MIGRATE to trace every migrate()
+    // entry (tier, size, alloc_id) independently of failure paths.
     bool migrate(uint64_t alloc_id, MemoryTier target) {
         std::unique_lock<std::shared_mutex> lk(mu_);  // M005: unique_lock
+#ifdef PHILEMON_DEBUG_MIGRATE
+        fprintf(stderr,
+            "[DEBUG 6ea54ab migrate] alloc=%lu target_tier=%d entry\n",
+            (unsigned long)alloc_id, static_cast<int>(target));
+#endif
         auto it = registry_.find(alloc_id);
-        if (it == registry_.end()) return false;
+        if (it == registry_.end()) {
+            // 6ea54ab pattern: emit diagnostic before early return
+            fprintf(stderr,
+                "[PHILEMON_RETURN_ON_FAIL] %s:%d op=migrate alloc=%lu"
+                " → FAIL: alloc_id not found in registry\n",
+                __FILE__, __LINE__, (unsigned long)alloc_id);
+            return false;
+        }
 
         AllocMeta& meta = it->second;
         if (meta.current_tier == target) return true;  // already there
 
         size_t sz = meta.size_bytes;
         if (!budgets_[static_cast<int>(target)].try_reserve(sz)) {
+            // 6ea54ab pattern: budget exhaustion is a real failure, not silent
+            fprintf(stderr,
+                "[PHILEMON_RETURN_ON_FAIL] %s:%d op=migrate alloc=%lu sz=%zu"
+                " → FAIL: target_tier=%d budget exhausted\n",
+                __FILE__, __LINE__, (unsigned long)alloc_id, sz,
+                static_cast<int>(target));
             return false;  // target tier is full
         }
 
@@ -630,6 +724,12 @@ public:
         }
         if (!new_ptr) {
             budgets_[static_cast<int>(target)].release(sz);
+            // 6ea54ab pattern: allocation failure must emit a diagnostic
+            fprintf(stderr,
+                "[PHILEMON_RETURN_ON_FAIL] %s:%d op=migrate alloc=%lu sz=%zu"
+                " → FAIL: new_ptr allocation failed on target_tier=%d\n",
+                __FILE__, __LINE__, (unsigned long)alloc_id, sz,
+                static_cast<int>(target));
             return false;
         }
 
@@ -693,7 +793,11 @@ public:
         meta.base_ptr     = new_ptr;
         meta.current_tier = target;
 
-        return true;
+        // 6ea54ab pattern: WM_CUDA_DEBUG_SYNC_STREAM analog — no-op in release,
+        // prints alloc_id in debug builds.  Explicit return true follows — no
+        // implicit fall-off (was warning #940-D in scatter_op_impl_mapped.cu).
+        PHILEMON_DEBUG_SYNC_ALLOC(alloc_id);
+        return true;  // explicit success — mirrors `return WHOLEMEMORY_SUCCESS`
     }
 
     // Free an allocation.

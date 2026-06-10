@@ -507,6 +507,15 @@ public:
                 aid = allocator_.allocate(alloc_size, MemoryTier::DRAM, lo, hi);
             }
             if (aid == 0) {
+                // 6ea54ab pattern: allocation failure must emit a diagnostic.
+                // Mirrors WHOLEMEMORY_RETURN_ON_FAIL: no silent swallowing.
+                // 断点调试: print partition range and size so OOM is debuggable.
+                fprintf(stderr,
+                    "[PHILEMON_RETURN_ON_FAIL] %s:%d flush_partitions: FATAL"
+                    " alloc_size=%zu partition=[%d,%d] → DRAM fallback also"
+                    " failed. Partition skipped.\n",
+                    __FILE__, __LINE__,
+                    alloc_size, lo, hi);
                 std::cerr << "[TemporalBridge] FATAL: cannot allocate "
                           << alloc_size << " bytes for partition [" << lo
                           << ", " << hi << "]\n";

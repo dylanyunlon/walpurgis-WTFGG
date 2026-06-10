@@ -631,6 +631,20 @@ public:
 
         pending_.push(pm);
         stats_.submitted.fetch_add(1, std::memory_order_relaxed);
+        // 6ea54ab: explicit `return WHOLEMEMORY_SUCCESS` analog — no implicit
+        // fall-off.  In scatter_op_impl_mapped.cu, the missing explicit return
+        // was warning #940-D.  Here we are already explicit but add a
+        // PHILEMON_DEBUG_SYNC_ALLOC trace so the success path is visible when
+        // debugging scatter-to-host migrations.
+        // 断点调试: 打印migration提交成功,确认6ea54ab成功路径到达
+#ifdef PHILEMON_DEBUG_SYNC
+        fprintf(stderr,
+            "[6ea54ab SUCCESS] submit_migration: alloc=%lu %d→%d sz=%zu"
+            " submitted OK (mirrors `return WHOLEMEMORY_SUCCESS`)\n",
+            (unsigned long)alloc_id,
+            static_cast<int>(src_tier), static_cast<int>(pm.dst_tier),
+            size);
+#endif
         return true;
     }
 

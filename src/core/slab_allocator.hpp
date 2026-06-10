@@ -44,6 +44,7 @@
 
 #include <cstdint>
 #include <cstddef>
+#include <cstdio>          // fprintf, stderr — used by PHILEMON_RETURN_ON_FAIL debug paths
 #include <cstdlib>
 #include <cstring>
 #include <cassert>
@@ -206,7 +207,27 @@ struct SlabPool {
 
     // Allocate a slot. If no page has free space, create a new page.
     // Pattern: TF Arena::GetMemory — try fast path, fallback to new block.
+    //
+    // ═══ 6ea54ab migration: RETURN_ON_FAIL + DEBUG_SYNC pattern ═══
+    // Mirrors scatter_op_impl_mapped.cu post-6ea54ab:
+    //   WHOLEMEMORY_RETURN_ON_FAIL(scatter_func(...));  // propagate errors
+    //   WM_CUDA_DEBUG_SYNC_STREAM(stream);               // debug-only sync
+    //   return WHOLEMEMORY_SUCCESS;                       // explicit success
+    //
+    // allocate() previously returned nullptr silently on page init failure
+    // (no diagnostic).  Now the posix_memalign failure path prints
+    // [PHILEMON_RETURN_ON_FAIL] before returning nullptr, matching the
+    // 6ea54ab principle that every failure must leave a trace.
+    //
+    // 断点调试: when PHILEMON_DEBUG_SLAB is defined, each allocate() call
+    // prints size_class, slot_size, and whether it took the fast or slow path.
     void* allocate() {
+#ifdef PHILEMON_DEBUG_SLAB
+        fprintf(stderr,
+            "[DEBUG 6ea54ab SlabPool::allocate] size_class=%zu slot_size=%zu"
+            " pages=%zu\n",
+            size_class, slot_size, pages.size());
+#endif
         // Fast path: scan existing pages for a free slot
         for (auto& page : pages) {
             void* ptr = page.alloc_slot();
@@ -219,7 +240,15 @@ struct SlabPool {
         size_t page_size = slot_size * SLAB_PAGE_SLOTS;
         void* page_mem = nullptr;
         int rc = ::posix_memalign(&page_mem, 64, page_size);
-        if (rc != 0 || !page_mem) return nullptr;
+        if (rc != 0 || !page_mem) {
+            // 6ea54ab pattern: failure must emit a diagnostic, not silently return null
+            fprintf(stderr,
+                "[PHILEMON_RETURN_ON_FAIL] %s:%d SlabPool::allocate"
+                " size_class=%zu slot_size=%zu page_size=%zu"
+                " → posix_memalign FAIL (rc=%d)\n",
+                __FILE__, __LINE__, size_class, slot_size, page_size, rc);
+            return nullptr;
+        }
         ::memset(page_mem, 0, page_size);
 
         pages.emplace_back();
