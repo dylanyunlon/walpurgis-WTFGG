@@ -241,6 +241,116 @@ inline const char* migration_scope_name(MigrationScope s) {
     return (s == MigrationScope::GLOBAL) ? "GLOBAL" : "LOCAL_NODE";
 }
 
+// ─── a056923: Seed-time deduplication ordering fix ──────────────────────────
+// Migrated from distributed_sampler.py a056923 bugfix:
+//
+//   BEFORE (broken):
+//     leftover_seeds, lui = leftover_seeds.unique_consecutive(return_inverse=True)
+//     if leftover_time is not None:
+//         leftover_time = leftover_time[lui]   // WRONG: lui maps new→old, not old→new
+//
+//   AFTER (correct):
+//     if leftover_time is not None:
+//         unique_mask = concat([True], leftover_seeds[1:] != leftover_seeds[:-1])
+//         leftover_seeds, lui = leftover_seeds.unique_consecutive(return_inverse=True)
+//         leftover_time = leftover_time[unique_mask]  // CORRECT: mask is len(unique)
+//     else:
+//         leftover_seeds, lui = ...
+//
+// The bug: unique_consecutive returns lui with shape == original (maps each
+// original element to its unique index). Indexing leftover_time[lui] selects
+// TIME for each original element, not each UNIQUE element — this is the wrong
+// direction: it keeps all times (duplicated) instead of deduplicating them.
+//
+// The fix: build a boolean mask *before* calling unique_consecutive:
+//   mask[0] = True
+//   mask[i] = (seeds[i] != seeds[i-1])  for i > 0
+// Then leftover_time[mask] gives one time per unique seed — correct.
+//
+// CRITICAL EDGE CASE (also in a056923): if leftover_seeds is empty, the
+// concat([True], ...) would produce [True] of length 1, but leftover_time
+// would be empty. Guard: if numel==0, mask = empty bool tensor.
+//
+// In C++ (for our async migration batch dedup path):
+//
+//   Given:  sorted seed IDs + associated timestamps (seed_ts)
+//   Goal:   deduplicate seeds while keeping only the FIRST timestamp per seed
+//
+//   Correct:
+//     unique_mask[0] = true
+//     for i in 1..N: unique_mask[i] = (seeds[i] != seeds[i-1])
+//     unique_seeds = filter(seeds, unique_mask)
+//     unique_ts    = filter(seed_ts, unique_mask)   ← correct
+//
+//   Wrong (pre-a056923):
+//     unique_seeds = unique_consecutive(seeds, &inverse_index)
+//     unique_ts    = seed_ts[inverse_index]          ← WRONG shape
+//
+// This function implements the corrected dedup: returns (unique_seeds,
+// unique_times, inverse_index) where unique_times has shape == unique_seeds.
+// Returns (all_seeds, all_ts, identity) if seeds is empty (edge case guard).
+struct SeedDeduplicationResult {
+    std::vector<uint64_t> unique_seeds;
+    std::vector<int64_t>  unique_times;   // one per unique seed (not per original)
+    std::vector<uint32_t> inverse_index;  // maps original → unique index
+    bool has_times;
+};
+
+inline SeedDeduplicationResult dedup_seeds_with_times(
+        const std::vector<uint64_t>& seeds,
+        const std::vector<int64_t>*  times) {   // nullptr = no temporal
+
+    SeedDeduplicationResult res;
+    res.has_times = (times != nullptr);
+
+    printf("[DEBUG a056923] dedup_seeds_with_times: n=%zu has_times=%s\n",
+           seeds.size(), res.has_times ? "yes" : "no");
+
+    if (seeds.empty()) {
+        // a056923 edge case: empty seeds → assert times also empty
+        if (times && !times->empty()) {
+            fprintf(stderr, "[ASSERT a056923] dedup_seeds_with_times: "
+                "seeds empty but times non-empty (size=%zu) — data corruption\n",
+                times->size());
+        }
+        printf("[DEBUG a056923] dedup_seeds_with_times: empty input, returning empty\n");
+        return res;
+    }
+
+    const size_t N = seeds.size();
+    if (res.has_times && times->size() != N) {
+        fprintf(stderr, "[ASSERT a056923] dedup_seeds_with_times: "
+            "seeds.size()=%zu != times->size()=%zu\n", N, times->size());
+    }
+
+    // Build unique_mask BEFORE calling unique_consecutive
+    // mask[0] = true; mask[i] = (seeds[i] != seeds[i-1])
+    std::vector<bool> unique_mask(N);
+    unique_mask[0] = true;
+    for (size_t i = 1; i < N; ++i) {
+        unique_mask[i] = (seeds[i] != seeds[i - 1]);
+    }
+
+    // unique_consecutive: walk sorted seeds, emit first occurrence
+    uint32_t unique_idx = 0;
+    res.inverse_index.resize(N);
+    for (size_t i = 0; i < N; ++i) {
+        if (unique_mask[i]) {
+            res.unique_seeds.push_back(seeds[i]);
+            if (res.has_times) {
+                // CORRECT: index times by unique_mask position (a056923 fix)
+                res.unique_times.push_back((*times)[i]);
+            }
+            if (i > 0) unique_idx++;
+        }
+        res.inverse_index[i] = unique_idx;
+    }
+
+    printf("[DEBUG a056923] dedup_seeds_with_times: original=%zu unique=%zu\n",
+           N, res.unique_seeds.size());
+    return res;
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 //  AsyncMigrationEngine — Non-blocking cross-tier migration
 //

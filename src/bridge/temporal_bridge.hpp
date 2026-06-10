@@ -57,10 +57,94 @@
 #include <mutex>           // M005: for std::unique_lock
 #include <unordered_map>
 #include <cstdint>
+#include <optional>        // a056923: node_time_func optional return
+#include <iostream>
 #include "../core/interval_index.hpp"     // M011: dual-sorted interval index
 #include "../core/partition_skiplist.hpp" // M013: augmented interval skip list
 
 namespace philemon {
+
+// ─── a056923 migration: TemporalComparison enum ─────────────────────────────
+// a056923 fixed cugraph-pyg to use underscore-separated temporal_comparison
+// strings ('monotonically_decreasing' instead of 'monotonically decreasing').
+// The original space-separated strings were a latent bug: Python's Enum lookup
+// would silently fall through to the default, disabling temporal filtering.
+//
+// In our C++ layer we encode this as a strongly-typed enum to make invalid
+// values a compile-time error rather than a silent runtime no-op.
+// Corresponds to cugraph_pyg/loader/link_neighbor_loader.py temporal_comparison
+// parameter.
+//
+// Print debug: temporal_comparison_name() used in dump paths to confirm
+// which comparison is active — critical for diagnosing causal leakage.
+enum class TemporalComparison : uint8_t {
+    STRICTLY_INCREASING    = 0,  // strict forward: only edges with etime > seed_time
+    MONOTONICALLY_INCREASING = 1,  // non-strict forward: etime >= seed_time
+    STRICTLY_DECREASING    = 2,  // strict backward (default PyG mode pre-a056923 bug)
+    MONOTONICALLY_DECREASING = 3,  // non-strict backward: etime <= seed_time (DEFAULT)
+    LAST                   = 4,  // temporal_strategy='last': most recent only
+};
+
+inline const char* temporal_comparison_name(TemporalComparison tc) {
+    switch (tc) {
+        case TemporalComparison::STRICTLY_INCREASING:     return "strictly_increasing";
+        case TemporalComparison::MONOTONICALLY_INCREASING: return "monotonically_increasing";
+        case TemporalComparison::STRICTLY_DECREASING:     return "strictly_decreasing";
+        case TemporalComparison::MONOTONICALLY_DECREASING: return "monotonically_decreasing";
+        case TemporalComparison::LAST:                    return "last";
+        default:                                          return "unknown";
+    }
+}
+
+// Parse from string (accepts both old space-separated and new underscore form
+// for backward compatibility during migration).
+// Returns MONOTONICALLY_DECREASING on unknown string (matches PyG default).
+inline TemporalComparison parse_temporal_comparison(const char* s) {
+    // a056923: canonical underscore form
+    if (!s) return TemporalComparison::MONOTONICALLY_DECREASING;
+    printf("[DEBUG a056923] parse_temporal_comparison: input='%s'\n", s);
+    if (strcmp(s, "strictly_increasing")     == 0 ||
+        strcmp(s, "strictly increasing")     == 0) {
+        return TemporalComparison::STRICTLY_INCREASING;
+    }
+    if (strcmp(s, "monotonically_increasing") == 0 ||
+        strcmp(s, "monotonically increasing") == 0) {
+        return TemporalComparison::MONOTONICALLY_INCREASING;
+    }
+    if (strcmp(s, "strictly_decreasing")     == 0 ||
+        strcmp(s, "strictly decreasing")     == 0) {
+        return TemporalComparison::STRICTLY_DECREASING;
+    }
+    if (strcmp(s, "last") == 0) {
+        return TemporalComparison::LAST;
+    }
+    // Default: monotonically_decreasing (PyG default, a056923 corrected string)
+    return TemporalComparison::MONOTONICALLY_DECREASING;
+}
+
+// Apply temporal comparison: does edge_time satisfy constraint relative to seed_time?
+// Mirrors the C-level filter in cugraph-pyg DistributedNeighborSampler.
+inline bool temporal_compare(int64_t edge_time, int64_t seed_time,
+                              TemporalComparison tc) {
+    switch (tc) {
+        case TemporalComparison::STRICTLY_INCREASING:     return edge_time > seed_time;
+        case TemporalComparison::MONOTONICALLY_INCREASING: return edge_time >= seed_time;
+        case TemporalComparison::STRICTLY_DECREASING:     return edge_time < seed_time;
+        case TemporalComparison::LAST:
+            // 'last' is handled at a higher level (keep only max-etime neighbor);
+            // at the per-edge level treat as monotonically_decreasing.
+            [[fallthrough]];
+        case TemporalComparison::MONOTONICALLY_DECREASING: return edge_time <= seed_time;
+        default: return edge_time <= seed_time;
+    }
+}
+
+// NodeTimeFn: callable (node_type_id, node_id) → int64_t edge time for that node.
+// Migrated from graph_store._get_ntime_func() in a056923:
+//   returns lambda: node_type, node_id → feature_store[node_type, attr_name][node_id]
+// In C++ we use std::function for the same flexible dispatch.
+using NodeTimeFn = std::function<int64_t(uint32_t /*node_type_id*/, uint64_t /*node_id*/)>;
+
 
 // ─── b58ea19 migration: mixed-precision feature dtype dispatch ────────────────
 // b58ea19 gather_func: changed HALF_FLOAT_DOUBLE → ALLFLOAT (adds bf16 support).
@@ -657,32 +741,48 @@ public:
         return total;
     }
 
-    // ═══ Temporal Neighbor Sampling (from cugraph-gnn d4b52c9 + 4005ab1) ═══
+    // ═══ Temporal Neighbor Sampling (from cugraph-gnn d4b52c9 + 4005ab1 + a056923) ═══
     // cugraph-gnn在GraphStore加了edge timestamp (etime)支持,
     // 然后在DistributedNeighborSampler加了temporal=True模式:
     //   - 只采样etime < seed_time的边(forward-in-time约束)
     //   - 4005ab1进一步标准化: 支持etime <= seed_time的等号情况
     //
+    // a056923新增: 支持node_time_func (对应_get_ntime_func), 用于temporal
+    // negative sampling。node_time_func返回给定节点的时间戳, 用于约束负采样
+    // 只选取"在seed_time之前存在"的节点 (节点时间 <= seed_time)。
+    //
     // 我们对应实现: 给定一个节点和查询时间, 返回etime在约束范围内的邻居。
     // 这比scan_partition更精确——不是按区间范围, 而是按边的精确创建时间过滤。
     //
-    // 断点调试: 每次采样打印seed_node、query_time、匹配数, 用于验证时序因果性。
+    // 断点调试: 每次采样打印seed_node、query_time、匹配数、comparison策略,
+    // 用于验证时序因果性。
 
     struct TemporalSampleResult {
-        uint64_t seed_node;
-        int64_t  query_time;
-        uint64_t total_neighbors;       // partition范围内的总邻居数
-        uint64_t temporal_neighbors;    // 满足etime约束的邻居数
-        double   temporal_ratio;        // temporal_neighbors / total_neighbors
+        uint64_t          seed_node;
+        int64_t           query_time;
+        uint64_t          total_neighbors;       // partition范围内的总邻居数
+        uint64_t          temporal_neighbors;    // 满足etime约束的邻居数
+        double            temporal_ratio;        // temporal_neighbors / total_neighbors
+        // a056923: record which comparison was used — essential for audit trail
+        TemporalComparison comparison;
     };
 
     template <typename Callback>
     TemporalSampleResult temporal_neighbor_sample(
             uint64_t seed_node, int64_t query_time,
             int32_t ts_lo, int32_t ts_hi,
-            Callback&& cb) const {
-        TemporalSampleResult result{seed_node, query_time, 0, 0, 0.0};
+            Callback&& cb,
+            TemporalComparison tc = TemporalComparison::MONOTONICALLY_DECREASING) const {
+        printf("[DEBUG a056923] temporal_neighbor_sample: seed=%lu query_time=%ld"
+               " ts=[%d,%d] comparison=%s\n",
+               (unsigned long)seed_node, (long)query_time,
+               ts_lo, ts_hi, temporal_comparison_name(tc));
+
+        TemporalSampleResult result{seed_node, query_time, 0, 0, 0.0, tc};
         auto parts = query_partitions(ts_lo, ts_hi);
+
+        printf("[DEBUG a056923] temporal_neighbor_sample: found %zu partitions\n",
+               parts.size());
 
         for (auto* p : parts) {
             void* raw = allocator_.get_ptr(p->alloc_id);
@@ -704,8 +804,9 @@ public:
                 if (it->source != seed_node && it->destination != seed_node)
                     continue;
                 result.total_neighbors++;
-                // etime约束: 只采样在query_time之前创建的边(因果性)
-                if (it->etime <= query_time) {
+                // a056923: 使用TemporalComparison判断, 而不是硬编码<=
+                // 对应PyG DistributedNeighborSampler的temporal_comparison参数
+                if (temporal_compare(it->etime, query_time, tc)) {
                     cb(*it);
                     result.temporal_neighbors++;
                 }
@@ -714,6 +815,203 @@ public:
         result.temporal_ratio = result.total_neighbors > 0
             ? static_cast<double>(result.temporal_neighbors) / result.total_neighbors
             : 0.0;
+
+        printf("[DEBUG a056923] temporal_neighbor_sample done: total=%lu temporal=%lu"
+               " ratio=%.3f\n",
+               (unsigned long)result.total_neighbors,
+               (unsigned long)result.temporal_neighbors,
+               result.temporal_ratio);
+        return result;
+    }
+
+    // ─── a056923: temporal_negative_sample ─────────────────────────────────
+    // 对应sampler_utils.py中新增的temporal negative sampling逻辑:
+    //   1. 先调用neg_sample生成候选负样本 (_call_plc_negative_sampling)
+    //   2. 用node_time_func查询每个候选节点的时间戳
+    //   3. 过滤: 只保留 node_time <= seed_time 的候选
+    //   4. 不足时重试最多5次 (PyG API行为)
+    //   5. 完全不足时用"最早存在节点"填充 (边界case处理)
+    //
+    // a056923 关键bugfix: node_time_func为nullptr时, 不执行时序过滤 (对应
+    // sampler_utils.py的 `if node_time_func is not None` guard)。
+    // seed_time为INT64_MIN时, 同样跳过过滤 (对应 `if seed_time is None`)。
+    //
+    // 断点调试: 每步都打印候选数、通过数、重试次数, 便于定位time leak。
+
+    struct TemporalNegSampleResult {
+        std::vector<uint64_t> src_neg;    // 负采样的source节点
+        std::vector<uint64_t> dst_neg;    // 负采样的dest节点
+        uint32_t              retries;    // 重试次数
+        bool                  exhausted;  // 是否触发了"最早节点"填充路径
+    };
+
+    // node_time_fn: (node_id) → int64_t node timestamp. nullptr = no filtering.
+    // src_pool/dst_pool: candidate node pools for random sampling.
+    // target_count: desired number of negative pairs.
+    // seed_time: INT64_MIN signals "no temporal constraint".
+    TemporalNegSampleResult temporal_negative_sample(
+            const std::vector<uint64_t>& src_pool,
+            const std::vector<uint64_t>& dst_pool,
+            size_t target_count,
+            int64_t seed_time,
+            const NodeTimeFn& src_node_time_fn,
+            const NodeTimeFn& dst_node_time_fn,
+            uint32_t src_type_id = 0,
+            uint32_t dst_type_id = 0,
+            TemporalComparison tc = TemporalComparison::MONOTONICALLY_DECREASING) const {
+
+        TemporalNegSampleResult result;
+        result.retries   = 0;
+        result.exhausted = false;
+
+        printf("[DEBUG a056923] temporal_negative_sample: target=%zu seed_time=%ld"
+               " comparison=%s has_node_time=%s\n",
+               target_count, (long)seed_time,
+               temporal_comparison_name(tc),
+               (src_node_time_fn ? "yes" : "no"));
+
+        // Knuth review: guard empty pools — division by zero or pool[0] UB.
+        if (src_pool.empty() || dst_pool.empty() || target_count == 0) {
+            fprintf(stderr,
+                "[WARN a056923] temporal_negative_sample: empty pool or zero target "
+                "(src=%zu dst=%zu target=%zu) — returning empty result\n",
+                src_pool.size(), dst_pool.size(), target_count);
+            return result;
+        }
+
+        // Fast path: no node_time_fn or no seed_time constraint → return random sample
+        if (!src_node_time_fn || !dst_node_time_fn ||
+            seed_time == std::numeric_limits<int64_t>::min()) {
+            printf("[DEBUG a056923] temporal_negative_sample: no temporal filter, "
+                   "returning random %zu pairs\n", target_count);
+            // Warn if node_time_fn absent but seed_time is real — matches PyG warning
+            if ((!src_node_time_fn || !dst_node_time_fn) &&
+                seed_time != std::numeric_limits<int64_t>::min()) {
+                fprintf(stderr,
+                    "[WARN a056923] seed_time is set but node_time_fn is null; "
+                    "temporal negative sampling will not be performed\n");
+            }
+            result.src_neg.resize(target_count);
+            result.dst_neg.resize(target_count);
+            std::mt19937_64 rng(static_cast<uint64_t>(seed_time ^ 0xDEADBEEF));
+            for (size_t i = 0; i < target_count; ++i) {
+                result.src_neg[i] = src_pool[rng() % src_pool.size()];
+                result.dst_neg[i] = dst_pool[rng() % dst_pool.size()];
+            }
+            return result;
+        }
+
+        std::mt19937_64 rng(static_cast<uint64_t>(seed_time));
+        std::vector<uint64_t> remaining_seed_time(target_count, seed_time);
+        // (For multi-seed case: caller expands seed_time per a056923 neg_cat logic)
+
+        // ── Round 0: initial random sample ──────────────────────────────────
+        auto random_pairs = [&](size_t n)
+                -> std::pair<std::vector<uint64_t>, std::vector<uint64_t>> {
+            std::vector<uint64_t> s(n), d(n);
+            for (size_t i = 0; i < n; ++i) {
+                s[i] = src_pool[rng() % src_pool.size()];
+                d[i] = dst_pool[rng() % dst_pool.size()];
+            }
+            return {s, d};
+        };
+
+        auto [s0, d0] = random_pairs(target_count);
+
+        // Filter by temporal constraint: node_time <= seed_time
+        std::vector<uint64_t> filtered_src, filtered_dst;
+        std::vector<uint64_t> remaining_st = remaining_seed_time;  // copy for filtering
+        filtered_src.reserve(target_count);
+        filtered_dst.reserve(target_count);
+        std::vector<uint64_t> invalid_st;  // seed times for which we still need samples
+
+        for (size_t i = 0; i < target_count; ++i) {
+            int64_t st = src_node_time_fn(src_type_id, s0[i]);
+            int64_t dt = dst_node_time_fn(dst_type_id, d0[i]);
+            if (temporal_compare(st, remaining_st[i], tc) &&
+                temporal_compare(dt, remaining_st[i], tc)) {
+                filtered_src.push_back(s0[i]);
+                filtered_dst.push_back(d0[i]);
+            } else {
+                invalid_st.push_back(remaining_st[i]);
+            }
+        }
+
+        printf("[DEBUG a056923] temporal_negative_sample round0: "
+               "passed=%zu failed=%zu\n",
+               filtered_src.size(), invalid_st.size());
+
+        // ── Retry loop (max 5 rounds, matches PyG API) ───────────────────────
+        for (int attempt = 0; attempt < 5 && !invalid_st.empty(); ++attempt) {
+            result.retries++;
+            size_t diff = invalid_st.size();
+            auto [s_p, d_p] = random_pairs(diff);
+
+            std::vector<uint64_t> still_invalid;
+            for (size_t i = 0; i < diff; ++i) {
+                int64_t st = src_node_time_fn(src_type_id, s_p[i]);
+                int64_t dt = dst_node_time_fn(dst_type_id, d_p[i]);
+                if (temporal_compare(st, invalid_st[i], tc) &&
+                    temporal_compare(dt, invalid_st[i], tc)) {
+                    filtered_src.push_back(s_p[i]);
+                    filtered_dst.push_back(d_p[i]);
+                } else {
+                    still_invalid.push_back(invalid_st[i]);
+                }
+            }
+            printf("[DEBUG a056923] temporal_negative_sample retry=%d: "
+                   "passed=%zu still_invalid=%zu\n",
+                   attempt + 1, filtered_src.size(), still_invalid.size());
+            invalid_st = std::move(still_invalid);
+        }
+
+        // ── Exhausted: fill with earliest-time node (matches PyG fallback) ──
+        if (!invalid_st.empty()) {
+            result.exhausted = true;
+            printf("[DEBUG a056923] temporal_negative_sample: EXHAUSTED after 5 retries,"
+                   " filling %zu slots with earliest-node fallback\n",
+                   invalid_st.size());
+
+            // Find node with minimum time in each pool
+            uint64_t earliest_src = src_pool[0];
+            int64_t  earliest_src_t = src_node_time_fn(src_type_id, earliest_src);
+            for (uint64_t n : src_pool) {
+                int64_t t = src_node_time_fn(src_type_id, n);
+                if (t < earliest_src_t) { earliest_src_t = t; earliest_src = n; }
+            }
+
+            uint64_t earliest_dst = dst_pool[0];
+            int64_t  earliest_dst_t = dst_node_time_fn(dst_type_id, earliest_dst);
+            for (uint64_t n : dst_pool) {
+                int64_t t = dst_node_time_fn(dst_type_id, n);
+                if (t < earliest_dst_t) { earliest_dst_t = t; earliest_dst = n; }
+            }
+
+            printf("[DEBUG a056923] temporal_negative_sample fallback: "
+                   "earliest_src=%lu (t=%ld) earliest_dst=%lu (t=%ld)\n",
+                   (unsigned long)earliest_src, (long)earliest_src_t,
+                   (unsigned long)earliest_dst, (long)earliest_dst_t);
+
+            // Fill remaining slots with earliest-time nodes (same as PyG)
+            for (size_t i = 0; i < invalid_st.size(); ++i) {
+                filtered_src.push_back(earliest_src);
+                filtered_dst.push_back(earliest_dst);
+            }
+        }
+
+        // Trim to target_count (may have slightly more from retry overlaps)
+        if (filtered_src.size() > target_count) {
+            filtered_src.resize(target_count);
+            filtered_dst.resize(target_count);
+        }
+
+        result.src_neg = std::move(filtered_src);
+        result.dst_neg = std::move(filtered_dst);
+
+        printf("[DEBUG a056923] temporal_negative_sample complete: "
+               "generated=%zu retries=%u exhausted=%s\n",
+               result.src_neg.size(), result.retries,
+               result.exhausted ? "yes" : "no");
         return result;
     }
 
@@ -726,6 +1024,7 @@ public:
                   << " total_nbrs=" << r.total_neighbors
                   << " temporal_nbrs=" << r.temporal_neighbors
                   << " ratio=" << r.temporal_ratio
+                  << " comparison=" << temporal_comparison_name(r.comparison)
                   << " partitions=" << partitions_.size()
                   << "\n";
     }

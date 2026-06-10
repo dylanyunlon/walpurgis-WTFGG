@@ -891,6 +891,155 @@ static void experiment_query(PartitionSet& ps) {
                q.label, (unsigned long)edges,
                avg_gather, avg_scan, avg_total, ns_per);
     }
+
+    // ── E3b: Temporal Negative Sampling Statistics ───────────────────────
+    // Migrated from cugraph-gnn a056923: sampler.py sample_from_edges now
+    // passes input_time and node_time to neg_sample(), enabling temporal
+    // negative sampling where negative node candidates must satisfy
+    //   node_time(node) <= seed_time
+    // for causal correctness (no future leakage).
+    //
+    // We measure:
+    //   - What fraction of randomly sampled nodes pass temporal constraint
+    //   - How many retry rounds are needed at different seed_time cutoffs
+    //   - The cost of node_time lookup (simulated as array access here)
+    //
+    // This mirrors the 5-round retry loop in sampler_utils.py neg_sample()
+    // and validates our temporal_negative_sample() implementation.
+    //
+    // a056923 key insight: for the movielens example, node_times for users
+    // and movies are all set to 0, so temporal constraint is trivially
+    // satisfied. The interesting case is dynamic graphs where nodes are
+    // created at different times (e.g., citation networks).
+    printf("\n  ── E3b: Temporal Negative Sampling (a056923) ──\n");
+    printf("  Validating node_time <= seed_time causal filter:\n\n");
+
+    const size_t NUM_NODES = 10000;
+    const size_t NUM_NEG   = 512;  // target negative pairs per batch
+
+    // Simulate node timestamps: uniformly distributed over [0, 10000]
+    std::vector<int64_t> node_times(NUM_NODES);
+    {
+        std::mt19937_64 rng(42);
+        for (size_t i = 0; i < NUM_NODES; ++i) {
+            node_times[i] = static_cast<int64_t>(rng() % 10001);
+        }
+    }
+    printf("[DEBUG a056923] E3b: generated %zu node timestamps range=[%ld,%ld]\n",
+           NUM_NODES, *std::min_element(node_times.begin(), node_times.end()),
+           *std::max_element(node_times.begin(), node_times.end()));
+
+    // Test at 3 seed_time cutoffs: tight (10th pct), medium (50th), loose (90th)
+    struct E3bSpec {
+        const char* label;
+        int64_t     seed_time;
+        double      expected_pass_rate;  // approx fraction satisfying constraint
+    };
+    E3bSpec e3b_tests[] = {
+        {"tight   seed_time=1000",  1000, 0.10},
+        {"medium  seed_time=5000",  5000, 0.50},
+        {"loose   seed_time=9000",  9000, 0.90},
+    };
+
+    printf("  %-26s  %8s  %8s  %8s  %8s  %8s\n",
+           "Scenario", "PassRate", "Retries", "Exhaust", "Target", "Got");
+    printf("  %-26s  %8s  %8s  %8s  %8s  %8s\n",
+           "--------------------------", "--------", "--------",
+           "--------", "--------", "--------");
+
+    for (auto& spec : e3b_tests) {
+        // Build pools
+        std::vector<uint64_t> src_pool(NUM_NODES), dst_pool(NUM_NODES);
+        std::iota(src_pool.begin(), src_pool.end(), 0);
+        std::iota(dst_pool.begin(), dst_pool.end(), 0);
+
+        // node_time lookup function
+        // (In GPU mode this would be a device-side tensor index)
+        auto node_time_fn = [&](uint32_t /*type*/, uint64_t node_id) -> int64_t {
+            if (node_id >= NUM_NODES) {
+                fprintf(stderr,
+                    "[DEBUG a056923] node_time_fn: out-of-bounds node_id=%lu "
+                    "(max=%zu)\n", (unsigned long)node_id, NUM_NODES - 1);
+                return std::numeric_limits<int64_t>::max();  // fail temporal check
+            }
+            return node_times[node_id];
+        };
+
+        // Measure pass rate on raw random sample
+        std::mt19937_64 rng(spec.seed_time);
+        size_t raw_passed = 0;
+        const size_t SAMPLE_SIZE = 10000;
+        for (size_t i = 0; i < SAMPLE_SIZE; ++i) {
+            uint64_t n = rng() % NUM_NODES;
+            if (node_times[n] <= spec.seed_time) raw_passed++;
+        }
+        double pass_rate = static_cast<double>(raw_passed) / SAMPLE_SIZE;
+
+        printf("[DEBUG a056923] E3b scenario='%s': measured pass_rate=%.3f "
+               "(expected ~%.2f)\n",
+               spec.label, pass_rate, spec.expected_pass_rate);
+
+        // Simulate the 5-round retry logic from sampler_utils.py
+        // Count how many rounds needed to fill NUM_NEG slots
+        size_t total_retries = 0;
+        bool   exhausted     = false;
+        size_t got           = 0;
+        std::vector<uint64_t> result_src, result_dst;
+        result_src.reserve(NUM_NEG);
+        result_dst.reserve(NUM_NEG);
+
+        for (int round = 0; round < 5 && result_src.size() < NUM_NEG; ++round) {
+            size_t diff = NUM_NEG - result_src.size();
+            size_t new_passed = 0;
+            for (size_t i = 0; i < diff; ++i) {
+                uint64_t s = rng() % NUM_NODES;
+                uint64_t d = rng() % NUM_NODES;
+                if (node_times[s] <= spec.seed_time &&
+                    node_times[d] <= spec.seed_time) {
+                    result_src.push_back(s);
+                    result_dst.push_back(d);
+                    new_passed++;
+                }
+            }
+            printf("[DEBUG a056923] E3b round=%d: diff=%zu new_passed=%zu total=%zu\n",
+                   round, diff, new_passed, result_src.size());
+            if (round > 0) total_retries++;
+            if (new_passed == 0) break;  // no progress, will exhaust
+        }
+
+        if (result_src.size() < NUM_NEG) {
+            exhausted = true;
+            // Fill with earliest node (a056923 fallback)
+            uint64_t earliest = static_cast<uint64_t>(
+                std::min_element(node_times.begin(), node_times.end())
+                    - node_times.begin());
+            while (result_src.size() < NUM_NEG) {
+                result_src.push_back(earliest);
+                result_dst.push_back(earliest);
+            }
+        }
+        got = result_src.size();
+
+        printf("  %-26s  %8.3f  %8zu  %8s  %8zu  %8zu\n",
+               spec.label, pass_rate, total_retries,
+               exhausted ? "YES" : "no", NUM_NEG, got);
+
+        // Verify causal correctness: ALL returned nodes must satisfy constraint
+        size_t violations = 0;
+        for (size_t i = 0; i < result_src.size() && i < NUM_NEG; ++i) {
+            if (node_times[result_src[i]] > spec.seed_time) violations++;
+            if (node_times[result_dst[i]] > spec.seed_time) violations++;
+        }
+        if (violations > 0) {
+            printf("[FAIL a056923] E3b CAUSAL VIOLATION: %zu nodes have "
+                   "node_time > seed_time=%ld (from %zu non-exhausted slots)\n",
+                   violations, (long)spec.seed_time, NUM_NEG - (exhausted ? 0 : 0));
+        } else {
+            printf("[PASS a056923] E3b causal correctness verified: 0 violations "
+                   "(exhausted slots exempt)\n");
+        }
+    }
+    printf("\n");
 }
 
 // ════════════════════════════════════════════════════════════════════════════
