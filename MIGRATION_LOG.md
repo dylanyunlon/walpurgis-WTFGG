@@ -1,4 +1,74 @@
 
+## migrate 466b5b9: add stream sync before scatter
+
+- **Upstream commit**: 466b5b9e50c07902d576167770857014d1c30fde (cugraph-gnn, Chang Liu, 2024-12-02)
+- **Commit message**: `[Bugfix] Add stream synchronization before the scatter operation (#73)`
+- **Upstream diff** (2行改动, scatter_op_impl_mapped.cu):
+  ```
+  +#include "cuda_macros.hpp"
+  +  WM_CUDA_CHECK(cudaStreamSynchronize(stream));
+  ```
+- **Bug 根因**: `wholememory_scatter_mapped()` 完成后将结果 scatter 到 host（emb_device='cpu'），
+  但在返回 Python 前没有 `cudaStreamSynchronize(stream)`。CPU 立即读取 `dst_ptr` 时 stream
+  仍在飞行中，读到的是旧数据（race condition）。Gather 路径无此问题因为输出留在 device。
+
+### Walpurgis 迁移位置
+
+**文件**: `src/cuda/hetero_bench.cu`
+
+**迁移点 1 — E4 `experiment_migration` (主要修复)**
+
+`alloc.copy_async()` 将数据异步写入 `HOST_DRAM`，随后代码立即读取 `dst_ptr`（通过
+`CudaTimer::end` 内部的 `cudaEventSynchronize`，再到 `alloc.deallocate`）。在 stream
+未同步的情况下 `deallocate` 调用 `cudaFreeHost(ptr)` 是 UB：CUDA driver 可能在写操作
+完成前就释放了 pinned memory 的 device-side mapping。
+
+新增（`copy_async` 循环结束后、`timer.end` 之前）:
+```cpp
+if (dst == DeviceTier::HOST_DRAM) {
+    printf("[DEBUG 466b5b9 E4-scatter-sync] src=%s dst=%s sz=%zu stream=%p → cudaStreamSynchronize\n", ...);
+    CUDA_CHECK(cudaStreamSynchronize(stream));
+}
+```
+
+**迁移点 2 — E3 `cross_tier_query` (已存在，注释对齐)**
+
+E3 已有 stream sync 循环（第 856-864 行），已正确对应 466b5b9 语义。
+本次更新了 `copy_async()` 的注释，明确列出所有 scatter-to-host 调用点的同步责任。
+
+### 质量审查
+
+**1. diff 对比源**
+
+| 上游 466b5b9 | Walpurgis 迁移 |
+|---|---|
+| `scatter_op_impl_mapped.cu` 末尾加 `cudaStreamSynchronize(stream)` | E4 `copy_async` 到 HOST_DRAM 后加 `cudaStreamSynchronize(stream)` |
+| 仅在 scatter-to-host 路径（不是 gather） | 仅 `if (dst == DeviceTier::HOST_DRAM)` 条件下触发 |
+| 带 `WM_CUDA_CHECK` 错误检查 | 带 `CUDA_CHECK` 错误检查 |
+| 无 debug print（上游用 cuda_macros） | 带 `[DEBUG 466b5b9 E4-scatter-sync]` 断点 print |
+
+语义完全对应，适配了 Walpurgis 的多-tier 架构。
+
+**2. 用户角度 bug 排查**
+
+- **修复前**: E4 测量 GPU→HOST 路径时，`timer.end()` 内部 `cudaEventSynchronize` 只等 event，
+  但 event 记录在 stream 上可能早于 DMA 完成（PCIe 传输异步性）；随后 `cudaFreeHost` 在
+  数据未落地时释放 pinned buffer。结果：benchmak 数据可能是脏的，更严重时 driver crash。
+- **修复后**: stream 全部完成后再 `timer.end()`，保证带宽数字准确；`deallocate` 时 DMA 已完成。
+- **E3 影响**: E3 已有正确同步，无回归。E5 migrator 用 `copy_sync`（内部是 `cudaMemcpy`，同步），
+  无需额外修改。
+
+**3. 系统角度内存并发安全**
+
+- `cudaStreamSynchronize(stream)` 是全序屏障：它在 stream 中所有已入队操作（包括
+  `cudaMemcpyAsync`）完成后才返回。之后 CPU 读/释放 pinned buffer 完全安全。
+- E4 中 stream 是局部变量，无并发写入者，单线程调用，无锁竞争风险。
+- E3 的 stream 来自 `Partition.stream`（per-partition），每个 partition 的 stream sync
+  在独立迭代中串行执行，然后才进入 `cudaEventSynchronize` wait loop，顺序正确。
+- `cudaStreamSynchronize` 是幂等且线程安全的（CUDA 规范），多次调用无副作用。
+
+---
+
 ## migrate 5810cdd: [SKIP] copy from cugraph — 仓库批量导入，无迁移价值
 
 - **Upstream commit**: 5810cdd (cugraph-gnn, Alexandria Barghi, 2024-06-11)

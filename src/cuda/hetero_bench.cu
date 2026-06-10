@@ -425,10 +425,15 @@ public:
 
     // Copy between any two tiers (async on stream)
     // NOTE: This function is intentionally kept async (no cudaStreamSynchronize).
-    // For scatter operations whose output is host memory, callers MUST call
-    // scatter_sync_if_host() after this to guarantee visibility.
+    // For scatter operations whose output is host memory, callers MUST add
+    //   CUDA_CHECK(cudaStreamSynchronize(stream))
+    // after this call to guarantee host-side visibility before any CPU read.
     // Pattern: 466b5b9 adds sync at the Python-interface boundary
     // (wholememory_scatter_mapped), NOT inside internal gather/scatter helpers.
+    // ─ Call sites with required scatter sync ────────────────────────────────
+    //   E3 cross_tier_query():   sync loop lines ~856-864 (already present)
+    //   E4 experiment_migration: sync block after copy_async loop (466b5b9 fix)
+    //   E5 migrator thread:      uses copy_sync (blocking) — no separate sync needed
     void copy_async(DeviceTier dst_tier, void* dst,
                     DeviceTier src_tier, const void* src,
                     size_t size, cudaStream_t stream) {
@@ -1166,6 +1171,22 @@ static void experiment_migration(HeteroAllocator& alloc) {
                 for (int i = 0; i < ITERS; ++i) {
                     alloc.copy_async(dst, dst_ptr, src, src_ptr, sz, stream);
                 }
+
+                // ═══ 466b5b9 migrate: stream sync before scatter reaches host ═══
+                // wholememory_scatter_mapped() adds cudaStreamSynchronize(stream)
+                // before returning to Python so host-side reads see complete data.
+                // E4 analog: when dst tier is HOST_DRAM the benchmark must sync the
+                // stream before touching dst_ptr (bandwidth measurement + dealloc).
+                // Without this barrier the CPU could read partially-written memory.
+                // Unlike gather (dst stays on device), D2H scatter REQUIRES the sync.
+                // 断点调试: 打印 E4 scatter-to-host stream sync，确认 466b5b9 路径
+                if (dst == DeviceTier::HOST_DRAM) {
+                    printf("[DEBUG 466b5b9 E4-scatter-sync] src=%s dst=%s "
+                           "sz=%zu stream=%p → cudaStreamSynchronize\n",
+                           tier_name(src), tier_name(dst), sz, (void*)stream);
+                    CUDA_CHECK(cudaStreamSynchronize(stream));
+                }
+
                 float ms = timer.end(stream);
                 ms /= ITERS;
 
