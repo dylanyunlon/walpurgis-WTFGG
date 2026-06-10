@@ -1630,6 +1630,7 @@ make_temporal_session_from_loader_args()  # 便利builder对应NeighborLoader.__
   HomoEdgeInverseView.apply 前后形状 →
   build_deoffset_session 出口
 
+
 ## migrate 662a6d9: fix shm permission, avoid shm access from other user
 
 - **Upstream commit**: 662a6d9 (cugraph-gnn, linhu-nv + alexbarghi-nv, 2026-05-19, PR #463)
@@ -1702,4 +1703,86 @@ make_temporal_session_from_loader_args()  # 便利builder对应NeighborLoader.__
   `probe_real_shm` ftok/shmget/IPC_STAT 每步 →
   实际 mode vs 请求 mode 对比 →
   三处调用点覆盖验证汇总
+
+## migrate 318ae6c: Updates movielens_mnmg.py to use DDP
+
+- **Upstream commit**: 318ae6c (cugraph-gnn, NVIDIA)
+- **Commit message**: `Updates movielens_mnmg.py to use DDP`
+- **Upstream diff** (1 file changed, movielens_mnmg.py):
+  - `import`: 新增 `from torch.nn.parallel import DistributedDataParallel as DDP`
+  - `import`: 新增 `from cugraph_pyg.data import GraphStore, FeatureStore` (从函数体内提至模块顶)
+  - `pylibwholegraph.torch.initialize`: 删除 `init as wm_init`，保留 `finalize as wm_finalize`
+  - `init_pytorch_worker`: 删除 `wm_init(global_rank, world_size, local_rank, device_count())` 调用，
+    注释改为 `# WholeGraph is initialized automatically.`
+  - `cugraph_pyg_from_heterodata`: 删除函数内 `from cugraph_pyg.data import GraphStore, FeatureStore`
+    (已提至模块顶)
+  - `Encoder.__init__`: 参数从 `(hidden_channels, out_channels)` 改为
+    `(user_in_channels, movie_in_channels, hidden_channels, out_channels)`；
+    conv1/2/3 从 `SAGEConv((-1,-1), ...)` 改为显式维度
+    `conv1=(movie_in, user_in)` `conv2=(user_in, movie_in)` `conv3=(hidden, hidden)`
+  - `Model.__init__`: 参数新增 `num_features`；`Encoder(...)` 调用改为传入显式维度
+  - `__main__`: 新增 `num_features` 提取块 (x.shape[-1] or 1)；
+    `Model(...)` 调用新增 `num_features=num_features`；
+    新增 `model = DDP(model, device_ids=[local_rank])`
+
+- **Knuth 审查**:
+  1. diff 对比源:
+     - `conv1 = SAGEConv((movie_in_channels, user_in_channels), ...)`:
+       SAGEConv((src, dst), out)，conv1 走 movie→user 方向，src=movie，dst=user，
+       参数名 user_in_channels 在第二位（=dst），与直觉"先 user 后 movie"相反，注释缺失；
+       forward 调用 `(x_dict["movie"], x_dict["user"])` 与此一致，但易混淆
+     - `wm_init` 删除：WholeGraph 自动初始化依赖 pylibwholegraph 版本 >= 某特定版本，
+       旧版本静默不初始化而非报错，调用 wm_finalize 会 segment fault
+     - `DDP(model, device_ids=[local_rank])` 在 `model.to(device)` 之后，顺序正确；
+       若颠倒则 DDP 参数注册在 CPU，nccl allreduce 出错
+     - `import GraphStore, FeatureStore` 提至模块顶后，
+       `cugraph_pyg_from_heterodata` 函数体内空了一行（diff 可见 blank line），无功能影响
+  2. 用户角度 bug:
+     - `data["user"].x` 由 `torch.eye(num_users_total)` 生成，
+       num_users_total 大（>500K）时单 rank 存 eye 矩阵 OOM，上游无提示
+     - `drop_last=True` + batch_size=256，若 eli_train.shape[1] < 256，
+       train_loader 为空，`train()` 返回 0/0 ZeroDivisionError，上游无保护
+     - DDP 包裹后 `model.forward` 已透明，但 `test()` 中 `model.eval()` 作用于
+       DDP wrapper，实际等价于 `model.module.eval()`，BN 统计量同步依赖 DDP 配置，
+       当前模型无 BN，无影响；若后续加 BN 须注意
+  3. 系统角度安全:
+     - `CugraphWorkerSession` (迁移改写) 封装 `cugraph_comms_shutdown + wm_finalize`，
+       上游裸调在 `with use_mem_pool` 块末尾，OOM/NCCL timeout 导致 with 块异常退出时不执行
+     - `DDP device_ids=[local_rank]` 假设 LOCAL_RANK == CUDA device index；
+       容器内设备重映射（如 CUDA_VISIBLE_DEVICES）时两者可能不一致，nccl 报错难以定位
+     - `rmm MemPool` 生命周期与 `with` 块绑定；DDP allreduce 触发 NCCL timeout
+       导致 with 块异常退出时，未完成 kernel 仍持有 pool 引用，
+       `rmm` 报 pool-in-use error（上游已知限制）
+
+### Walpurgis 迁移位置
+
+**文件: `src/walpurgis/examples/movielens/movielens_mnmg.py`** — 新增
+
+**迁移要点**:
+- `FeatureDims`: dataclass 封装 num_features 字典，`__post_init__` 校验维度 >= 1，
+  `from_heterodata()` 类方法集中提取，替代 __main__ 裸 dict 字面量
+- `CugraphWorkerSession`: context manager 封装 init_pytorch_worker 生命周期，
+  `__exit__` 保证 cugraph_comms_shutdown + wm_finalize 在异常路径也执行
+- `ModelBundle`: dataclass 封装 Model + DDP + optimizer 三件套，
+  `build()` 类方法集中构建，替代 __main__ 三行散落赋值
+- `EncoderShapeGuard` (`_check_encoder_shape`): 校验 SAGEConv 输入维度顺序，
+  维度对调时立即 ValueError，替代训练数 epoch 后 loss 不收敛的隐患
+- 大 eye 矩阵 OOM 警告 (num_users > 500K)
+- 空 DataLoader ZeroDivisionError 保护
+
+**改写20%（鲁迅拿法）**:
+- `FeatureDims` dataclass 替代裸 dict + 散落 shape[-1] 提取
+- `CugraphWorkerSession` context manager 替代裸函数 + 末尾裸调 shutdown/finalize
+- `ModelBundle.build()` 封装 Model + DDP + Adam，替代 __main__ 三行散落
+- `_check_encoder_shape()` 守卫函数替代无注释的显式维度传入
+- 全链路 `WALPURGIS_DEBUG=1` 断点 print，覆盖:
+  FeatureDims.from_heterodata 维度提取 →
+  CugraphWorkerSession._init_worker RMM/cupy/comms 初始化各阶段 →
+  load_partitions num_nodes/shard shape/label_dict 空检查 →
+  cugraph_pyg_from_heterodata feature shape →
+  Encoder.__init__ 维度参数 → Encoder.forward 输入输出 shape →
+  ModelBundle.build 参数量/DDP/optimizer →
+  train.batch out/y shape → test.batch pred/target.unique →
+  train_loop epoch loss/auc →
+  main barrier 检查点 / eli_train/test shape / feat_dims
 
