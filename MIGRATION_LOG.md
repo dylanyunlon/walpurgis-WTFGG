@@ -3198,56 +3198,55 @@ if d > 0:           # 整除时 d==0，跳过切片，保留完整 perm
   3. **系统角度安全**: 无安全影响；删除 openmpi/gcc 等 C++ 构建依赖是正向安全收益（减少编译器/MPI 安装面）；`--extra-index-url=https://pypi.nvidia.com` 是生产 wheel 分发地址，需信任 NVIDIA PyPI 源，与 Walpurgis 无关
 
 - **迁移决策**: SKIP — 纯 build/CI 基础设施重构：删除 C++ 全栈构建逻辑、裁剪 conda 依赖矩阵、新增 pre-commit 配置。Walpurgis 无 `build.sh`、无 `conda/environments/`、无 `dependencies.yaml`、无 RAPIDS CI 体系；`.pre-commit-config.yaml` 中涉及的 `rapids-dependency-file-generator` 是 RAPIDS 专有工具，不适用。无任何可迁移的算法、API 或运行时代码。
-## migrate 2b2a25e: [SKIP] unneeded — 上游删除 mmio C 库及第三方 License，Walpurgis 无对应结构
 
-**上游 commit**: `2b2a25e` (BradReesWork, NVIDIA)
-**上游描述**: `unneeded`
-**作者**: BradReesWork <BradReesWork@users.noreply.github.com>
-**日期**: 2024-07-01
+---
 
-**diff 分析**:
-- 变更范围: 4 个文件，691 行全部删除，0 行新增
-- 删除文件列表:
-  - `thirdparty/LICENSES/LICENSE.boost` — 23 行，Boost Software License 1.0（2003-08-17）
-  - `thirdparty/LICENSES/LICENSE.texas_state_university` — 24 行，Texas State University BSD-style License（2014-2020）
-  - `thirdparty/mmio/mmio.c` — 511 行，Matrix Market I/O ANSI C 库实现
-  - `thirdparty/mmio/mmio.h` — 133 行，Matrix Market I/O 头文件
+## db74d87 — Merge pull request #2 from alexbarghi-nv/copy-from-cugraph
 
-**diff 逐行深读**:
+**上游描述**: Copy Files From cuGraph Repository（从 rapidsai/cugraph 复制整个 cugraph-dgl 包）
 
-**mmio.c（511 行）** 是 NIST math.nist.gov/MatrixMarket 的标准 C 稀疏矩阵 I/O 库，提供：
-- `mm_read_unsymmetric_sparse()` — 从 `.mtx` 文件读取非对称稀疏矩阵（real/sparse 格式），1-based 索引转 0-based
-- `mm_read_banner()` / `mm_read_mtx_crd_size()` / `mm_read_mtx_array_size()` — 解析 MatrixMarket banner 和尺寸头部，含跳过注释行（`line[0]=='%'`）逻辑
-- `mm_read_mtx_crd_data()` / `mm_read_mtx_crd_entry()` — 读取 complex/real/pattern 三种 typecode 的坐标数据，用 `%lg` 格式读 double
-- `mm_read_mtx_crd()` — 高层整合函数，支持 `stdin` 或文件路径，自动分配 `I[]`/`J[]`/`val[]` 内存
-- `mm_write_banner()` / `mm_write_mtx_crd_size()` / `mm_write_mtx_crd()` — 对应写入接口
-- `mm_typecode_to_str()` / `mm_strdup()` — typecode 4 字符数组转可读字符串，`mm_strdup` 补齐 ANSI C 无 strdup 的缺口
+**关键文件分析**:
 
-**mmio.h（133 行）** 定义：
-- `MM_typecode` — `char[4]` 四字符类型码，编码 object/sparse-dense/data-type/storage-scheme
-- 大量 `mm_is_*` / `mm_set_*` macro，基于数组下标位操作判断/设置类型码
-- `mm_clear_typecode` macro：将前 3 位置 `' '`，第 4 位置 `'G'`（General 默认值）
-- 错误码常量：`MM_PREMATURE_EOF=12`、`MM_NO_HEADER=14`、`MM_UNSUPPORTED_TYPE=15` 等
-- 高层接口声明：`mm_read_mtx_crd()` / `mm_read_mtx_crd_data()` / `mm_read_mtx_crd_entry()`
+diff 将 `python/cugraph-dgl/` 整目录（714 行 `cugraph_storage.py`、557 行 `sampling_helpers.py`、353 行 `base.py`、321 行 `dataloader.py` 等）复制进 cugraph-gnn 仓库。绝大多数文件是 DGL 专用接口（CuGraphStorage 鸭子类、DGL DataLoader 封装、DGL nn 卷积层），与 Walpurgis 时空图 GNN 技术栈不直接对应。
+
+以下文件被判定为无价值 SKIP：
+- `cugraph_storage.py` / `convert.py` / `cugraph_conversion_utils.py`：DGL 专有 Duck-typed API，Walpurgis 不使用 DGL
+- `dataloader.py`（DGL）/ `dataset.py`（HomogenousBulkSamplerDataset）：DGL DataLoader 封装，依赖 `dgl.dataloading`
+- `nn/conv/*.py`（GATConv/GATv2Conv/SAGEConv/RelGraphConv/TransformerConv）：DGL 卷积层，依赖 `dgl.DGLHeteroGraph`
+- `conda/`/`ci/`/`build.sh`：RAPIDS 构建体系，与 Walpurgis 无关
+- `mg_utils/`：Dask 集群辅助脚本，Walpurgis 使用 PyTorch DDP
+
+**迁移文件**:
+
+### 1. `src/walpurgis/tensor/sparse_graph.py`（新增）
+
+**迁移源**: `python/cugraph-dgl/cugraph_dgl/nn/conv/base.py` → `SparseGraph` 类 + `compress_ids` / `decompress_ids`
+
+**迁移价值**: `SparseGraph` 是 pylibcugraphops 算子所需的 CSC/COO/CSR 多格式稀疏图表示，与 Walpurgis `distributed_sampler.py` 中 `pylibcugraphops.pytorch.CSC` 调用路径直接对接。原版依赖 `dgl.DGLHeteroGraph` 作为替代输入，Walpurgis 迁移版移除了 `get_cugraph_ops_CSC/get_cugraph_ops_HeteroCSC`（BaseConv 部分），保留纯格式转换核心。
+
+**20% 改写**:
+- `_validate_inputs()` — 集中 6 处散落 if/raise，替代原版 `__init__` 内联校验
+- `_build_csc()` — 独立 sort+compress 路径，含 DEBUG 耗时计时
+- 全链路 `WALPURGIS_DEBUG=1` 断点：`__init__` → `_build_csc` → 各 lazy 属性首次计算 → `reduce_memory`
+
+### 2. `src/walpurgis/sampler/sampling_csc_helpers.py`（新增）
+
+**迁移源**: `python/cugraph-dgl/cugraph_dgl/dataloading/utils/sampling_helpers.py` → `_process_sampled_df_csc`、`_create_homogeneous_sparse_graphs_from_csc`、`create_homogeneous_sampled_graphs_from_dataframe_csc`
+
+**迁移价值**: BulkSampler `compression="CSR"` 输出的 CSC 格式 DataFrame 后处理，是 `DistributedNeighborSampler` 下游的关键解包步骤。原版 `_process_sampled_df_csc` 是近 200 行单体函数，中间状态完全不可观察。
+
+**20% 改写**:
+- `_extract_csc_tensors()` — 独立从 DataFrame 提取张量 + 偏移局部化，原版内联无名
+- `_build_per_batch_hop_dict()` — 独立 batch/hop 双层切片，每步 DEBUG 输出切片范围
+- 公开接口 `create_homogeneous_sampled_graphs_from_dataframe_csc` 保持上游 API 兼容
+
+### 3. `src/walpurgis/tensor/__init__.py` / `src/walpurgis/sampler/__init__.py`（修改）
+
+暴露新增符号：`SparseGraph`, `compress_ids`, `decompress_ids`, `create_homogeneous_sampled_graphs_from_dataframe_csc`。
 
 **Knuth 审查**:
-1. **diff 对比源**:
-   | 上游 2b2a25e `thirdparty/mmio/` + `thirdparty/LICENSES/` | Walpurgis 现有结构 |
-   |---|---|
-   | `mmio.c`/`mmio.h` — ANSI C 稀疏矩阵读写，依赖 `FILE*`/`malloc`/`fscanf` 等 C 标准库 | Walpurgis 无任何 `.c`/`.h` 文件，纯 Python 项目，无 C 编译链路 |
-   | `thirdparty/` 目录存放第三方 C 依赖源码 | Walpurgis 无 `thirdparty/` 目录；`upstream/` 仅存放参考 Python 项目（d2stgnn/morphgl/staeformer/titan/wholememory_ops） |
-   | `LICENSE.boost` / `LICENSE.texas_state_university` — 对应 mmio/Boost 的 C 库版权声明 | Walpurgis 无 C 依赖，无需携带此类 License；Python 依赖版权通过 pip wheel 分发机制管理 |
-   | Matrix Market 格式用于稀疏图基准测试数据集（`.mtx` 文件）读取 | Walpurgis 数据集为 METR-LA 交通传感器时序（h5/npz 格式），通过 `prepare_metrla.py` 处理，无 `.mtx` 文件 |
-   | 上游 cugraph-gnn 曾在图算法 benchmark 中使用 mmio 读取标准稀疏矩阵测试图 | Walpurgis 的图结构通过 PyG `Data`/`HeteroData` 对象在内存中构建，无需外部 `.mtx` 文件 I/O |
+1. **diff 对比源**: 上游 `SparseGraph` 还含 `get_cugraph_ops_CSC/HeteroCSC`（依赖 `pylibcugraphops.pytorch`）；Walpurgis 版本仅保留格式转换层，不增加新的 pylibcugraphops 调用点，与 `distributed_sampler.py` 已有的使用模式一致。`_process_sampled_df_csc` 的 DataFrame column 约定（`major_offsets`/`minors`/`label_hop_offsets`/`map`）与 BulkSampler `compression="CSR"` 输出完全兼容。
+2. **用户角度 bug**: `compress_ids` 内部依赖 `torch._convert_indices_from_coo_to_csr`（PyTorch 私有 API），PyTorch 主版本升级可能 breaking；已在文档注释中标注，后续可换 `torch.sparse`。`_extract_csc_tensors` 中 `int(renumber_map_offsets[batch_id])` cupy/cuda scalar → Python int 转换对 int64 无精度损失，但若 renumber_map 行数超过 `sys.maxsize` 则溢出（实际不会发生）。
+3. **系统角度安全**: 两个新文件均为纯张量计算，无网络请求、无文件系统写入、无 IPC。`sampling_csc_helpers.py` 读取 cudf.DataFrame（只读），写入 GPU 张量，无安全面扩展。
 
-2. **用户角度 bug**:
-   - `mm_read_unsymmetric_sparse()` 在 `fscanf(f, "%d %d %lg\n", ...)` 中使用 `\n` 终止符——在 Windows 换行符（`\r\n`）的 `.mtx` 文件上会导致 `\r` 残留在缓冲区，使后续读取错位；但这是上游已删除的 legacy bug，与 Walpurgis 无关
-   - `mm_read_mtx_crd()` 中为 `*I`/`*J`/`*val` 分配内存后若 `mm_read_mtx_crd_data()` 返回错误，未释放已分配内存，形成内存泄漏；上游删除后消除，与 Walpurgis 无关
-   - `mm_typecode_to_str()` 中 `sprintf(buffer, "%s %s %s %s", ...)` 对 `buffer[MM_MAX_LINE_LENGTH]`（1025 字节）写入四个 token，理论上不会溢出（4×64 < 1025），但无显式边界检查；已随文件删除消除
-
-3. **系统角度安全**:
-   - `mm_read_unsymmetric_sparse()` / `mm_read_mtx_crd()` 中 `malloc(nz * sizeof(int))` 未检查返回值——若 `nz` 极大或内存耗尽，`malloc` 返回 NULL，后续 `fscanf(..., &I[i], ...)` 对 NULL 解引用触发段错误；属于 C 层安全缺陷，随文件删除彻底消除，Walpurgis 无继承风险
-   - `mm_read_mtx_crd_size()` 中 `while (num_items_read != 3)` 无终止条件——若文件格式完全损坏或恶意构造，可陷入无限循环阻塞进程；删除消除此风险，Walpurgis 无对应暴露面
-   - `LICENSE.texas_state_university` 携带 BSD 3-Clause 限制（广告条款：分发时需在文档中声明 Texas State University 版权）；删除该 License 文件意味着上游不再需要此 C 库，无版权合规继承压力；Walpurgis 从未引入此库，无需处理
-
-**迁移决策**: SKIP — 4 个文件全为 ANSI C 稀疏矩阵 I/O 库（mmio）及其对应第三方 License 的删除操作。Walpurgis 是纯 Python 时空图 GNN 项目（PyG + PyTorch + METR-LA h5/npz 数据集），无 C 编译链路、无 `thirdparty/` 目录、无 Matrix Market `.mtx` 文件读取需求、无任何对 mmio API 的引用（`grep` 全库确认零匹配）。强行在 Walpurgis 中创建再删除这 4 个文件将制造纯噪音 commit，无任何工程价值。
+**迁移决策**: MIGRATE — 迁移 `SparseGraph` 格式转换类与 CSC 采样后处理三函数，写入 `src/walpurgis/tensor/sparse_graph.py` 和 `src/walpurgis/sampler/sampling_csc_helpers.py`。
