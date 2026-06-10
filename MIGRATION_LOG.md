@@ -1,4 +1,125 @@
 
+## migrate 05fe6f4: [FEA] Knowledge Graph/Graph Database Renumbering
+
+- **Upstream commit**: 05fe6f4 (cugraph-gnn, NVIDIA)
+- **Commit message**: `[FEA] Knowledge Graph/Graph Database Renumbering`
+- **Upstream diff** (2 files added):
+  - `renumber_kg.py` — 295行: 分布式多GPU KG节点/边重编号脚本
+    - parse_args(): 14个参数，含 node_types/edge_types/folder 路径/格式/managed_memory
+    - torchrun多进程: nccl init → RMM allocator切换 → cudf延迟import
+    - 节点阶段: per node_type, all_gather_into_tensor收集各rank节点数 →
+      cumsum计算global offset → all_gather汇总renumber map → 写出local map
+    - 边阶段: per edge_type, .loc[]查表映射src/dst原始id → 新全局id → 写出
+  - `run_renumber.sh` — 32行: torchrun启动脚本，硬编码路径示例
+
+- **功能说明**:
+  分布式多进程(torchrun)场景下将KG原始节点id(任意整数)重编号为连续全局id
+  (0..total_nodes-1)。每个rank处理自己分片的节点/边文件，通过all_gather
+  在所有rank间共享完整的id映射表，使得边重编号可在本地完成而无需额外通信。
+
+### Walpurgis 迁移位置
+
+**新增文件:**
+- `src/walpurgis/examples/kg/renumber_kg.py` — 主迁移文件
+- `src/walpurgis/examples/kg/run_renumber.sh` — 启动脚本
+
+**迁移要点**:
+- `KGRenumberArgs`: 封装 argparse.Namespace 为强类型 dataclass，
+  validate() 做前置参数一致性校验（上游无，argparse 只检查 required）
+- `NodeRenumberSession`: 合并上游 4 个平行 dict
+  (local_num_nodes / global_num_nodes / local_node_offsets / global_renumber_map)
+  为单一对象，字段直接命名
+- `RenumberMapStore`: 封装 global_renumber_map dict 的写入/查找，
+  get_strict() 在 edge 阶段找不到 node_type 时给出明确错误信息
+- `EdgeRenumberSession.apply()`: 封装边重编号执行，修复上游 os.listdir() 无排序 bug
+
+**改写20%（鲁迅拿法）**:
+- `KGRenumberArgs.validate()` 提前做语义校验（上游无），参数长度不一致早报错而非在 zip() 中静默截断
+- `NodeRenumberSession` 对象替代 4 个平行 dict，消除 dict[node_type] 四次冗余访问
+- `RenumberMapStore.get_strict()` 替代裸 dict[key]，KeyError 时告知哪个 node_type 缺失及已有列表
+- `EdgeRenumberSession.apply()` 封装边阶段为可独立测试方法，sorted() 修复无序 bug
+- `_parse_args()` 在 parse 后立即构造 KGRenumberArgs 并 validate()，上游 args 裸 Namespace 散落访问
+- `run_renumber.sh` 改写为 DATA_ROOT 环境变量驱动，`set -euo pipefail` 防静默失败
+- 全链路 WALPURGIS_DEBUG=1 断点 print，8个 _dbg() 覆盖:
+  args.validate 参数 dump → node 文件路径 → local_num_nodes →
+  all_gather前后 → cumsum offset → renumber_store.put/get →
+  edge 文件路径(bug-fix 标注) → src/dst 映射 → 写出路径确认
+
+### 质量审查 (Knuth 标准)
+
+**1. diff 对比源**
+
+| 上游 05fe6f4 | Walpurgis 迁移 |
+|---|---|
+| `args = parse_args()` → argparse Namespace | `cfg = _parse_args()` → `KGRenumberArgs` dataclass |
+| `local_num_nodes = {}` / `global_num_nodes = {}` / `local_node_offsets = {}` / `global_renumber_map = {}` (4个平行dict) | `NodeRenumberSession` 单一对象封装4个字段 |
+| `global_renumber_map[node_type] = cudf.DataFrame(...)` / `global_renumber_map[src_type]["id"]` | `RenumberMapStore.put()` / `.get_strict()` |
+| `edge_fname = os.listdir(edge_folder_name)[local_rank]` **无排序** | `edge_files = sorted(os.listdir(...))[local_rank]` **修复** |
+| `tuple(edge_type.split(","))` 在 main 循环内 inline 解析 | `_parse_args()` 中提前解析为 `List[Tuple[str,str,str]]` |
+| 无参数校验（依赖 argparse required=True）| `KGRenumberArgs.validate()` 检查 types/folders/format 一致性 |
+| 无任何中间过程 print（只有末尾 `print("Success!")`）| 8个 `_dbg()` 断点，WALPURGIS_DEBUG=1 开启 |
+| `run_renumber.sh` 硬编码 `/home/nfs/abarghi/...` | `DATA_ROOT` 环境变量 + `set -euo pipefail` |
+
+**2. 用户角度 bug 排查**
+
+- **边文件排序 bug (05fe6f4 原始)**:
+  节点阶段: `sorted(os.listdir(node_folder_name))[local_rank]` — 有排序，各 rank 得到确定性分配
+  边阶段:   `os.listdir(edge_folder_name)[local_rank]` — **无排序**，`os.listdir()` 返回顺序
+  取决于底层文件系统 (ext4 inode 顺序、tmpfs 插入顺序、NFS 远端实现各不同)。
+  单机本地测试通常能通过 (ext4 目录项顺序稳定)，但跨节点 NFS 挂载或不同 OS
+  版本下可能导致两 rank 处理同一 edge 文件（重复写出）或遗漏某 edge 文件（数据丢失）。
+  **Walpurgis 修复**: `sorted(os.listdir(edge_folder_name))[local_rank]`，与节点阶段对齐。
+
+- **参数 zip 静默截断 (05fe6f4 原始)**:
+  若 `--node_types a,b` 但 `--node_input_folders` 只给1个路径，
+  `zip(node_types, node_input_folders, ...)` 静默截断为短者，b 类型被跳过而无报错。
+  **Walpurgis 修复**: `KGRenumberArgs.validate()` 前置校验长度一致，运行前即报错。
+
+- **output_format 路径拼写 (05fe6f4 原始)**:
+  节点阶段 `to_csv()` 输出文件名为 `{node_fname}_renumbered.csv`，
+  边阶段 `to_parquet()` 输出文件名为 `{edge_fname}_renumbered.parquet`。
+  若 `node_fname` 本身已含扩展名 (如 `paper_0.csv`)，输出为 `paper_0.csv_renumbered.csv`。
+  上游未处理此命名问题，Walpurgis 迁移保持与上游行为一致 (不修改命名逻辑)，
+  通过断点 print 输出最终写出路径，让用户自行确认是否符合预期。
+
+- **rank0 allocator 切换 barrier 竞争**:
+  上游: `if global_rank == 0: change_current_allocator(rmm_torch_allocator)` →
+  `torch.distributed.barrier()` → 所有 rank 设置 cupy allocator。
+  rank0 切换 torch allocator 到 rmm 后 barrier，其余 rank 在 barrier 前用默认 allocator。
+  若 barrier 前非 rank0 的 rank 有 torch CUDA alloc (不太可能在此时机)，
+  可能产生 allocator 不一致。上游注释未说明此 barrier 的意图，
+  Walpurgis 迁移保持原有顺序，并在 _dbg 中标注 "rank0: rmm_torch_allocator 已切换"。
+
+**3. 系统角度内存并发安全**
+
+- **`RenumberMapStore._store` (dict)**: 节点重编号阶段单线程顺序写入，
+  边阶段单线程顺序读取，无并发访问，dict 无需加锁。
+  torchrun 每个进程独立 Python 解释器，进程间隔离，dict 不跨进程共享。
+
+- **`map_tensor` list of Tensors**: 在 `all_gather` 中作为输出 buffer 列表传入。
+  PyTorch DDP all_gather 文档说明: output 列表中各 tensor 由通信库填写，
+  单进程内 all_gather 是同步操作，返回后数据已就绪。concat 后原 list 可 GC。
+  Walpurgis 迁移使用 `map_tensor_concat` 新变量保存 concat 结果，
+  明确与 all_gather buffer 区分，防止意外引用 stale tensor。
+
+- **cudf.DataFrame index=cupy_array 并发读取**:
+  `renumber_store` 中的 cudf.DataFrame 在节点阶段构造后，边阶段只读 (`.loc[]`)。
+  单进程内无写入者，读取安全。每个 torchrun 进程维护自己独立的 store，
+  `global_renumber_map` 在所有进程中是完全一致的副本 (all_gather 保证)。
+
+- **`sorted(os.listdir())` 的跨进程一致性**:
+  `sorted()` 保证在任意 OS / 文件系统上，相同目录内容产生相同顺序。
+  若两 rank 运行在不同节点挂载同一 NFS，`os.listdir()` 结果可能有差异
+  (取决于 NFS server 缓存)，`sorted()` 消除此不确定性。
+  **前提**: 所有 rank 的 `edge_folder_name` 包含相同文件集。若文件数 < world_size，
+  `sorted(...)[local_rank]` 会 IndexError，应由调用方保证每 folder 文件数 ≥ world_size。
+
+- **RMM pool allocator 与 cupy allocator 的 race**:
+  `rmm.reinitialize()` 后才 import cudf (上游注释明确: "import cudf after rmm
+  has been reinitialized")。RMM pool 初始化在 barrier 后，所有 rank 同步完成。
+  cupy.cuda.set_allocator(rmm_cupy_allocator) 是进程内全局状态，torchrun 每进程
+  独立，无跨进程 race。
+
 ## migrate 8b3b67f: [BUG] Mask out unwanted vertices during negative sampling
 
 - **Upstream commit**: 8b3b67f (cugraph-gnn, NVIDIA, 2025)
