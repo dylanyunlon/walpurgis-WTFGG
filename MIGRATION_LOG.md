@@ -67,6 +67,62 @@
   EmbeddingDataset.split X/y shape/class dist → RfExperiment fit/evaluate dtype/prob shape →
   gnn_only_evaluate z_test分布
 
+## migrate 9b89e8a: [FEA] Set random state using PyTorch generator
+
+- **Upstream commit**: 9b89e8a (cugraph-gnn, NVIDIA, 2025)
+- **Commit message**: `[FEA] Set random state using PyTorch generator`
+- **Upstream diff** (3 files changed: 1 new, 2 modified):
+  - `loader/utils.py` (新增): `generate_seed()` 函数
+    - rank=0: `torch.randint(0, 2**63 - world_size, (1,), dtype=int64, device="cuda")`
+    - rank!=0: `torch.tensor([0], dtype=int64, device="cuda")`
+    - `torch.distributed.broadcast(seed, src=0)` → 所有 rank 收到同一基础种子
+    - `return seed.item() + rank` → 每 rank 获得唯一偏移种子
+  - `loader/node_loader.py`: `sample_from_nodes(..., random_state=generate_seed())`
+  - `loader/link_loader.py`: `sample_from_edges(..., random_state=generate_seed())`
+
+- **设计意图**:
+  rank 0 生成全局唯一种子后 broadcast; 各 rank 加上自身 rank offset 得到独立种子。
+  种子空间上界 `2**63 - world_size` 确保 `seed + rank` 不溢出 int64。
+  使用 CUDA tensor 保证 broadcast 走 GPU 直连通信而非 CPU 中转。
+
+- **Knuth 审查**:
+  1. diff 对比源: 上游新增 `utils.py` 后在两处 loader 各调用一次 `generate_seed()`,
+     两处调用完全独立 — 同一 iteration 内 node_loader 和 link_loader 会产生不同种子,
+     这是设计意图 (各自独立可复现), 但若两者需要严格同步则需调用方协调。
+  2. 用户角度 bug: 上游 `generate_seed()` 直接调用 `torch.distributed.get_world_size()`,
+     单机非 distributed 环境下此调用 raise RuntimeError; 用户在单卡调试时会莫名崩溃。
+     另: `device="cuda"` 硬编码, CPU-only 环境 (CI/单测) 直接失败。
+  3. 系统角度安全: `seed.item() + rank` 在极端情况 (rank=0 生成 `2**63 - world_size - 1`,
+     world_size=1) 仍在 int64 范围内; 但若调用方将 seed 作为 int32 使用则截断。
+     broadcast 依赖 distributed process group 已初始化, 若未 init 会 hang 而非 raise。
+
+### Walpurgis 迁移位置
+
+**文件: `src/walpurgis/models/random_state.py`** — 新增
+
+**迁移要点**:
+- `RandomStateConfig`: 封装 generate_seed 的 rank/world_size/device/dtype 参数,
+  显式暴露 `seed_upper_bound` 和 `is_distributed` 属性
+  (Python 是内联字面量 `2**63 - world_size` + 隐式全局状态)
+- `WalpurgisRandGen`: 封装 rank0 randint + nonrank zeros + broadcast 三步为类方法,
+  加 non-distributed 降级 (Python 单机环境直接 crash); `_rank0_generate` /
+  `_nonrank_placeholder` 对应 Python if/else 两分支
+- `generate_seed_safe()`: 顶层函数对应 `generate_seed()`, 加 try/except 探测
+  torch.distributed 是否可用, 降级为 rank=0 world_size=1 单机模式
+- `SamplerRandomState`: 封装 `(loader_type, seed, rank, world_size)` 四元组,
+  `.value` 属性返回裸 int 与 Python API 兼容; Python 是裸 int 直接传入
+- `make_node_loader_random_state()` / `make_link_loader_random_state()`:
+  对应 node_loader / link_loader 两处调用点, 显式记录 loader_type
+
+**改写20%（鲁迅拿法）**:
+- `RandomStateConfig` 封装隐式全局 distributed 状态为显式配置对象
+- `WalpurgisRandGen` 提取三步裸逻辑为类, 加 non-distributed 降级 + 重试
+- `SamplerRandomState` 将裸 int 包装为可 audit 对象, loader_type/rank/world_size 随 seed 一起存档
+- `generate_seed_safe()` 修复上游单机环境 crash bug (Python 无此考虑)
+- 全链路6个 `WALPURGIS_DEBUG=1` 断点 print, 覆盖:
+  RandomStateConfig构造 → rank0_generate原始seed → broadcast前后对比 →
+  final_seed+rank偏移 → SamplerRandomState构造 → make_*_random_state入口
+
 ## migrate c3799ae: [BUG] Use memory pool in movielens example
 
 - **Upstream commit**: c3799ae (cugraph-gnn, NVIDIA, 2025-10-31)
