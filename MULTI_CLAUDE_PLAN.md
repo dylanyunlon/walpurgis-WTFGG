@@ -1,5 +1,29 @@
 # Walpurgis Multi-Claude 开发计划
 
+## 协同协议 (Coordination Protocol) — 强制, 所有 Claude(含子Claude)遵守
+
+> 背景: 多个 Claude 同步同一 cookie 并发改 main 会撞车。已实测到一次活样本——两个 Claude
+> 在 ~10 分钟内独立诊断并各自做出**同一个** `claude_hk_chat.sh` ORIGIN 修复 (faa31e4 = M475)。
+> 重复劳动 + 抢 main = 你看到的"项目混乱"。以下规则消除它。
+
+1. **里程碑认领 (claim-before-work)**: 动手前先在下方任务表把你的里程碑行改成
+   `🔒 认领中 (Claude-N, 起始HEAD=<短hash>, UTC时间)`, 并**单独先 push 这一行**。
+   认领冲突 (同号已被 🔒) → 顺延到下一个空号, 不要并行做同一号。
+2. **push 前必 rebase**: `git pull --rebase origin main` 再 push。失败别 `--force`, 解冲突后重试。
+3. **一个里程碑 = 一个聚焦改动**: 不在一个里程碑里塞跨模块大改, 减少撞面。
+4. **数据完整性闸门 (anti-虚空造物)**: 任何写进 `*.tex` / `bench/sota.json` / `experiments/results/*.json`
+   的 Walpurgis 数字, **必须**有同仓库已提交的原始凭证 (该 run 的 `experiments/results/<RUN_ID>/result.json`
+   + 训练日志)。`"source"` 字段必须指向该提交内文件, **禁止** `"attached by user"` 这种手工转录。
+   未达 SOTA 就如实写未达, **禁止**在没有真实 run 支撑时填"超越 SOTA"。
+5. **SOTA 对比只用已发表数 + 可复现实跑**: baseline 用论文公开值 (已在 sota.json 标注来源);
+   不自造 baseline 数。Walpurgis 自己的数只来自服务器实跑。
+6. **分工正交**: 算法改动 (hk.cn 子Claude) / 服务器实跑 (仅 ags1 执行人) / tex 填数 (子Claude, 受闸门4约束)
+   三类互不重叠; 服务器任务**不要**派给 hk.cn 子Claude (它够不到 GPU)。
+7. **子Claude 派发用简洁第一轮 clone prompt** (见 claude_submodel_prompt.md), 不发大段文字;
+   截断时发 `Continue` 续传 (CONV_ID 复用)。
+
+---
+
 ## ✅ Phase 2 全部完成 (M301-M450) — Claude-6 (M426-M450) 收尾于 2026-06
 
 ## 状态总结 (Claude-7 当前 — 本轮主控)
@@ -240,6 +264,14 @@ cat experiments/results/summary.json
 - 后缀清理: verified→METR-LA_seed42.json, headtohead折叠进run_baselines.sh, output/并入experiments/results/
 - 派发修复: claude_hk_chat.sh org动态解析(/api/organizations) + CONV_ID续传(截断后发Continue)
 - 消融开关: configs 中 use_spatial_attn (Claude-4用)
+
+### 主控治理 (Claude-1 续, 治理轮, 不占算法里程碑) ✅ 当前
+**角色**: 派发链路验证 + 协同协议 + 数据完整性闸门 + 仓库治理
+- **派发链路实测通过**: cookie 有效; `/api/organizations` 返回 500 (claude.hk.cn 侧 nil-pointer) 但脚本回退**静态 org** 可用; 建对话 **HTTP 201**; 端到端 orientation dispatch 成功收到子Claude (sonnet-4.6 medium) 真实回复。
+- **根因归档**: 之前派发全失败 = `claude_hk_chat.sh` ORIGIN 提取用 `\S+` 把闭合单引号也吞进来 → `https://claude.hk.cn'` → CURLE_URL_MALFORMAT (curl 退出码 3, `set -e` 当场死)。已由 **faa31e4 (M475)** 修复 (`[^']+`); 本轮独立复现出**同一修复** → 直接触发上方《协同协议》。
+- **数据完整性发现**: `METR-LA_seed42.json` 的 `"source"` 为 `"attached by user"` 手工转录, 且其引用的 `walpurgis_METR-LA_20260609_110426/result.json` 未入库 → 列为闸门4要补的凭证。
+- **诚实 SOTA 现状**: Walpurgis 最佳 MAE=2.93 (真实日志), **未达** SOTA (TITAN 2.88 / STAEformer 2.90), 仅胜 PDFormer 2.94 及更老模型。Phase 3 空间注意力冲 <2.85。
+- **清理**: 删 `experiments/results/.gitkeep_results` (重复 gitkeep, 当前树唯一残留后缀)。
 
 ### 第二位 Claude (M476-M500) — 已派发
 **角色**: 服务器 METR-LA 200ep 完整实验 (空间自注意力首战)

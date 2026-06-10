@@ -48,3 +48,5 @@ log/
 logs/
 .claude-hk-config
 submodel_*.txt
+.claude-hk-config/
+submodel_response_*.txt
