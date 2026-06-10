@@ -1491,6 +1491,314 @@ public:
         return batch;
     }
 
+    // ═══ d4b52c9 migration: EtimeAttr + EtimeSamplerTable ═══
+    //
+    // cugraph-gnn d4b52c9 [FEA] Enable Temporal Sampling in cuGraph-PyG:
+    //
+    // 1. graph_store.py: __etime_attr = Tuple[FeatureStore, str] | None
+    //    GraphStore存储(feature_store, attr_name)对, 调用时从feature_store
+    //    按attr_name和edge_index取出时间戳向量, 拼成跨edge-type的etime tensor.
+    //    对应_set_etime_attr()/__get_etime_tensor():
+    //      __get_etime_tensor(sorted_keys, start_offsets, num_edges_t):
+    //        for i, et in enumerate(sorted_keys):
+    //            ix = arange(start_offsets[i], start_offsets[i]+num_edges[i])
+    //            etimes.append(feature_store[et, attr_name][ix])
+    //        return torch.concat(etimes)
+    //    然后在edgelist_dict中加 "etime" key:
+    //      if self.__etime_attr is not None:
+    //          d["etime"] = self.__get_etime_tensor(...)
+    //
+    // 2. distributed_sampler.py: _func_table 8-entry dispatch tuple
+    //    key = ("homogeneous"|"heterogeneous", "uniform"|"biased", True|False)
+    //    → 对应 pylibcugraph.{homo|hetero}_{uniform|biased}[_temporal]_neighbor_sample
+    //    temporal=True时额外设置 __func_kwargs["temporal_property_name"] = "time"
+    //    (告诉 pylibcugraph 按哪个边属性过滤时间)
+    //
+    // Walpurgis改写20%(鲁迅拿法):
+    //   - EtimeAttr: 替代Python tuple, 携带feature_store指针 + attr_name字符串
+    //     改写: 加入edge_type_id字段(Python tuple没有), 支持per-edge-type attr映射
+    //   - EtimeSamplerKey/EtimeSamplerTable: 替代Python dict[tuple,fn], 用
+    //     std::array<8>枚举而非hash map, 消除哈希开销; 改写: 加入dump()辅助打印
+    //     所有8条路径的激活状态, 用于断点调试
+    //   - is_temporal()/get_etime_attr()/get_etime_tensor(): 替代Python的
+    //     __etime_attr is not None guard和内联edgelist构建
+
+    // EtimeAttr: 对应 graph_store.py __etime_attr = (feature_store, attr_name)
+    // 改写: 加edge_type_id支持多edge type独立attr; Python仅单一(store, name)对
+    struct EtimeAttr {
+        const void*  feature_store_ptr;  // opaque ptr to feature store (type-erased)
+        std::string  attr_name;          // 对应 time_attr="time" (Python侧参数名)
+        uint32_t     edge_type_id;       // 改写: 支持per-edge-type attr (Python无此字段)
+
+        EtimeAttr() : feature_store_ptr(nullptr), attr_name(""), edge_type_id(0) {}
+        EtimeAttr(const void* store, std::string name, uint32_t etype = 0)
+            : feature_store_ptr(store)
+            , attr_name(std::move(name))
+            , edge_type_id(etype) {}
+
+        bool is_valid() const {
+            return feature_store_ptr != nullptr && !attr_name.empty();
+        }
+
+        // 断点调试: dump EtimeAttr状态
+        void dump(const char* prefix = "EtimeAttr") const {
+            printf("[DEBUG d4b52c9 %s] store=%p attr='%s' edge_type_id=%u valid=%s\n",
+                   prefix,
+                   feature_store_ptr,
+                   attr_name.c_str(),
+                   edge_type_id,
+                   is_valid() ? "yes" : "no");
+        }
+    };
+
+    // EtimeSamplerKey: 对应 _func_table 的tuple键 (homo/hetero, uniform/biased, temporal)
+    // 8个可能组合对应8条采样路径
+    struct EtimeSamplerKey {
+        bool heterogeneous;  // false=homogeneous, true=heterogeneous
+        bool biased;         // false=uniform, true=biased
+        bool temporal;       // false=non-temporal, true=temporal
+
+        // 线性化: 3位index → [0,7]
+        // layout: temporal*4 + heterogeneous*2 + biased*1
+        // 与Python _func_table tuple key等价, 但用整数索引避免哈希
+        uint8_t index() const {
+            return static_cast<uint8_t>(
+                (temporal ? 4u : 0u) |
+                (heterogeneous ? 2u : 0u) |
+                (biased ? 1u : 0u));
+        }
+
+        const char* to_string() const {
+            static const char* names[8] = {
+                // temporal=false
+                "homo_uniform_nontemporal",    // 000
+                "homo_biased_nontemporal",     // 001
+                "hetero_uniform_nontemporal",  // 010
+                "hetero_biased_nontemporal",   // 011
+                // temporal=true
+                "homo_uniform_temporal",       // 100
+                "homo_biased_temporal",        // 101
+                "hetero_uniform_temporal",     // 110
+                "hetero_biased_temporal",      // 111
+            };
+            return names[index()];
+        }
+    };
+
+    // EtimeSamplerTable: 对应 DistributedNeighborSampler._func_table
+    // Python: dict[tuple(homo/hetero, uniform/biased, temporal), pylibcugraph_fn]
+    // C++改写: std::array<8> of tagged function descriptors, 避免hash map开销
+    //
+    // 断点调试: select()打印被选中的路径, dump_all()打印所有8条路径激活状态
+    // 用于验证temporal=True时正确选中*_temporal_neighbor_sample路径
+    struct EtimeSamplerTable {
+        // 采样函数描述符 — 对应 pylibcugraph.*_neighbor_sample 函数指针
+        // 在 Walpurgis 中这些是 TemporalBridge 内部方法的分派标识,
+        // 而非真正的 pylibcugraph 函数指针 (无 RAPIDS 依赖)
+        enum class SamplerFunc : uint8_t {
+            HOMO_UNIFORM_NONTEMPORAL  = 0,
+            HOMO_BIASED_NONTEMPORAL   = 1,
+            HETERO_UNIFORM_NONTEMPORAL= 2,
+            HETERO_BIASED_NONTEMPORAL = 3,
+            HOMO_UNIFORM_TEMPORAL     = 4,
+            HOMO_BIASED_TEMPORAL      = 5,
+            HETERO_UNIFORM_TEMPORAL   = 6,
+            HETERO_BIASED_TEMPORAL    = 7,
+        };
+
+        static const char* func_name(SamplerFunc f) {
+            switch (f) {
+                case SamplerFunc::HOMO_UNIFORM_NONTEMPORAL:  return "homo_uniform_neighbor_sample";
+                case SamplerFunc::HOMO_BIASED_NONTEMPORAL:   return "homo_biased_neighbor_sample";
+                case SamplerFunc::HETERO_UNIFORM_NONTEMPORAL:return "hetero_uniform_neighbor_sample";
+                case SamplerFunc::HETERO_BIASED_NONTEMPORAL: return "hetero_biased_neighbor_sample";
+                case SamplerFunc::HOMO_UNIFORM_TEMPORAL:     return "homo_uniform_temporal_neighbor_sample";
+                case SamplerFunc::HOMO_BIASED_TEMPORAL:      return "homo_biased_temporal_neighbor_sample";
+                case SamplerFunc::HETERO_UNIFORM_TEMPORAL:   return "hetero_uniform_temporal_neighbor_sample";
+                case SamplerFunc::HETERO_BIASED_TEMPORAL:    return "hetero_biased_temporal_neighbor_sample";
+                default: return "unknown";
+            }
+        }
+
+        // select: 根据key返回对应的SamplerFunc
+        // 对应 Python: self.__func = self._func_table[(homo/hetero, uniform/biased, temporal)]
+        // 断点调试: 打印key的完整描述和被选中的函数名
+        static SamplerFunc select(EtimeSamplerKey key) {
+            SamplerFunc f = static_cast<SamplerFunc>(key.index());
+            printf("[DEBUG d4b52c9 EtimeSamplerTable::select] "
+                   "key=%s → func=%s\n",
+                   key.to_string(), func_name(f));
+            return f;
+        }
+
+        // dump_all: 打印全部8条路径, 标注temporal路径
+        // 对应Python _func_table定义处的注释: # homogeneous/heterogeneous, uniform/biased, temporal?
+        static void dump_all() {
+            printf("[DEBUG d4b52c9 EtimeSamplerTable::dump_all] "
+                   "8-entry dispatch table:\n");
+            for (uint8_t i = 0; i < 8; ++i) {
+                SamplerFunc f = static_cast<SamplerFunc>(i);
+                bool is_temp = (i & 4u) != 0;
+                printf("  [%u] %-45s %s\n",
+                       i, func_name(f),
+                       is_temp ? "<-- TEMPORAL PATH" : "");
+            }
+        }
+
+        // validate_temporal_property_name: 对应Python中
+        //   if temporal: self.__func_kwargs["temporal_property_name"] = "time"
+        // 验证temporal模式下property_name必须是"time"(当前硬编码,与d4b52c9一致)
+        // 断点调试: 打印property_name验证结果
+        static bool validate_temporal_property_name(bool temporal,
+                                                     const char* property_name) {
+            if (!temporal) return true;  // non-temporal: no constraint
+            bool ok = (property_name != nullptr) &&
+                      (strcmp(property_name, "time") == 0);
+            printf("[DEBUG d4b52c9 validate_temporal_property_name] "
+                   "temporal=%s property_name='%s' → %s\n",
+                   temporal ? "true" : "false",
+                   property_name ? property_name : "(null)",
+                   ok ? "OK" : "FAIL (must be 'time' per d4b52c9)");
+            return ok;
+        }
+    };
+
+    // set_etime_attr: 对应 graph_store.py _set_etime_attr()
+    // Python:
+    //   def _set_etime_attr(self, attr):
+    //       if attr != self.__etime_attr:
+    //           weight_attr = self.__weight_attr   # preserve weight_attr
+    //           self.__clear_graph()               # invalidate cached graph
+    //           self.__etime_attr = attr
+    //           self.__weight_attr = weight_attr   # restore
+    // C++改写: clear_graph()等价于flush_partitions的buffer清空 + partition重置
+    // 断点调试: 打印新旧attr对比, 确认invalidation
+    void set_etime_attr(EtimeAttr new_attr) {
+        // 改写: 打印old/new对比, Python仅做赋值
+        printf("[DEBUG d4b52c9 set_etime_attr] old_attr_valid=%s new_attr_valid=%s "
+               "new_attr='%s' etype=%u\n",
+               etime_attr_.is_valid() ? "yes" : "no",
+               new_attr.is_valid() ? "yes" : "no",
+               new_attr.attr_name.c_str(),
+               new_attr.edge_type_id);
+
+        if (etime_attr_.feature_store_ptr != new_attr.feature_store_ptr ||
+            etime_attr_.attr_name         != new_attr.attr_name         ||
+            etime_attr_.edge_type_id      != new_attr.edge_type_id) {
+            // Graph invalidation: Python调用__clear_graph()
+            // 我们改写为只标记etime_dirty_, 惰性重建, 避免立即清空partition
+            // (Python __clear_graph重建成本高; Walpurgis partition数据可复用)
+            etime_dirty_.store(true, std::memory_order_release);
+            etime_attr_ = std::move(new_attr);
+            printf("[DEBUG d4b52c9 set_etime_attr] etime_attr changed → etime_dirty=true\n");
+        }
+    }
+
+    // is_temporal: 对应 neighbor_loader.py 的 is_temporal 判断
+    // Python: is_temporal = (edge_label_time is not None) and (time_attr is not None)
+    //         (LinkNeighborLoader) or: is_temporal = time_attr is not None (NeighborLoader)
+    // 断点调试: 打印is_temporal状态
+    bool is_temporal() const {
+        bool result = etime_attr_.is_valid();
+        printf("[DEBUG d4b52c9 is_temporal] etime_attr_valid=%s → is_temporal=%s\n",
+               result ? "yes" : "no",
+               result ? "true" : "false");
+        return result;
+    }
+
+    // get_etime_tensor: 对应 graph_store.py __get_etime_tensor()
+    // Python:
+    //   def __get_etime_tensor(self, sorted_keys, start_offsets, num_edges_t):
+    //       feature_store, attr_name = self.__etime_attr
+    //       etimes = []
+    //       for i, et in enumerate(sorted_keys):
+    //           ix = torch.arange(start_offsets[i], start_offsets[i]+num_edges_t[i])
+    //           etime = feature_store[et, attr_name][ix]
+    //           if etime is None: raise ValueError("Time property must be present ...")
+    //           etimes.append(etime)
+    //       return torch.concat(etimes)
+    // C++改写: 用回调模式替代feature_store索引 (无PyTorch依赖)
+    //   etime_lookup_fn(edge_type_id, start_offset, count) → std::vector<int64_t>
+    // 断点调试: 打印每个edge type的etime range, 拼接后总数
+    using EtimeLookupFn = std::function<
+        std::vector<int64_t>(uint32_t /*edge_type_id*/,
+                             uint64_t /*start_offset*/,
+                             uint64_t /*count*/)>;
+
+    std::vector<int64_t> get_etime_tensor(
+            const std::vector<uint32_t>& sorted_edge_types,
+            const std::vector<uint64_t>& start_offsets,
+            const std::vector<uint64_t>& num_edges,
+            const EtimeLookupFn& lookup_fn) const {
+        if (!etime_attr_.is_valid()) {
+            printf("[DEBUG d4b52c9 get_etime_tensor] __etime_attr is None → "
+                   "returning empty (non-temporal mode)\n");
+            return {};
+        }
+
+        printf("[DEBUG d4b52c9 get_etime_tensor] attr='%s' num_edge_types=%zu\n",
+               etime_attr_.attr_name.c_str(), sorted_edge_types.size());
+
+        std::vector<int64_t> etimes;
+        for (size_t i = 0; i < sorted_edge_types.size(); ++i) {
+            uint32_t etype      = sorted_edge_types[i];
+            uint64_t start_off  = (i < start_offsets.size()) ? start_offsets[i] : 0;
+            uint64_t count      = (i < num_edges.size())     ? num_edges[i]     : 0;
+
+            // 对应Python: etime = feature_store[et, attr_name][ix]
+            auto etime_chunk = lookup_fn(etype, start_off, count);
+
+            // 对应Python: if etime is None: raise ValueError(...)
+            if (etime_chunk.empty() && count > 0) {
+                fprintf(stderr,
+                    "[ERROR d4b52c9 get_etime_tensor] edge_type=%u: "
+                    "Time property must be present for all edge types. "
+                    "(mirrors ValueError in d4b52c9 __get_etime_tensor)\n",
+                    etype);
+                // 改写: 返回empty而非throw, 让调用者决定fallback策略
+                // Python在这里直接raise; 我们用empty返回 + 上层is_temporal()检查
+                return {};
+            }
+
+            printf("[DEBUG d4b52c9 get_etime_tensor] etype=%u start=%lu count=%lu "
+                   "etime_range=[%ld, %ld]\n",
+                   etype, (unsigned long)start_off, (unsigned long)count,
+                   etime_chunk.empty() ? 0L : (long)etime_chunk.front(),
+                   etime_chunk.empty() ? 0L : (long)etime_chunk.back());
+
+            // 对应Python: etimes.append(etime); return torch.concat(etimes)
+            etimes.insert(etimes.end(), etime_chunk.begin(), etime_chunk.end());
+        }
+
+        printf("[DEBUG d4b52c9 get_etime_tensor] concat result: total_etimes=%zu\n",
+               etimes.size());
+        return etimes;
+    }
+
+    // select_sampler_func: 整合 EtimeSamplerTable.select() + etime_attr 状态
+    // 对应Python DistributedNeighborSampler.__init__中的逻辑:
+    //   if temporal: self.__func_kwargs["temporal_property_name"] = "time"
+    //   self.__func = self._func_table[(homo/hetero, uniform/biased, temporal)]
+    // 断点调试: 打印完整的dispatch decision
+    EtimeSamplerTable::SamplerFunc select_sampler_func(
+            bool heterogeneous, bool biased) const {
+        bool temporal = is_temporal();
+        EtimeSamplerKey key{heterogeneous, biased, temporal};
+
+        // temporal=True时验证property_name (对应Python设置temporal_property_name="time")
+        if (temporal) {
+            EtimeSamplerTable::validate_temporal_property_name(true, "time");
+        }
+
+        auto f = EtimeSamplerTable::select(key);
+        printf("[DEBUG d4b52c9 select_sampler_func] heterogeneous=%s biased=%s "
+               "temporal=%s → %s\n",
+               heterogeneous ? "true" : "false",
+               biased ? "true" : "false",
+               temporal ? "true" : "false",
+               EtimeSamplerTable::func_name(f));
+        return f;
+    }
 
     // ── M011: Indexed Temporal Queries ──────────────────────────────────────
     // Uses IntervalIndex for O(log N + output) per partition.
@@ -1687,6 +1995,20 @@ private:
     // repeated std::function copy overhead.
     NodeTimeFunc                node_time_func_;
     std::atomic<bool>           node_time_registered_{false};
+
+    // d4b52c9 migration: etime_attr_ + etime_dirty_
+    //
+    // etime_attr_: 对应 graph_store.py __etime_attr = Tuple[FeatureStore, str] | None
+    //   - 初始化为无效EtimeAttr (feature_store_ptr=nullptr), 等价于Python __etime_attr=None
+    //   - set_etime_attr()设置后, is_temporal()返回true
+    //
+    // etime_dirty_: 改写标志(Python无对应字段)
+    //   - Python通过__clear_graph()强制重建整个graph对象响应attr变化
+    //   - 我们改写为lazy invalidation: attr变化时只设dirty标志
+    //   - Thread-safety: etime_attr_在sampling前设置(setup-time invariant);
+    //     etime_dirty_是atomic<bool>, set/check无data race.
+    EtimeAttr                   etime_attr_;           // d4b52c9: __etime_attr equivalent
+    std::atomic<bool>           etime_dirty_{false};   // d4b52c9: lazy invalidation (改写)
 
     // M013: partition-level augmented interval skip list. Rebuilt per flush.
     //
