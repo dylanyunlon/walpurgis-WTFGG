@@ -1159,3 +1159,117 @@ make_temporal_session_from_loader_args()  # 便利builder对应NeighborLoader.__
   `get_etime_tensor()`每次调用`EtimeLookupFn`可能有`std::function`调用开销(~ns级),
   可通过缓存函数指针消除(同`get_node_time_func()`建议).
 
+## migrate 5909ae8: Fp16 embedding train
+
+- **Upstream commit**: 5909ae8 (cugraph-gnn, linhu-nv, PR #462)
+- **Commit message**: `Fp16 embedding train`
+- **Upstream diff** (3 files changed, 42 insertions, 35 deletions):
+  - `cpp/src/wholememory/embedding.cpp` — `gather_gradient_apply()` 3处修改:
+    1. `dedup_grads` 中间缓冲区 `device_malloc` dtype 从 `grads_desc->dtype` 改为
+       `WHOLEMEMORY_DT_FLOAT` (line~240): 无论输入何种浮点 dtype, 累加缓冲区钉死 float32
+    2. 传入 `dedup_indice_and_gradients` 的 grads 指针: 去掉 `static_cast<const float*>`
+       改传 `void*` (line~251): 解除硬转型, 由内部模板处理
+    3. 新增 `recv_grad_tensor_desc.dtype = WHOLEMEMORY_DT_FLOAT` (line~297):
+       scatter_back 时的描述符也反映已升精度
+  - `exchange_embeddings_nccl_func.cu` — CUDA kernel 泛化:
+    - `DedupIndiceAndGradientsKernel`: 新增 `template <typename GradT>`,
+      `float* grads` → `GradT* grads`, 累加时 `static_cast<float>()` 升精度
+    - `dedup_indice_and_gradients_temp_func`: 新增 `typename GradT` 模板参数,
+      `const float* grads` → `const void* grads`
+    - dispatch: `REGISTER_DISPATCH_ONE_TYPE(..., SINT3264)` →
+      `REGISTER_DISPATCH_TWO_TYPES(..., SINT3264, BF16_HALF_FLOAT)` (二维6条路径)
+    - validation: `grads_desc.dtype == WHOLEMEMORY_DT_FLOAT` →
+      `wholememory_dtype_is_floating_number(grads_desc.dtype)` (允许 fp16/bf16 进入)
+  - `exchange_embeddings_nccl_func.h`: 公开签名 `const float*` → `const void*`
+
+- **功能说明**:
+  在 fp16/bf16 embedding 训练时, 原代码假设梯度是 float32 直接 cast, 导致类型错误.
+  5909ae8 让 `dedup_indice_and_gradients` 接受任意浮点梯度 (void* + 模板),
+  内部在 CUDA kernel 中逐元素 `static_cast<float>` 升精度后累加,
+  输出中间缓冲区始终 float32. `gather_gradient_apply` 中的描述符也同步钉死为 float32,
+  确保后续 scatter_back 不会把 float32 数据当 fp16 解析.
+
+### Walpurgis 迁移位置
+
+**新增文件:**
+- `src/walpurgis/models/fp16_grad_dedup.py` — 主迁移文件
+
+**迁移要点**:
+- `DedupGradSession`: 封装上游 `(indices_ptr, indice_desc, grads_ptr, grads_desc)` 为
+  Python dataclass, `validate()` 提前报错 (上游是 assert 无友好消息)
+- `_DISPATCH_TABLE`: Python dict 模拟 `REGISTER_DISPATCH_TWO_TYPES` 展开的6条路径
+  `{(idx_dtype, grad_dtype): fn_name}`, `dump_dispatch_table()` 可打印全表 (上游无此方法)
+- `dedup_indice_and_gradients()`: `torch.scatter_add_` 等价 CUDA blockIdx 并行累加;
+  输入 fp16/bf16/fp32, 输出始终 float32
+- `GatherGradientApplyConfig` + `gather_gradient_apply()`: 封装 `embedding.cpp` 整体流程,
+  使 3处 5909ae8 修改点在单函数内可追踪
+- `_validate_dtypes()`: 对应新 `wholememory_dtype_is_floating_number()` 判断,
+  改写为 friendly ValueError
+
+**改写20%（鲁迅拿法）**:
+- `DedupGradSession.validate()`: 提前 Python 层校验, 有意义的 ValueError 而非裸 assert
+- `_DISPATCH_TABLE` + `dump_dispatch_table()`: 模拟 `REGISTER_DISPATCH_TWO_TYPES` 展开,
+  新增 dump 方法使6条路径可见 (上游宏展开无此能力)
+- `GatherGradientApplyConfig.validate()`: 打印完整 dtype 流转链
+  `fp16 → float32(dedup) → float32(update) → fp16(writeback)` (上游无日志)
+- 自测 `__main__`: 6个测试用例覆盖 fp16/bf16/fp32/int64/非法dtype 全路径
+- 全链路 8处断点 print (WALPURGIS_DEBUG=1 开启):
+  1. `DedupGradSession.validate` — indices/grads dtype + dispatch 路径确认
+  2. `dedup_indice_and_gradients` — 升精度路径 (static_cast<float> 语义)
+  3. 排序后 indices 预览
+  4. fp16→fp32 cast 最大误差检测
+  5. 去重比例 (N→K, run_count 对应)
+  6. 输出统计 (dedup_grads dtype=float32, 对应 line~297 recv_grad_tensor_desc 钉死)
+  7. `gather_gradient_apply` dtype 链打印
+  8. writeback cast 误差 + 更新行数
+
+### 质量审查 (Knuth 标准)
+
+**1. diff 对比源**
+
+| 上游 5909ae8 | Walpurgis 迁移 |
+|---|---|
+| `device_malloc(total_recv_count * D, WHOLEMEMORY_DT_FLOAT)` | `dedup_grads = torch.zeros(K, D, dtype=torch.float32)` |
+| `dedup_indice_and_gradients(void* grads, ...)` | `DedupGradSession(indices, grads)` 接受 void*-等价的任意浮点 tensor |
+| `recv_grad_tensor_desc.dtype = WHOLEMEMORY_DT_FLOAT` | `gather_gradient_apply` 输出 dtype 钉死 float32, 注释标注 line~297 |
+| `template <typename GradT>` kernel | `grads.float()` — Python 等价 `static_cast<float>` |
+| `REGISTER_DISPATCH_TWO_TYPES(SINT3264, BF16_HALF_FLOAT)` | `_DISPATCH_TABLE: {(int32/int64, fp16/bf16/fp32): fn_name}` (6条路径) |
+| `wholememory_dtype_is_floating_number(grads_desc.dtype)` | `if grads_dtype not in SUPPORTED_GRAD_DTYPES` + ValueError |
+| `static_cast<const GradT*>(grads)` in temp_func | `session.grads.to(config.grad_input_dtype)` cast |
+| 无 debug 日志 | 8处断点 print, WALPURGIS_DEBUG=1 门控 |
+
+**2. 用户角度 bug 排查**
+
+- **5909ae8 修复的 bug**: 原代码在 fp16 embedding 训练时,
+  `gather_gradient_apply` 对梯度做 `static_cast<const float*>` 强转,
+  实际传入的是 fp16 指针, 会读出垃圾数据 (type punning UB).
+  Walpurgis 迁移中 `DedupGradSession.validate()` 会检查 dtype 一致性,
+  `gather_gradient_apply` 有显式 dtype 检查 + 警告 print.
+- **新增调用链风险**: `scatter_add_` 不是原子操作, 若多线程并发调用
+  `dedup_indice_and_gradients` 共享同一 `embedding_weight` tensor 会有竞态.
+  缓解: 每次调用创建新 `result = embedding_weight.clone()`, 不原地修改.
+  上游 CUDA kernel 也是每 block 独立写 dedup_grads, 无共享写, 语义一致.
+- **index 越界**: 若 `indices.max() >= embedding_weight.shape[0]`, `result[dedup_indices]`
+  会 IndexError. 上游是 CUDA out-of-bounds access (未定义行为). 改写: Python
+  IndexError 有清晰 traceback, 比 CUDA 崩溃更易调试.
+- **空 indices**: `indices` 为空时 `unique_indices.shape[0] == 0`, `scatter_add_` 是 no-op,
+  返回 clone 的原始 weight. 上游 `run_count=0` 路径也是 no-op, 语义一致.
+
+**3. 系统角度内存并发安全**
+
+- `DedupGradSession` 是不可变数据容器 (post-init 不修改), 可安全跨线程传递.
+  `validate()` 幂等 (`_validated` flag), 多次调用安全.
+- `dedup_indice_and_gradients()` 无全局状态, 纯函数 (除 stderr print).
+  `torch.argsort` / `torch.unique` / `scatter_add_` 均不修改输入 tensor.
+- `gather_gradient_apply()`: `embedding_weight.clone()` 保证输入不被修改,
+  返回新 tensor. 多线程并发对不同 embedding 调用安全.
+- `_DISPATCH_TABLE` 是模块级常量, 只读, 并发安全.
+- `dump_dispatch_table()` 只做 print, 无状态修改, 并发安全.
+- **内存开销**: `grads.float()` 会分配 [N, D] float32 中间缓冲区.
+  若 N 很大 (分布式 all_gather 后的 total_recv_count), 这是必要开销
+  (上游 CUDA 也有对应的 `dedup_grad_recv_buffer_handle.device_malloc`).
+  可通过 in-place cast (`grads_float32 = grads.to(torch.float32, copy=False)`)
+  在已是 float32 时省去拷贝. 当前实现: `grads[sorted_order].float()` 已经
+  包含 reorder, 故无法 zero-copy. 这与上游 CUDA kernel 语义一致 (kernel 内
+  逐元素 cast, 无 zero-copy 路径).
+
