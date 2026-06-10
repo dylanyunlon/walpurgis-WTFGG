@@ -3178,3 +3178,23 @@ if d > 0:           # 整除时 d==0，跳过切片，保留完整 perm
    - 此 commit 属于与 `fc5c0e6`（property_graph.md 删除）同批次的 `readme_pages/` 文档清理，模式一致：整个 `readme_pages/` 目录逐步移除
 
 **迁移决策**: SKIP — 纯 `readme_pages/pylibcugraph.md` 文档删除；Walpurgis 无 `readme_pages/` 目录结构，无任何可迁移或可删除内容；pylibcugraph 文档面向 RAPIDS cuGraph 集成者受众，与 Walpurgis 时空图 GNN 项目（PyG + PyTorch + METR-LA）技术栈及使用场景完全不匹配；强行创建再删除将制造纯噪音 commit，无任何工程价值
+
+## migrate f6cd9c6: [SKIP] Updates — 纯 build/CI 基础设施重构，Walpurgis 无对应结构
+
+- **Upstream commit**: f6cd9c6 (cugraph-gnn, BradReesWork, 2024-07-01)
+- **Commit message**: `Updates`
+- **Upstream diff** (5 files changed, 99 insertions, 518 deletions):
+  - `.pre-commit-config.yaml` (新增): black/flake8/yesqa/clang-format/copyright/dependency-file-generator 预提交 hook 配置
+  - `build.sh`: 大幅裁剪，删除 libcugraph/libcugraph_etl/pylibcugraph/cugraph/cugraph-service/cugraph-equivariant/nx-cugraph 全部 C++ 构建逻辑及对应 cmake 调用；仅保留 cugraph-pyg + cugraph-dgl Python 包安装；默认构建目标从 libcugraph→pylibcugraph→cugraph 改为 cugraph-pyg→cugraph-dgl→wholegraph
+  - `conda/environments/all_cuda-118_arch-x86_64.yaml` + `all_cuda-122_arch-x86_64.yaml`: 从头构建依赖（c-compiler/libcugraphops/libraft/openmpi/nvcc 等）全部删除，改为依赖预构建的 `cugraph==24.8.*` conda 包
+  - `dependencies.yaml`: 删除 `cpp_build` 节（gcc/cuda-nvcc/libcugraphops/libraft/openmpi）；删除 py_build/py_run/py_test 中 cugraph/pylibcugraph/nx-cugraph/cugraph-equivariant/cugraph-service 六个包的全部 pyproject 配置块；新增 `depends_on_cugraph` 依赖块（conda: cugraph==24.8.*, pypi: cugraph-cu11/cu12==24.8.*）
+
+- **Knuth 审查**:
+  1. **diff 对比源**:
+     - `build.sh` 变化核心语义：从「从源码编译整个 cugraph 生态」改为「假设 cugraph 已由 conda/pip 安装，仅构建 GNN Python 包层」。这是 cugraph-gnn 仓库从 cugraph 单仓库剥离后的架构调整，不含任何算法或 API 变更
+     - `depends_on_cugraph` 新增块新增了 `--extra-index-url=https://pypi.nvidia.com` 的 pip 安装路径，是 NVIDIA private wheel index 配置，与 Walpurgis PyPI 依赖体系无交集
+     - `.pre-commit-config.yaml` 中 `rapids-dependency-file-generator` hook 与 `dependencies.yaml` 联动，是 RAPIDS 专用依赖矩阵生成工具，Walpurgis 不使用此工具链
+  2. **用户角度 bug**: 无运行时代码改动，无 bug 风险；`build.sh` 裁剪只影响开发者本地构建流程，不影响已安装的 Python 包行为；`cugraph-dgl` 构建条件 `if hasArg cugraph-dgl || buildDefault ||hasArg all` 中 `||hasArg` 前缺少空格（格式 bug），不影响 bash 语义
+  3. **系统角度安全**: 无安全影响；删除 openmpi/gcc 等 C++ 构建依赖是正向安全收益（减少编译器/MPI 安装面）；`--extra-index-url=https://pypi.nvidia.com` 是生产 wheel 分发地址，需信任 NVIDIA PyPI 源，与 Walpurgis 无关
+
+- **迁移决策**: SKIP — 纯 build/CI 基础设施重构：删除 C++ 全栈构建逻辑、裁剪 conda 依赖矩阵、新增 pre-commit 配置。Walpurgis 无 `build.sh`、无 `conda/environments/`、无 `dependencies.yaml`、无 RAPIDS CI 体系；`.pre-commit-config.yaml` 中涉及的 `rapids-dependency-file-generator` 是 RAPIDS 专有工具，不适用。无任何可迁移的算法、API 或运行时代码。
