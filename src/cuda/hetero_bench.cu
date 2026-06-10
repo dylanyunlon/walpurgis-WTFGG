@@ -46,6 +46,7 @@
 #include <mutex>
 #include <unordered_map>
 #include <string>
+#include <dlfcn.h>      // 4807986: dynamic NVML symbol loading via dlopen/dlsym
 
 // ════════════════════════════════════════════════════════════════════════════
 //  CUDA error checking
@@ -338,6 +339,150 @@ static uint8_t emb_dtype_from_name(const char* name) {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
+//  4807986 migration: Philemon-NVML — Dynamic NVML symbol loader
+//
+//  Upstream commit 4807986 ([Bugfix] Dynamic load NVML symbols for better
+//  compatibility) from cugraph-gnn / wholememory introduced dlopen/dlsym-
+//  based loading of libnvidia-ml.so instead of relying on static link-time
+//  availability.  The root cause: nvmlDeviceGetGpuFabricInfo() was added in
+//  NVML 525+; systems with older GPU display drivers would crash at startup
+//  with an unresolved symbol even if CUDA_VERSION >= 12030.
+//
+//  Upstream structure:
+//    nvml_wrap.h   — typedef for function pointers, extern declarations,
+//                    NvmlFabricSymbolLoaded() prototype
+//    nvml_wrap.cpp — anonymous-namespace dlopen + dlsym loader, global
+//                    function-pointer definitions, thread-safe init via mutex
+//    system_info.hpp — inline bool nvmlFabricSymbolLoaded = NvmlFabricSymbolLoaded()
+//    communicator.cpp / system_info.cpp — all NVML call sites guarded by
+//                    nvmlFabricSymbolLoaded before touching the pointers
+//
+//  Philemon adaptation (改写20%):
+//  - Single-file: no separate .h/.cpp split; everything lives here as a
+//    file-scope anonymous namespace before HeteroAllocator.
+//  - Naming: philemon_nvml_handle, philemon_nvml_loaded, philemon_nvml_mutex
+//    instead of nvml_handle/nvml_loaded/nvml_mutex.
+//  - Walpurgis uses PCIe-only topology (no NVLink, no HGX fabric on ags1),
+//    so nvmlDeviceGetGpuFabricInfo is used to *confirm* no fabric clique
+//    exists rather than to enable MNNVL paths.  The guard bool
+//    g_philemon_nvml_fabric_ready gates all fabric-info calls.
+//  - 断点调试: PhilemonNvmlLoad() prints every dlopen/dlsym attempt so
+//    driver compatibility issues are immediately visible in bench output.
+//
+//  Thread safety: std::mutex + std::lock_guard<> (identical to upstream).
+//  The loader is called once at static-init time (see g_philemon_nvml_fabric_ready
+//  below); after that the bool is read-only and needs no locking.
+// ════════════════════════════════════════════════════════════════════════════
+
+namespace {
+
+// NVML function-pointer typedefs (mirrors nvml_wrap.h typedefs)
+// These avoid a hard dependency on <nvml.h> — we only need the ABI, not the
+// header, because we resolve symbols at runtime via dlsym.
+typedef int   nvmlDevice_opaque_t;  // nvmlDevice_t is an opaque pointer
+typedef void* NvmlDevice;
+typedef int   NvmlReturn;
+
+// Raw function pointer types (ABI-compatible with NVML 525+)
+// nvmlReturn_t nvmlDeviceGetHandleByIndex(unsigned int index, nvmlDevice_t* device)
+typedef NvmlReturn (*PhilemonNvmlGetHandleByIndexFn)(unsigned int, NvmlDevice*);
+// nvmlReturn_t nvmlDeviceGetGpuFabricInfo(nvmlDevice_t device, nvmlGpuFabricInfo_t* info)
+// We use void* for the info struct — we only call it for the guard probe.
+typedef NvmlReturn (*PhilemonNvmlGetGpuFabricInfoFn)(NvmlDevice, void*);
+
+static void*                         philemon_nvml_handle   = nullptr;
+static std::mutex                    philemon_nvml_mutex;
+static bool                          philemon_nvml_loaded   = false;
+static PhilemonNvmlGetHandleByIndexFn philemon_nvml_get_handle = nullptr;
+static PhilemonNvmlGetGpuFabricInfoFn philemon_nvml_get_fabric  = nullptr;
+
+// PhilemonNvmlLoad: try versioned then unversioned soname (same order as
+// upstream LoadNvmlLibrary).  断点调试: always print the attempt result.
+static bool PhilemonNvmlLoad()
+{
+    printf("[DEBUG 4807986 PhilemonNvmlLoad] trying libnvidia-ml.so.1 ...\n");
+    philemon_nvml_handle = dlopen("libnvidia-ml.so.1", RTLD_NOW);
+    if (!philemon_nvml_handle) {
+        printf("[DEBUG 4807986 PhilemonNvmlLoad] .so.1 failed (%s), "
+               "falling back to libnvidia-ml.so\n", dlerror());
+        philemon_nvml_handle = dlopen("libnvidia-ml.so", RTLD_NOW);
+        if (!philemon_nvml_handle) {
+            fprintf(stderr,
+                "[WARN  4807986 PhilemonNvmlLoad] NVML library not found: %s — "
+                "fabric probing disabled (PCIe-only topology assumed)\n",
+                dlerror());
+            return false;
+        }
+    }
+    printf("[DEBUG 4807986 PhilemonNvmlLoad] library opened handle=%p\n",
+           philemon_nvml_handle);
+    return true;
+}
+
+// PhilemonNvmlResolveSymbols: dlsym each required NVML symbol.
+// If either is missing the driver is too old; close and bail out.
+// 断点调试: print resolved address or NULL for each symbol.
+static bool PhilemonNvmlResolveSymbols()
+{
+    philemon_nvml_get_handle =
+        reinterpret_cast<PhilemonNvmlGetHandleByIndexFn>(
+            dlsym(philemon_nvml_handle, "nvmlDeviceGetHandleByIndex"));
+    printf("[DEBUG 4807986 PhilemonNvmlResolveSymbols] "
+           "nvmlDeviceGetHandleByIndex → %p\n",
+           reinterpret_cast<void*>(philemon_nvml_get_handle));
+
+    philemon_nvml_get_fabric =
+        reinterpret_cast<PhilemonNvmlGetGpuFabricInfoFn>(
+            dlsym(philemon_nvml_handle, "nvmlDeviceGetGpuFabricInfo"));
+    printf("[DEBUG 4807986 PhilemonNvmlResolveSymbols] "
+           "nvmlDeviceGetGpuFabricInfo → %p\n",
+           reinterpret_cast<void*>(philemon_nvml_get_fabric));
+
+    if (!philemon_nvml_get_handle || !philemon_nvml_get_fabric) {
+        fprintf(stderr,
+            "[WARN  4807986 PhilemonNvmlResolveSymbols] one or more required "
+            "NVML symbols missing — likely outdated GPU display driver. "
+            "Fabric probing disabled.\n");
+        dlclose(philemon_nvml_handle);
+        philemon_nvml_handle      = nullptr;
+        philemon_nvml_get_handle  = nullptr;
+        philemon_nvml_get_fabric  = nullptr;
+        return false;
+    }
+    return true;
+}
+
+// PhilemonNvmlFabricSymbolLoaded: thread-safe one-shot initializer.
+// Mirrors upstream NvmlFabricSymbolLoaded() exactly, with Philemon naming
+// and additional debug prints.  Returns true iff both NVML symbols are live.
+static bool PhilemonNvmlFabricSymbolLoaded()
+{
+    std::lock_guard<std::mutex> lock(philemon_nvml_mutex);
+    if (philemon_nvml_loaded) {
+        // Already initialized — fast path, no dlopen overhead
+        return true;
+    }
+    printf("[DEBUG 4807986 PhilemonNvmlFabricSymbolLoaded] first-call init\n");
+    if (PhilemonNvmlLoad() && PhilemonNvmlResolveSymbols()) {
+        philemon_nvml_loaded = true;
+        printf("[DEBUG 4807986 PhilemonNvmlFabricSymbolLoaded] "
+               "NVML fabric symbols ready\n");
+    } else {
+        printf("[DEBUG 4807986 PhilemonNvmlFabricSymbolLoaded] "
+               "NVML fabric symbols NOT available — probing skipped\n");
+    }
+    return philemon_nvml_loaded;
+}
+
+}  // anonymous namespace
+
+// Global guard bool — evaluated once at program startup (mirrors upstream
+//   inline bool nvmlFabricSymbolLoaded = NvmlFabricSymbolLoaded(); in system_info.hpp).
+// All code that calls philemon_nvml_get_handle / philemon_nvml_get_fabric
+// MUST check this bool first, just as communicator.cpp checks nvmlFabricSymbolLoaded.
+static const bool g_philemon_nvml_fabric_ready = PhilemonNvmlFabricSymbolLoaded();
+
+// ════════════════════════════════════════════════════════════════════════════
 //  HeteroAllocator — real CUDA memory across devices
 // ════════════════════════════════════════════════════════════════════════════
 
@@ -381,6 +526,67 @@ public:
             }
         }
         CUDA_CHECK(cudaSetDevice(0)); // reset
+
+        // ── 4807986 migration: Philemon-NVML PCIe fabric topology probe ──────
+        // Upstream 4807986 guards every NVML call with nvmlFabricSymbolLoaded.
+        // We do the same: g_philemon_nvml_fabric_ready is the direct analog.
+        // On ags1 (PCIe-only, no NVLink, no HGX fabric) this probe confirms
+        // no multi-node memory fabric is active.  On machines with outdated
+        // display drivers the NVML symbols may be absent; the guard prevents
+        // a crash exactly as upstream intended.
+        //
+        // 断点调试: print fabric-probe result for every HeteroAllocator init
+        // so driver compatibility issues are visible at bench startup.
+        printf("[DEBUG 4807986 HeteroAllocator] g_philemon_nvml_fabric_ready=%s\n",
+               g_philemon_nvml_fabric_ready ? "true" : "false");
+
+        if (g_philemon_nvml_fabric_ready) {
+            // NVML symbols are live — probe GPU0 for fabric info.
+            // nvmlDeviceGetGpuFabricInfo was introduced in NVML 525 / driver 525.
+            // On PCIe-only topology the clusterUuid will be all-zero,
+            // confirming no MNNVL fabric clique (mirrors communicator.cpp logic).
+            NvmlDevice nvml_dev = nullptr;
+            NvmlReturn ret = philemon_nvml_get_handle(0, &nvml_dev);
+            printf("[DEBUG 4807986 HeteroAllocator] nvmlDeviceGetHandleByIndex(0) "
+                   "ret=%d handle=%p\n", ret, nvml_dev);
+
+            if (ret == 0 /* NVML_SUCCESS */ && nvml_dev) {
+                // nvmlGpuFabricInfo_t layout (NVML 525+): first 16 bytes = clusterUuid.
+                // We allocate a 256-byte buffer — large enough for any NVML version's
+                // struct, avoiding a hard dependency on <nvml.h>.
+                unsigned char fabric_buf[256] = {};
+                NvmlReturn ret2 = philemon_nvml_get_fabric(nvml_dev, fabric_buf);
+                printf("[DEBUG 4807986 HeteroAllocator] nvmlDeviceGetGpuFabricInfo "
+                       "ret=%d uuid[0..3]=%02x%02x%02x%02x\n",
+                       ret2,
+                       fabric_buf[0], fabric_buf[1], fabric_buf[2], fabric_buf[3]);
+
+                // Check if clusterUuid is all-zero (no fabric / PCIe-only topology).
+                // Mirrors upstream: (((long*)ri.fabric_info.clusterUuid)[0] |
+                //                    ((long*)ri.fabric_info.clusterUuid)[1]) == 0
+                long uuid_word0, uuid_word1;
+                memcpy(&uuid_word0, fabric_buf,     sizeof(long));
+                memcpy(&uuid_word1, fabric_buf + 8, sizeof(long));
+                bool no_fabric_clique = ((uuid_word0 | uuid_word1) == 0);
+                printf("[DEBUG 4807986 HeteroAllocator] fabric_clique_active=%s "
+                       "(uuid_word0=0x%lx uuid_word1=0x%lx)\n",
+                       no_fabric_clique ? "false (PCIe-only, as expected on ags1)"
+                                        : "true  (NVLink/HGX fabric detected!)",
+                       uuid_word0, uuid_word1);
+            }
+        } else {
+            // 4807986: NVML symbols missing — outdated driver or container
+            // environment without NVML.  Log and continue; PCIe-only path
+            // is safe and fully functional without fabric info.
+            // This matches upstream WHOLEMEMORY_WARN("Some required NVML symbols
+            // are missing, likely due to an outdated GPU display driver.
+            // MNNVL support will be disabled.") in communicator.cpp.
+            fprintf(stderr,
+                "[WARN  4807986 HeteroAllocator] NVML fabric probe skipped — "
+                "symbols unavailable (driver too old or NVML absent). "
+                "PCIe-only topology assumed; no MNNVL/NVLink features.\n");
+        }
+        // ── end 4807986 migration ─────────────────────────────────────────────
     }
 
     // Allocate on a specific tier
