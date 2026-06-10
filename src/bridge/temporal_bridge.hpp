@@ -194,11 +194,15 @@ struct FeatureDtypeTolerance {
     float rtol;
 };
 
+// 220563b: feature_dtype field uses our internal ids (0=float32, 1=fp16, 2=bf16).
+// The wire-protocol ids from DtypeRegistry (float32=0, float16=5, bf16=7) are
+// distinct — only used for cross-language serialization.
+// This function operates on internal ids (same as before), not wire ids.
 inline FeatureDtypeTolerance feature_dtype_tolerance(uint8_t dtype) {
     switch (dtype) {
-        case 1: return {5e-3f, 5e-3f};  // fp16
-        case 2: return {2e-2f, 2e-2f};  // bf16
-        default: return {1e-5f, 1e-5f}; // fp32
+        case 1: return {5e-3f, 5e-3f};  // fp16 (internal id=1, wire id=5)
+        case 2: return {2e-2f, 2e-2f};  // bf16 (internal id=2, wire id=7 per 220563b)
+        default: return {1e-5f, 1e-5f}; // fp32 (internal id=0, wire id=0)
     }
 }
 
@@ -214,11 +218,25 @@ static inline int tb_emb_align_count(uint8_t dtype) {
 
 // Print-debug: show dtype dispatch selection for a given feature_dtype.
 // Called during partition scan to confirm correct dispatch path.
+//
+// 220563b: added wire_id display alongside internal dtype id so cross-language
+// debug traces can be correlated.  Before 220563b, bf16 had no wire id in the
+// Python feature store table; now id=7 is the canonical wire encoding.
+//
+// Internal dtype → wire id mapping (per DtypeRegistry, aligned to 220563b):
+//   dtype=0 (float32) → wire id=0
+//   dtype=1 (float16) → wire id=5
+//   dtype=2 (bfloat16) → wire id=7  ← 220563b explicit registration
 inline void debug_dtype_dispatch(uint8_t feature_dtype, const char* op) {
+    // Internal dtype name table
     const char* dtype_names[] = {"float32", "float16", "bfloat16"};
     const char* name = (feature_dtype < 3) ? dtype_names[feature_dtype] : "unknown";
-    printf("[DEBUG b58ea19 dispatch] op=%s feature_dtype=%s align=%d\n",
-           op, name, tb_emb_align_count(feature_dtype));
+    // Wire id table (220563b: bf16=7, matches feature_store.py DtypeRegistry)
+    const uint8_t wire_ids[] = {0, 5, 7};
+    uint8_t wire_id = (feature_dtype < 3) ? wire_ids[feature_dtype] : 255;
+    printf("[DEBUG 220563b dispatch] op=%s feature_dtype=%s"
+           " internal_id=%u wire_id=%u align=%d\n",
+           op, name, feature_dtype, wire_id, tb_emb_align_count(feature_dtype));
 }
 }
 

@@ -356,6 +356,150 @@ inline int embedding_dtype_align_count(EmbeddingDtype dt) {
     return static_cast<int>(16 / embedding_dtype_element_size(dt));
 }
 
+// ─── DtypeRegistry — bidirectional dtype ↔ numeric_id map ──────────────────
+// Migrated from cugraph-gnn commit 220563b: Explicitly support bf16 in feature store
+//
+// DESIGN (220563b):
+//   cugraph_pyg/data/feature_store.py builds a two-way table:
+//
+//     dtypes    : EmbeddingDtype → int id   (dtype lookup by type)
+//     dtype_ids : int id → EmbeddingDtype   (dtype lookup by wire id)
+//
+//   The original table only registered:
+//     float32→0, int64→1, float64→2, int32→3, int16→4, float16→5, int8→6
+//   BF16 was omitted — any serialization path that called dtypes[bfloat16]
+//   would KeyError, silently falling back to a default dtype or crashing.
+//
+//   The fix: assign bf16 the next available slot (id=7), register it in
+//   both directions, and extend the tests to cover all 8 registered types.
+//
+// OUR C++ ANALOG:
+//   DtypeRegistry provides the same two-way table for EmbeddingDtype.
+//   - dtype_to_id(EmbeddingDtype) → uint8_t numeric id  (like dtypes[k])
+//   - id_to_dtype(uint8_t)        → EmbeddingDtype      (like dtype_ids[v])
+//
+//   The id assignment deliberately matches the Python table so cross-language
+//   serialization (feature tensors written by Python, read by C++ worker) is
+//   unambiguous.  BF16 is explicitly id=7, not inferred from enum order.
+//
+// KNUTH SELF-REVIEW:
+//   Q: What if a caller passes an unregistered id (e.g. 99)?
+//   A: id_to_dtype() returns EmbeddingDtype::FLOAT (the safe default) and
+//      prints a warning.  This mirrors Python's dict.get(k, default) idiom.
+//
+//   Q: Why not just cast (uint8_t)dt?
+//   A: The enum values (0,1,2) are an implementation detail; the wire ids
+//      (0,1,2,3,4,5,6,7) are a protocol.  Keeping them separate means we
+//      can add EmbeddingDtype::INT8 without breaking the wire format.
+//
+// 断点调试: DtypeRegistry::dump() prints the full table at startup so any
+// registration gap is immediately visible in logs.
+
+struct DtypeRegistry {
+    // Wire-protocol numeric IDs — must match Python feature_store.py 220563b:
+    //   float32 → 0
+    //   int64   → 1
+    //   float64 → 2
+    //   int32   → 3
+    //   int16   → 4
+    //   float16 → 5
+    //   int8    → 6
+    //   bf16    → 7  ← 220563b addition
+    //
+    // C++ layer only exposes float/half/bf16 as trainable EmbeddingDtype.
+    // Integer and float64 dtypes exist on the Python side but are not
+    // represented in EmbeddingDtype (they are non-trainable storage types).
+    // We track all 8 ids here for completeness of the protocol table.
+
+    static constexpr uint8_t ID_FLOAT32 = 0;
+    static constexpr uint8_t ID_INT64   = 1;
+    static constexpr uint8_t ID_FLOAT64 = 2;
+    static constexpr uint8_t ID_INT32   = 3;
+    static constexpr uint8_t ID_INT16   = 4;
+    static constexpr uint8_t ID_FLOAT16 = 5;
+    static constexpr uint8_t ID_INT8    = 6;
+    static constexpr uint8_t ID_BF16    = 7;   // ← 220563b: explicitly registered
+
+    // EmbeddingDtype → numeric wire id
+    // Mirrors Python: dtypes[k] = v
+    static uint8_t dtype_to_id(EmbeddingDtype dt) {
+        switch (dt) {
+            case EmbeddingDtype::FLOAT: return ID_FLOAT32;
+            case EmbeddingDtype::HALF:  return ID_FLOAT16;
+            case EmbeddingDtype::BF16:  return ID_BF16;    // 220563b: id=7
+            default:
+                fprintf(stderr,
+                    "[DtypeRegistry] WARNING: dtype_to_id unknown EmbeddingDtype=%u,"
+                    " defaulting to FLOAT32 id=0\n",
+                    static_cast<unsigned>(dt));
+                return ID_FLOAT32;
+        }
+    }
+
+    // Numeric wire id → EmbeddingDtype
+    // Mirrors Python: dtype_ids[v] = k
+    // Only handles the three trainable EmbeddingDtype values; other ids
+    // (int8, int16, int32, int64, float64) return FLOAT with a warning.
+    static EmbeddingDtype id_to_dtype(uint8_t id) {
+        switch (id) {
+            case ID_FLOAT32: return EmbeddingDtype::FLOAT;
+            case ID_FLOAT16: return EmbeddingDtype::HALF;
+            case ID_BF16:    return EmbeddingDtype::BF16;   // 220563b: id=7
+            // Non-trainable ids: return FLOAT (safe default) + warn
+            case ID_INT64:
+            case ID_FLOAT64:
+            case ID_INT32:
+            case ID_INT16:
+            case ID_INT8:
+                fprintf(stderr,
+                    "[DtypeRegistry] WARNING: id_to_dtype id=%u is a non-trainable"
+                    " dtype (int/float64), defaulting to EmbeddingDtype::FLOAT\n", id);
+                return EmbeddingDtype::FLOAT;
+            default:
+                fprintf(stderr,
+                    "[DtypeRegistry] WARNING: id_to_dtype unknown id=%u,"
+                    " defaulting to EmbeddingDtype::FLOAT\n", id);
+                return EmbeddingDtype::FLOAT;
+        }
+    }
+
+    // 断点调试: dump the full registry — call at startup to verify no gaps.
+    // Mirrors the test parametrization in 220563b test_feature_store.py that
+    // iterates all 8 dtype names to verify every entry round-trips correctly.
+    static void dump() {
+        struct Entry { EmbeddingDtype dt; uint8_t id; const char* name; };
+        static const Entry entries[] = {
+            {EmbeddingDtype::FLOAT, ID_FLOAT32, "float32"},
+            {EmbeddingDtype::HALF,  ID_FLOAT16, "float16"},
+            {EmbeddingDtype::BF16,  ID_BF16,    "bfloat16"},  // 220563b
+        };
+        fprintf(stderr, "[DtypeRegistry] Registered EmbeddingDtype entries"
+                        " (220563b: bf16=id7 explicitly added):\n");
+        for (auto& e : entries) {
+            uint8_t round_trip_id = dtype_to_id(e.dt);
+            EmbeddingDtype round_trip_dt = id_to_dtype(e.id);
+            bool ok = (round_trip_id == e.id) &&
+                      (round_trip_dt == e.dt);
+            fprintf(stderr,
+                "  dtype=%-10s id=%-3u round_trip=%s element_size=%zu align=%d\n",
+                e.name, e.id, ok ? "OK" : "FAIL",
+                embedding_dtype_element_size(e.dt),
+                embedding_dtype_align_count(e.dt));
+        }
+        // Also dump the non-EmbeddingDtype ids for protocol completeness
+        fprintf(stderr,
+            "  [wire-only] int64=1 float64=2 int32=3 int16=4 int8=6"
+            "  (non-trainable, no EmbeddingDtype enum entry)\n");
+    }
+};
+
+// Convenience: verify a uint8_t feature_dtype field (from TemporalEdge or wire)
+// is a known registered id.  Returns false for unregistered values.
+// 220563b: previously would have returned false for id=7 (bf16), now returns true.
+inline bool is_registered_dtype_id(uint8_t id) {
+    return id <= DtypeRegistry::ID_BF16;  // 0..7 are all registered (220563b)
+}
+
 enum class MemoryTier : uint8_t {
     HBM   = 0,   // H100 High-Bandwidth Memory (3.35 TB/s)
     GDDR  = 1,   // A6000 GDDR6 (768 GB/s)
