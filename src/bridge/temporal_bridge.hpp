@@ -1254,6 +1254,243 @@ public:
                   << "\n";
     }
 
+    // ════ 4005ab1 migration: SamplerKwargs ════════════════════════════════════
+    // commit 4005ab1 "[FEA] Support Standard Temporal Sampling Behavior"
+    //
+    // Upstream change (DistributedNeighborSampler, distributed_sampler.py):
+    //   BEFORE 4005ab1:
+    //     if temporal:
+    //         self.__func_kwargs["temporal_property_name"] = "time"
+    //     # temporal_sampling_comparison was never set → PLC used its default
+    //
+    //   AFTER 4005ab1:
+    //     if temporal:
+    //         self.__func_kwargs["temporal_property_name"] = "time"
+    //         self.__func_kwargs["temporal_sampling_comparison"] = temporal_comparison
+    //     # Now temporal_comparison is propagated all the way to cuPLC
+    //
+    // Second change: sample_batches() gains seed_times parameter:
+    //   def sample_batches(self, seeds, seed_times, batch_id_offsets, ...):
+    //       kwargs = {...}
+    //       if seed_times is not None:
+    //           kwargs.update({"starting_vertex_times": cupy.asarray(seed_times)})
+    //       sampling_results_dict = self.__func(**kwargs)
+    //
+    // Third change: input_time is now passed from NodeLoader (was hardcoded None):
+    //   BEFORE: time=None
+    //   AFTER:  time=input_time   (node_loader.py line 116)
+    //
+    // Fourth change: NeighborLoader auto-infers input_time from feature_store
+    //   when input_time is None and time_attr is set:
+    //     if input_time is None:
+    //         input_time = feature_store[input_type, time_attr, None][input_nodes]
+    //
+    // Our C++ analog:
+    //   SamplerKwargs — bundles all kwargs that flow into the C++ sampling call:
+    //     - temporal_property_name ("time")
+    //     - temporal_sampling_comparison (TemporalComparison enum)
+    //     - starting_vertex_times (per-seed timestamps, or empty if non-temporal)
+    //
+    // 断点调试: SamplerKwargs::dump() prints all fields so the complete sampling
+    // configuration is visible in one log line — critical for causal correctness audit.
+
+    struct SamplerKwargs {
+        // temporal_property_name: name of the edge timestamp attribute in the graph store.
+        // cugraph-pyg: always "time" when temporal=True (hard-coded in DistributedNeighborSampler).
+        // We store as std::string for future heterogeneous per-edge-type customization.
+        std::string temporal_property_name;  // default: "time"
+
+        // temporal_sampling_comparison: the comparison operator passed to cuPLC.
+        // 4005ab1: was NEVER passed before this commit — PLC silently used its own default.
+        // Now explicitly set from the loader's temporal_comparison parameter.
+        // Maps 1:1 to TemporalComparison enum via temporal_comparison_name().
+        TemporalComparison temporal_sampling_comparison;
+
+        // starting_vertex_times: per-seed query timestamps (shape: [num_seeds]).
+        // 4005ab1: sample_batches() now receives seed_times from __sample_from_nodes_func /
+        // __sample_from_edges_func, and passes them as cupy array to cuPLC.
+        // In C++ we store as vector<int64_t>; empty = non-temporal (no time constraint).
+        std::vector<int64_t> starting_vertex_times;
+
+        // temporal_enabled: mirrors `if temporal:` guard in DistributedNeighborSampler.
+        // When false, temporal_property_name and temporal_sampling_comparison are ignored.
+        bool temporal_enabled;
+
+        // Default constructor: non-temporal mode (4005ab1: before temporal=True is set).
+        SamplerKwargs()
+            : temporal_property_name("time")
+            , temporal_sampling_comparison(TemporalComparison::MONOTONICALLY_DECREASING)
+            , temporal_enabled(false)
+        {}
+
+        // Constructor for temporal mode (4005ab1: temporal=True path).
+        // tc: TemporalComparison from loader's temporal_comparison parameter.
+        // seed_times: per-seed timestamps from input_time (may be empty for batch without times).
+        explicit SamplerKwargs(TemporalComparison tc,
+                               std::vector<int64_t> seed_times = {})
+            : temporal_property_name("time")
+            , temporal_sampling_comparison(tc)
+            , starting_vertex_times(std::move(seed_times))
+            , temporal_enabled(true)
+        {}
+
+        // 4005ab1: validate that temporal_comparison matches 'last' strategy when needed.
+        // Python equivalent: "Note that this should be 'last' for temporal_strategy='last'."
+        bool is_last_strategy() const {
+            return temporal_sampling_comparison == TemporalComparison::LAST;
+        }
+
+        // 断点调试: print all SamplerKwargs fields in one log line.
+        // Called at batch-start so the complete sampling config is auditable.
+        void dump(const char* prefix = "4005ab1 SamplerKwargs") const {
+            printf("[DEBUG %s] temporal_enabled=%s property='%s' comparison=%s"
+                   " seed_times_count=%zu first_seed_time=%s\n",
+                   prefix,
+                   temporal_enabled ? "true" : "false",
+                   temporal_property_name.c_str(),
+                   temporal_comparison_name(temporal_sampling_comparison),
+                   starting_vertex_times.size(),
+                   starting_vertex_times.empty()
+                       ? "none"
+                       : std::to_string(starting_vertex_times[0]).c_str());
+        }
+    };
+
+    // apply_sampler_kwargs: merge SamplerKwargs into the temporal neighbor sampling call.
+    // This is the C++ equivalent of DistributedNeighborSampler.sample_batches() kwargs
+    // construction (4005ab1):
+    //
+    //   kwargs = {"seeds": ..., "batch_id_offsets": ..., "random_state": ...}
+    //   kwargs.update(self.__func_kwargs)  ← temporal_property_name + temporal_comparison
+    //   if seed_times is not None:
+    //       kwargs.update({"starting_vertex_times": cupy.asarray(seed_times)})
+    //
+    // In our C++ layer, we call temporal_neighbor_sample() per seed, so we:
+    //   1. Use kwargs.temporal_sampling_comparison for the TemporalComparison enum
+    //   2. Extract per-seed time from starting_vertex_times[seed_idx] if available
+    //   3. Fall back to query_time parameter if starting_vertex_times is empty
+    //
+    // 断点调试: prints the resolved seed_time and comparison for every call when
+    // PHILEMON_DEBUG_TEMPORAL is defined (suppress on hot path by default).
+    template <typename Callback>
+    TemporalSampleResult apply_sampler_kwargs(
+            uint64_t seed_node,
+            size_t   seed_idx,          // index into starting_vertex_times
+            int64_t  fallback_time,     // used when starting_vertex_times is empty
+            int32_t  ts_lo,
+            int32_t  ts_hi,
+            const SamplerKwargs& kwargs,
+            Callback&& cb) const {
+        if (!kwargs.temporal_enabled) {
+            // Non-temporal mode: no filtering, pass a sentinel query_time
+            // that will never filter anything (edge_time <= INT64_MAX is always true).
+            // Pattern: 4005ab1 non-temporal path where starting_vertex_times is None.
+            printf("[DEBUG 4005ab1 apply_sampler_kwargs] seed=%lu non-temporal mode\n",
+                   (unsigned long)seed_node);
+            return temporal_neighbor_sample(
+                seed_node, std::numeric_limits<int64_t>::max(),
+                ts_lo, ts_hi, std::forward<Callback>(cb),
+                TemporalComparison::MONOTONICALLY_DECREASING);
+        }
+
+        // 4005ab1: resolve seed_time from starting_vertex_times or fallback.
+        // Python equivalent:
+        //   if seed_times is not None:
+        //       kwargs["starting_vertex_times"] = cupy.asarray(seed_times)
+        // In C++: if starting_vertex_times[seed_idx] is available, use it.
+        int64_t resolved_seed_time = fallback_time;
+        bool from_starting_times = false;
+        if (seed_idx < kwargs.starting_vertex_times.size()) {
+            resolved_seed_time = kwargs.starting_vertex_times[seed_idx];
+            from_starting_times = true;
+        }
+
+#ifdef PHILEMON_DEBUG_TEMPORAL
+        printf("[DEBUG 4005ab1 apply_sampler_kwargs] seed=%lu idx=%zu"
+               " seed_time=%ld from_starting_times=%s comparison=%s\n",
+               (unsigned long)seed_node, seed_idx,
+               (long)resolved_seed_time,
+               from_starting_times ? "yes" : "no(fallback)",
+               temporal_comparison_name(kwargs.temporal_sampling_comparison));
+#else
+        (void)from_starting_times;
+#endif
+
+        return temporal_neighbor_sample(
+            seed_node, resolved_seed_time,
+            ts_lo, ts_hi, std::forward<Callback>(cb),
+            kwargs.temporal_sampling_comparison);
+    }
+
+    // batch_temporal_sample: run temporal neighbor sampling for a full batch of seeds.
+    // 4005ab1 equivalent: the inner loop of __sample_from_nodes_func() after
+    // current_seeds and current_time have been unpacked.
+    //
+    // seeds: batch of seed node IDs  (shape: [batch_size])
+    // kwargs: SamplerKwargs including optional starting_vertex_times
+    //
+    // Returns: vector of TemporalSampleResult (one per seed) plus total edges matched.
+    //
+    // 断点调试: prints batch summary (seeds count, total edges, ratio)
+    // and per-seed detail for the first 3 seeds to keep logs readable.
+    struct BatchSampleResult {
+        std::vector<TemporalSampleResult> per_seed;
+        uint64_t total_edges_matched;
+        double   mean_temporal_ratio;  // average fraction of neighbors passing filter
+    };
+
+    template <typename Callback>
+    BatchSampleResult batch_temporal_sample(
+            const std::vector<uint64_t>& seeds,
+            int32_t                      ts_lo,
+            int32_t                      ts_hi,
+            const SamplerKwargs&         kwargs,
+            Callback&&                   cb) const {
+        kwargs.dump("4005ab1 batch_temporal_sample start");
+        printf("[DEBUG 4005ab1] batch_temporal_sample: seeds=%zu ts=[%d,%d]\n",
+               seeds.size(), ts_lo, ts_hi);
+
+        BatchSampleResult batch;
+        batch.total_edges_matched = 0;
+        batch.per_seed.reserve(seeds.size());
+
+        for (size_t i = 0; i < seeds.size(); ++i) {
+            // 4005ab1: use starting_vertex_times[i] if available (per-seed time override).
+            // This matches the cuPLC call:
+            //   starting_vertex_times = cupy.asarray(seed_times)  [shape: num_seeds]
+            auto result = apply_sampler_kwargs(
+                seeds[i], i,
+                /*fallback_time=*/std::numeric_limits<int64_t>::max(),
+                ts_lo, ts_hi, kwargs,
+                std::forward<Callback>(cb));
+
+            batch.per_seed.push_back(result);
+            batch.total_edges_matched += result.temporal_neighbors;
+
+            // 断点调试: per-seed detail for first 3 seeds
+            if (i < 3) {
+                printf("[DEBUG 4005ab1] seed[%zu]=%lu time=%ld"
+                       " total_nbrs=%lu temporal_nbrs=%lu ratio=%.3f\n",
+                       i, (unsigned long)seeds[i],
+                       (long)result.query_time,
+                       (unsigned long)result.total_neighbors,
+                       (unsigned long)result.temporal_neighbors,
+                       result.temporal_ratio);
+            }
+        }
+
+        // Compute mean temporal ratio across all seeds
+        double ratio_sum = 0.0;
+        for (auto& r : batch.per_seed) ratio_sum += r.temporal_ratio;
+        batch.mean_temporal_ratio = seeds.empty() ? 0.0 : ratio_sum / seeds.size();
+
+        printf("[DEBUG 4005ab1] batch_temporal_sample done:"
+               " total_edges=%lu mean_ratio=%.3f\n",
+               (unsigned long)batch.total_edges_matched,
+               batch.mean_temporal_ratio);
+        return batch;
+    }
+
 
     // ── M011: Indexed Temporal Queries ──────────────────────────────────────
     // Uses IntervalIndex for O(log N + output) per partition.
