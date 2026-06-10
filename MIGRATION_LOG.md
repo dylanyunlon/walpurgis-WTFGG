@@ -1,4 +1,80 @@
 
+## migrate 89c9e8d: [BUG] Pin CPU Memory Instead of Copying to Device
+
+- **Upstream commit**: 89c9e8d (cugraph-gnn, NVIDIA, 2025-07-25)
+- **Commit message**: `[BUG] Pin CPU Memory Instead of Copying to Device`
+- **Upstream diff** (1 file changed, 5 insertions, 4 deletions):
+  - `dist_tensor.py` — `DistTensor.__setitem__`:
+    删除 `val = val.cuda()`，新增 `if not val.is_cuda: val = val.pin_memory()`
+  - `dist_tensor.py` — `DistEmbedding.__setitem__`:
+    同上（两个类各自实现，对称修复）
+  - 操作顺序: `idx.cuda()` → dtype转换 → pin/noop → `scatter(val, idx)`
+
+- **Bug 根因**:
+  `val.cuda()` 在 scatter 前把整个 val tensor 全量复制到 GPU 显存。
+  GraphRAG 场景下节点特征矩阵动辄数十GB，远超单卡显存上限，直接 OOM。
+  WholeGraph scatter 本身设计支持从 pinned host 内存 DMA 写入分布式存储——
+  `.cuda()` 是多余且有害的冗余拷贝，属于设计偏差引入的 critical bug。
+  `pin_memory()` 仅锁页（不拷贝到显存），由 DMA 控制器按需传输。
+
+### Walpurgis 迁移位置
+
+**文件: `src/walpurgis/core/dist_tensor.py`** — 新增
+
+**迁移要点**:
+- `PinnedValBuffer`: 值对象，携带 (tensor, was_cuda, was_pinned, dtype_cast) 四元状态，
+  让 scatter 决策路径可被观测和单元测试
+- `WalpurgisScatterGuard.prepare()`: 封装 89c9e8d 引入的核心内存决策逻辑
+  (dtype转换 → pin/noop)，替代两处重复的 `if not val.is_cuda: val = val.pin_memory()`
+- `DistTensorScatter.execute()`: DistTensor.__setitem__ 提取为静态方法，
+  不依赖完整 WholeGraph 构造，可独立测试
+- `DistEmbeddingScatter.execute()`: 同上，对应 DistEmbedding.__setitem__
+
+**改写20%（鲁迅拿法）**:
+- `PinnedValBuffer` 对象替代 Python 中 `val` 的局部变量再赋值模式
+- `WalpurgisScatterGuard` 静态类替代两处内联的 `if not val.is_cuda` 重复逻辑
+- `DistTensorScatter` / `DistEmbeddingScatter` 分离可测接口（Python 是 __setitem__ 内联）
+- 全链路6个 `WALPURGIS_DEBUG=1` 断点 print，覆盖: 进入guard → dtype转换 → pin决策 →
+  pin完成 → scatter触发 → scatter完成
+
+### 质量审查（Knuth 标准）
+
+**1. diff 对比源**
+
+| 上游 89c9e8d | Walpurgis 迁移 |
+|---|---|
+| `DistTensor.__setitem__`: 删 `val = val.cuda()` | `WalpurgisScatterGuard.prepare()` 不调用 `.cuda()` |
+| `if not val.is_cuda: val = val.pin_memory()` | `prepare()` 中同逻辑，封装为 `PinnedValBuffer` |
+| `DistEmbedding.__setitem__`: 同上对称修复 | `DistEmbeddingScatter.execute()` 同样调用 `prepare()` |
+| dtype 转换在 pin 之前（`val.dtype != self.dtype` 先判断） | `prepare()` 内: dtype转换 → pin，顺序一致 |
+| `idx = idx.cuda()` 位置不变（始终在最前） | `execute()` 第一步即 `idx.cuda()`，顺序一致 |
+| 两个类各自独立的 `__setitem__` | `DistTensorScatter` / `DistEmbeddingScatter` 各自静态方法 |
+
+**2. 用户角度 bug 排查**
+
+- **Bug 1 (OOM)**: `val.cuda()` 全量搬运，数十GB特征矩阵直接显存溢出。
+  `WALPURGIS_DEBUG=1` 打印 `was_cuda` + `is_pinned`，用户可立即确认
+  是否走 pin_memory 路径还是意外触发了 .cuda()。
+- **Bug 2 (静默错误)**: 若 val 已是 GPU tensor (`was_cuda=True`) 且 dtype 不匹配，
+  `val.to(dtype)` 会产生新 GPU tensor，`pin_memory()` 分支不执行——
+  断点打印 `dtype_cast=True, was_cuda=True` 让用户清楚看到此路径。
+- **Bug 3 (多rank同步)**: scatter 是 WholeGraph collective 操作，每个 rank 必须调用。
+  `DistTensorScatter.execute()` 无条件执行 scatter（不短路），与上游语义一致。
+
+**3. 系统角度**
+
+- **内存安全**: `pin_memory()` 成本低（仅锁页），不复制到显存；
+  若 val 已是 pinned (`was_pinned=True`)，`pin_memory()` 返回共享锁页区引用，
+  几乎零开销。`PinnedValBuffer.was_pinned` 字段记录此状态供调优。
+- **类型安全**: `WalpurgisScatterGuard.prepare()` 接受 `target_dtype` 为显式参数，
+  不依赖 self；`DistTensorScatter.execute()` 同样显式传 `dtype=`，无隐式状态。
+- **并发安全**: `prepare()` 是纯函数（输入tensor → 输出PinnedValBuffer），无副作用，
+  多 DataLoader worker 可安全并发调用。
+- **性能**: pin_memory() 在热路径（每次 __setitem__），但仅在 `not val.is_cuda`
+  时执行，已在 GPU 的 tensor 零开销。dtype 转换同原逻辑，不增加额外操作。
+
+---
+
 ## migrate b25bc88: Support Disjoint Sampling in cuGraph-PyG
 
 - **Upstream commit**: b25bc88 (cugraph-gnn, NVIDIA, 2026-05-22)
