@@ -296,6 +296,29 @@ public:
         // Start the copy (CPU-only simulation: immediate memcpy)
         // GPU mode would be: cudaMemcpyAsync(dst, src, size, kind, stream_);
         std::memcpy(dst_ptr, src_ptr, size);
+
+        // ═══ Stream sync barrier (from cugraph-gnn 466b5b9) ═══
+        // cugraph-gnn发现: scatter到host memory时, GPU kernel异步返回
+        // 但CPU侧以为数据已写回, 实际kernel还在跑 → 读到脏数据。
+        // 修复: 当目标是host层(DRAM), 在返回前插入同步屏障。
+        // GPU模式: cudaStreamSynchronize(stream_);
+        // CPU模式: memcpy本身是同步的, 这里加诊断fence验证一致性。
+        if (pm.dst_tier == MemoryTier::DRAM) {
+            // 诊断: 验证写入完整性 — 首尾字节校验
+            auto* src_bytes = static_cast<const uint8_t*>(src_ptr);
+            auto* dst_bytes = static_cast<const uint8_t*>(dst_ptr);
+            bool fence_ok = (size == 0) ||
+                (dst_bytes[0] == src_bytes[0] &&
+                 dst_bytes[size - 1] == src_bytes[size - 1]);
+            if (!fence_ok) {
+                std::cerr << "[MIGRATION FENCE FAIL] alloc=" << alloc_id
+                          << " size=" << size
+                          << " src_tier=" << static_cast<int>(src_tier)
+                          << " dst_tier=DRAM"
+                          << " — scatter data inconsistent after memcpy\n";
+            }
+            // GPU模式这里换成: cudaStreamSynchronize(migration_stream_);
+        }
         pm.completed = true;  // in CPU mode, memcpy is synchronous
 
         pending_.push(pm);

@@ -77,11 +77,24 @@ struct TemporalEdge {
     double   weight;
     int32_t  ts_start;
     int32_t  ts_end;
+    int64_t  etime;        // edge creation timestamp (from cugraph-gnn d4b52c9)
 
     TemporalEdge()
-        : source(0), destination(0), weight(0.0), ts_start(0), ts_end(0) {}
-    TemporalEdge(uint64_t s, uint64_t d, double w, int32_t t0, int32_t t1)
-        : source(s), destination(d), weight(w), ts_start(t0), ts_end(t1) {}
+        : source(0), destination(0), weight(0.0),
+          ts_start(0), ts_end(0), etime(0) {}
+    TemporalEdge(uint64_t s, uint64_t d, double w, int32_t t0, int32_t t1,
+                 int64_t et = 0)
+        : source(s), destination(d), weight(w),
+          ts_start(t0), ts_end(t1), etime(et) {}
+
+    bool before(const TemporalEdge& o) const { return etime < o.etime; }
+    void dump(const char* prefix = "edge") const {
+        std::cout << "[" << prefix << "] "
+                  << source << "->" << destination
+                  << " w=" << weight
+                  << " ts=[" << ts_start << "," << ts_end << "]"
+                  << " etime=" << etime << "\n";
+    }
 };
 #endif
 

@@ -70,6 +70,7 @@ struct TemporalEdge {
     double   weight;
     int32_t  ts_start;
     int32_t  ts_end;
+    int64_t  etime;        // edge creation timestamp (from cugraph-gnn d4b52c9)
 };
 
 // Memory tier — now maps to actual devices

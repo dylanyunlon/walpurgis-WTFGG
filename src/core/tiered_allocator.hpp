@@ -341,6 +341,13 @@ public:
     // Migrate an allocation to a different tier.
     // On the server: this issues cudaMemcpyAsync between devices.
     // Takes UNIQUE lock — structural mutation.
+    //
+    // ═══ Pinned memory DMA path (from cugraph-gnn 89c9e8d) ═══
+    // cugraph-gnn发现: val.cuda()把整个embedding强制拷进单卡HBM → OOM。
+    // 修复: val.pin_memory()只做CPU锁页, 让WholeGraph走DMA直通,
+    // 绕过"先全量拷进GPU"这一步。显存峰值从O(N*dim)降到接近0。
+    // 我们的对应: DRAM→HBM迁移时, 先在DRAM侧做pinned标记,
+    // 让异步引擎走DMA路径而不是full memcpy。
     bool migrate(uint64_t alloc_id, MemoryTier target) {
         std::unique_lock<std::shared_mutex> lk(mu_);  // M005: unique_lock
         auto it = registry_.find(alloc_id);
@@ -353,6 +360,12 @@ public:
         if (!budgets_[static_cast<int>(target)].try_reserve(sz)) {
             return false;  // target tier is full
         }
+
+        // ─── Pinned DMA vs full copy 选择 (from 89c9e8d) ───
+        // DRAM→HBM: GPU模式走pinned DMA, CPU模式标记为pinned-eligible
+        // HBM→DRAM: 直接拷贝, 不需要pin
+        bool use_pinned_path = (meta.current_tier == MemoryTier::DRAM &&
+                                (target == MemoryTier::HBM || target == MemoryTier::GDDR));
 
         // In CPU-dev: re-allocate + memcpy (simulates device transfer).
         // M008: Use slab allocator for small sizes on target tier.
@@ -369,7 +382,21 @@ public:
             budgets_[static_cast<int>(target)].release(sz);
             return false;
         }
-        ::memcpy(new_ptr, meta.base_ptr, sz);
+
+        if (use_pinned_path) {
+            // GPU模式: cudaHostRegister(meta.base_ptr, sz, cudaHostRegisterDefault)
+            //          cudaMemcpyAsync(new_ptr, meta.base_ptr, sz,
+            //                          cudaMemcpyHostToDevice, dma_stream_)
+            //          cudaStreamSynchronize(dma_stream_)
+            //          cudaHostUnregister(meta.base_ptr)
+            // CPU模式: 同样memcpy, 但记录pinned路径用于诊断
+            ::memcpy(new_ptr, meta.base_ptr, sz);
+            stats_pinned_dma_count_++;
+            stats_pinned_dma_bytes_ += sz;
+        } else {
+            ::memcpy(new_ptr, meta.base_ptr, sz);
+        }
+
         // Free old allocation through slab or OS
         int old_idx = static_cast<int>(meta.current_tier);
         if (is_slab_managed(sz)) {
@@ -565,12 +592,32 @@ public:
         // does not crash. In production, we'd use a separate tracking set.
     }
 
+    // ═══ Pinned DMA diagnostics (from cugraph-gnn 89c9e8d migration) ═══
+    // 在断点调试时 print 当前分配器状态: 各tier使用量 + DMA统计
+    void dump_state(const char* label = "TieredAllocator") const {
+        std::shared_lock<std::shared_mutex> lk(mu_);
+        std::cout << "[" << label << "] allocs=" << registry_.size();
+        const char* tier_names[] = {"HBM", "GDDR", "DRAM"};
+        for (int i = 0; i < static_cast<int>(MemoryTier::TIER_COUNT); ++i) {
+            size_t used = budgets_[i].used_bytes.load(std::memory_order_relaxed);
+            std::cout << " " << tier_names[i] << "="
+                      << used / 1024 << "KB/" << budgets_[i].capacity_bytes / 1024 << "KB";
+        }
+        std::cout << " pinned_dma_count=" << stats_pinned_dma_count_
+                  << " pinned_dma_bytes=" << stats_pinned_dma_bytes_
+                  << "\n";
+    }
+
 private:
     mutable std::shared_mutex mu_;       // M005: upgraded from std::mutex
     std::atomic<uint64_t> next_alloc_id_;
     std::unordered_map<uint64_t, AllocMeta> registry_;
     TierBudget budgets_[static_cast<int>(MemoryTier::TIER_COUNT)];
     mutable SlabAllocator slab_[static_cast<int>(MemoryTier::TIER_COUNT)];  // M008
+
+    // ═══ Pinned DMA stats (from 89c9e8d) ═══
+    uint64_t stats_pinned_dma_count_ = 0;
+    uint64_t stats_pinned_dma_bytes_ = 0;
 };
 
 }  // namespace philemon

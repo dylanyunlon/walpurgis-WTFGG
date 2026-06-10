@@ -92,10 +92,33 @@ struct TemporalEdge {
     int32_t  ts_start;     // interval start
     int32_t  ts_end;       // interval end
 
+    // ═══ Edge timestamp (from cugraph-gnn d4b52c9) ═══
+    // cugraph-gnn在GraphStore加了__etime_attr, 让temporal sampling能按
+    // 边的创建时间过滤邻居。我们对应加etime:
+    // - ts_start/ts_end: 边活跃的时间区间(已有)
+    // - etime: 边的精确创建时间戳(新增), 用于temporal neighbor sampling
+    //   的"only sample edges created before query time"约束
+    int64_t  etime;        // edge creation timestamp (nanoseconds or epoch)
+
     TemporalEdge()
-        : source(0), destination(0), weight(0.0), ts_start(0), ts_end(0) {}
-    TemporalEdge(uint64_t s, uint64_t d, double w, int32_t t0, int32_t t1)
-        : source(s), destination(d), weight(w), ts_start(t0), ts_end(t1) {}
+        : source(0), destination(0), weight(0.0),
+          ts_start(0), ts_end(0), etime(0) {}
+    TemporalEdge(uint64_t s, uint64_t d, double w, int32_t t0, int32_t t1,
+                 int64_t et = 0)
+        : source(s), destination(d), weight(w),
+          ts_start(t0), ts_end(t1), etime(et) {}
+
+    // 按etime排序 — temporal sampling需要按时间顺序遍历邻居
+    bool before(const TemporalEdge& o) const { return etime < o.etime; }
+
+    // 断点调试: dump单条边的完整状态
+    void dump(const char* prefix = "edge") const {
+        std::cout << "[" << prefix << "] "
+                  << source << "->" << destination
+                  << " w=" << weight
+                  << " ts=[" << ts_start << "," << ts_end << "]"
+                  << " etime=" << etime << "\n";
+    }
 };
 #endif
 
@@ -541,6 +564,79 @@ public:
             total += scan_partition(*p, ts_lo, ts_hi, std::forward<Callback>(cb));
         }
         return total;
+    }
+
+    // ═══ Temporal Neighbor Sampling (from cugraph-gnn d4b52c9 + 4005ab1) ═══
+    // cugraph-gnn在GraphStore加了edge timestamp (etime)支持,
+    // 然后在DistributedNeighborSampler加了temporal=True模式:
+    //   - 只采样etime < seed_time的边(forward-in-time约束)
+    //   - 4005ab1进一步标准化: 支持etime <= seed_time的等号情况
+    //
+    // 我们对应实现: 给定一个节点和查询时间, 返回etime在约束范围内的邻居。
+    // 这比scan_partition更精确——不是按区间范围, 而是按边的精确创建时间过滤。
+    //
+    // 断点调试: 每次采样打印seed_node、query_time、匹配数, 用于验证时序因果性。
+
+    struct TemporalSampleResult {
+        uint64_t seed_node;
+        int64_t  query_time;
+        uint64_t total_neighbors;       // partition范围内的总邻居数
+        uint64_t temporal_neighbors;    // 满足etime约束的邻居数
+        double   temporal_ratio;        // temporal_neighbors / total_neighbors
+    };
+
+    template <typename Callback>
+    TemporalSampleResult temporal_neighbor_sample(
+            uint64_t seed_node, int64_t query_time,
+            int32_t ts_lo, int32_t ts_hi,
+            Callback&& cb) const {
+        TemporalSampleResult result{seed_node, query_time, 0, 0, 0.0};
+        auto parts = query_partitions(ts_lo, ts_hi);
+
+        for (auto* p : parts) {
+            void* raw = allocator_.get_ptr(p->alloc_id);
+            if (!raw) continue;
+
+            const TemporalEdge* edges = reinterpret_cast<const TemporalEdge*>(raw);
+
+            // Binary search to first edge in time range
+            const TemporalEdge* edges_end = edges + p->edge_count;
+            const TemporalEdge* first = std::lower_bound(
+                edges, edges_end, ts_lo,
+                [](const TemporalEdge& e, int32_t val) {
+                    return e.ts_start < val;
+                });
+
+            for (const TemporalEdge* it = first; it != edges_end; ++it) {
+                if (it->ts_start > ts_hi) break;
+                // 邻居过滤: source匹配seed_node
+                if (it->source != seed_node && it->destination != seed_node)
+                    continue;
+                result.total_neighbors++;
+                // etime约束: 只采样在query_time之前创建的边(因果性)
+                if (it->etime <= query_time) {
+                    cb(*it);
+                    result.temporal_neighbors++;
+                }
+            }
+        }
+        result.temporal_ratio = result.total_neighbors > 0
+            ? static_cast<double>(result.temporal_neighbors) / result.total_neighbors
+            : 0.0;
+        return result;
+    }
+
+    // 断点调试: dump temporal sampling的完整状态
+    void dump_temporal_sample_state(const TemporalSampleResult& r,
+                                    const char* prefix = "TemporalSample") const {
+        std::cout << "[" << prefix << "]"
+                  << " seed=" << r.seed_node
+                  << " query_time=" << r.query_time
+                  << " total_nbrs=" << r.total_neighbors
+                  << " temporal_nbrs=" << r.temporal_neighbors
+                  << " ratio=" << r.temporal_ratio
+                  << " partitions=" << partitions_.size()
+                  << "\n";
     }
 
 

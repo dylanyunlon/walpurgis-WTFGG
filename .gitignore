@@ -50,3 +50,4 @@ logs/
 submodel_*.txt
 .claude-hk-config/
 submodel_response_*.txt
+philemon_bench
