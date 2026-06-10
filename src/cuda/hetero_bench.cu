@@ -31,6 +31,7 @@
 #include <cuda_runtime.h>
 #include <cstdio>
 #include <cstdint>
+#include <cinttypes>    // 90db89a Knuth fix: PRIu64 for portable uint64_t printf
 #include <cstdlib>
 #include <cstring>
 #include <cassert>
@@ -610,8 +611,13 @@ static void partition_and_place(
            "------", "--------------", "--------------------",
            "----------", "----------");
 
-    size_t tier_edges[4] = {};
-    size_t tier_bytes[4] = {};
+    // 90db89a migration: graph_store.py changed edge count dtype int32→int64
+    // to prevent overflow on large graphs.  Here we mirror that fix:
+    // tier_edges was size_t (32-bit on 32-bit platforms, silently truncates
+    // uint64_t edge_count).  Promoted to uint64_t for all platforms.
+    // 断点调试: print total edges per tier so overflow is immediately visible.
+    uint64_t tier_edges[4] = {};
+    uint64_t tier_bytes[4] = {};
 
     for (auto& p : ps.parts) {
         char ts_range[32];
@@ -632,7 +638,9 @@ static void partition_and_place(
     printf("\n  Tier Summary:\n");
     for (int i = 0; i < 4; ++i) {
         if (tier_edges[i] > 0) {
-            printf("    %-14s  %zu edges  (%.2f MB)\n",
+            // 断点调试: 90db89a — use PRIu64 for portable uint64_t printing
+            // (unsigned long is 32-bit on Windows x64, silently truncates)
+            printf("    %-14s  %" PRIu64 " edges  (%.2f MB)\n",
                    tier_name(static_cast<DeviceTier>(i)),
                    tier_edges[i],
                    tier_bytes[i] / (1024.0*1024.0));
@@ -1013,14 +1021,18 @@ static void experiment_concurrent(PartitionSet& ps) {
 
     // Show final partition layout after migration
     printf("\n  Post-migration tier distribution:\n");
-    size_t tier_edges[4] = {};
+    // 90db89a: promoted from size_t to uint64_t — mirrors int32→int64 fix
+    // for edge count dtype to prevent silent truncation on large graphs.
+    uint64_t tier_edges[4] = {};
     for (auto& p : ps.parts) {
         tier_edges[static_cast<int>(p.tier)] += p.edge_count;
     }
     for (int i = 0; i < 4; ++i) {
         if (tier_edges[i] > 0) {
-            printf("    %-14s  %zu edges\n",
-                   tier_name(static_cast<DeviceTier>(i)), tier_edges[i]);
+            // 断点调试: use PRIu64 for portable uint64_t printing (Knuth fix)
+            printf("    %-14s  %" PRIu64 " edges\n",
+                   tier_name(static_cast<DeviceTier>(i)),
+                   tier_edges[i]);
         }
     }
 }
