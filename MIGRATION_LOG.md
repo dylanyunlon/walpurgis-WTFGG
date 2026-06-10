@@ -3198,3 +3198,56 @@ if d > 0:           # 整除时 d==0，跳过切片，保留完整 perm
   3. **系统角度安全**: 无安全影响；删除 openmpi/gcc 等 C++ 构建依赖是正向安全收益（减少编译器/MPI 安装面）；`--extra-index-url=https://pypi.nvidia.com` 是生产 wheel 分发地址，需信任 NVIDIA PyPI 源，与 Walpurgis 无关
 
 - **迁移决策**: SKIP — 纯 build/CI 基础设施重构：删除 C++ 全栈构建逻辑、裁剪 conda 依赖矩阵、新增 pre-commit 配置。Walpurgis 无 `build.sh`、无 `conda/environments/`、无 `dependencies.yaml`、无 RAPIDS CI 体系；`.pre-commit-config.yaml` 中涉及的 `rapids-dependency-file-generator` 是 RAPIDS 专有工具，不适用。无任何可迁移的算法、API 或运行时代码。
+## migrate 2b2a25e: [SKIP] unneeded — 上游删除 mmio C 库及第三方 License，Walpurgis 无对应结构
+
+**上游 commit**: `2b2a25e` (BradReesWork, NVIDIA)
+**上游描述**: `unneeded`
+**作者**: BradReesWork <BradReesWork@users.noreply.github.com>
+**日期**: 2024-07-01
+
+**diff 分析**:
+- 变更范围: 4 个文件，691 行全部删除，0 行新增
+- 删除文件列表:
+  - `thirdparty/LICENSES/LICENSE.boost` — 23 行，Boost Software License 1.0（2003-08-17）
+  - `thirdparty/LICENSES/LICENSE.texas_state_university` — 24 行，Texas State University BSD-style License（2014-2020）
+  - `thirdparty/mmio/mmio.c` — 511 行，Matrix Market I/O ANSI C 库实现
+  - `thirdparty/mmio/mmio.h` — 133 行，Matrix Market I/O 头文件
+
+**diff 逐行深读**:
+
+**mmio.c（511 行）** 是 NIST math.nist.gov/MatrixMarket 的标准 C 稀疏矩阵 I/O 库，提供：
+- `mm_read_unsymmetric_sparse()` — 从 `.mtx` 文件读取非对称稀疏矩阵（real/sparse 格式），1-based 索引转 0-based
+- `mm_read_banner()` / `mm_read_mtx_crd_size()` / `mm_read_mtx_array_size()` — 解析 MatrixMarket banner 和尺寸头部，含跳过注释行（`line[0]=='%'`）逻辑
+- `mm_read_mtx_crd_data()` / `mm_read_mtx_crd_entry()` — 读取 complex/real/pattern 三种 typecode 的坐标数据，用 `%lg` 格式读 double
+- `mm_read_mtx_crd()` — 高层整合函数，支持 `stdin` 或文件路径，自动分配 `I[]`/`J[]`/`val[]` 内存
+- `mm_write_banner()` / `mm_write_mtx_crd_size()` / `mm_write_mtx_crd()` — 对应写入接口
+- `mm_typecode_to_str()` / `mm_strdup()` — typecode 4 字符数组转可读字符串，`mm_strdup` 补齐 ANSI C 无 strdup 的缺口
+
+**mmio.h（133 行）** 定义：
+- `MM_typecode` — `char[4]` 四字符类型码，编码 object/sparse-dense/data-type/storage-scheme
+- 大量 `mm_is_*` / `mm_set_*` macro，基于数组下标位操作判断/设置类型码
+- `mm_clear_typecode` macro：将前 3 位置 `' '`，第 4 位置 `'G'`（General 默认值）
+- 错误码常量：`MM_PREMATURE_EOF=12`、`MM_NO_HEADER=14`、`MM_UNSUPPORTED_TYPE=15` 等
+- 高层接口声明：`mm_read_mtx_crd()` / `mm_read_mtx_crd_data()` / `mm_read_mtx_crd_entry()`
+
+**Knuth 审查**:
+1. **diff 对比源**:
+   | 上游 2b2a25e `thirdparty/mmio/` + `thirdparty/LICENSES/` | Walpurgis 现有结构 |
+   |---|---|
+   | `mmio.c`/`mmio.h` — ANSI C 稀疏矩阵读写，依赖 `FILE*`/`malloc`/`fscanf` 等 C 标准库 | Walpurgis 无任何 `.c`/`.h` 文件，纯 Python 项目，无 C 编译链路 |
+   | `thirdparty/` 目录存放第三方 C 依赖源码 | Walpurgis 无 `thirdparty/` 目录；`upstream/` 仅存放参考 Python 项目（d2stgnn/morphgl/staeformer/titan/wholememory_ops） |
+   | `LICENSE.boost` / `LICENSE.texas_state_university` — 对应 mmio/Boost 的 C 库版权声明 | Walpurgis 无 C 依赖，无需携带此类 License；Python 依赖版权通过 pip wheel 分发机制管理 |
+   | Matrix Market 格式用于稀疏图基准测试数据集（`.mtx` 文件）读取 | Walpurgis 数据集为 METR-LA 交通传感器时序（h5/npz 格式），通过 `prepare_metrla.py` 处理，无 `.mtx` 文件 |
+   | 上游 cugraph-gnn 曾在图算法 benchmark 中使用 mmio 读取标准稀疏矩阵测试图 | Walpurgis 的图结构通过 PyG `Data`/`HeteroData` 对象在内存中构建，无需外部 `.mtx` 文件 I/O |
+
+2. **用户角度 bug**:
+   - `mm_read_unsymmetric_sparse()` 在 `fscanf(f, "%d %d %lg\n", ...)` 中使用 `\n` 终止符——在 Windows 换行符（`\r\n`）的 `.mtx` 文件上会导致 `\r` 残留在缓冲区，使后续读取错位；但这是上游已删除的 legacy bug，与 Walpurgis 无关
+   - `mm_read_mtx_crd()` 中为 `*I`/`*J`/`*val` 分配内存后若 `mm_read_mtx_crd_data()` 返回错误，未释放已分配内存，形成内存泄漏；上游删除后消除，与 Walpurgis 无关
+   - `mm_typecode_to_str()` 中 `sprintf(buffer, "%s %s %s %s", ...)` 对 `buffer[MM_MAX_LINE_LENGTH]`（1025 字节）写入四个 token，理论上不会溢出（4×64 < 1025），但无显式边界检查；已随文件删除消除
+
+3. **系统角度安全**:
+   - `mm_read_unsymmetric_sparse()` / `mm_read_mtx_crd()` 中 `malloc(nz * sizeof(int))` 未检查返回值——若 `nz` 极大或内存耗尽，`malloc` 返回 NULL，后续 `fscanf(..., &I[i], ...)` 对 NULL 解引用触发段错误；属于 C 层安全缺陷，随文件删除彻底消除，Walpurgis 无继承风险
+   - `mm_read_mtx_crd_size()` 中 `while (num_items_read != 3)` 无终止条件——若文件格式完全损坏或恶意构造，可陷入无限循环阻塞进程；删除消除此风险，Walpurgis 无对应暴露面
+   - `LICENSE.texas_state_university` 携带 BSD 3-Clause 限制（广告条款：分发时需在文档中声明 Texas State University 版权）；删除该 License 文件意味着上游不再需要此 C 库，无版权合规继承压力；Walpurgis 从未引入此库，无需处理
+
+**迁移决策**: SKIP — 4 个文件全为 ANSI C 稀疏矩阵 I/O 库（mmio）及其对应第三方 License 的删除操作。Walpurgis 是纯 Python 时空图 GNN 项目（PyG + PyTorch + METR-LA h5/npz 数据集），无 C 编译链路、无 `thirdparty/` 目录、无 Matrix Market `.mtx` 文件读取需求、无任何对 mmio API 的引用（`grep` 全库确认零匹配）。强行在 Walpurgis 中创建再删除这 4 个文件将制造纯噪音 commit，无任何工程价值。
