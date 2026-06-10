@@ -1,6 +1,6 @@
 """
 run_multi_seed.py — Phase 2 多种子评估 (M401-M425)
-在SYNTH上跑 SEED=123, SEED=456 各3 epoch，写入 experiments/results/multi_seed.json。
+在SYNTH上跑 SEED=42, 123, 456 各3 epoch，写入 experiments/results/multi_seed.json。
 直接复用 run_ablation.py 的 trainer engine 模式。
 """
 import os
@@ -29,7 +29,6 @@ def _resolve_path(rel_path, base=None):
 
 
 def build_model_and_data(config_path, seed):
-    """데이터와 model_args를 구축하여 반환 (run_ablation.py와 동일 패턴)。"""
     torch.manual_seed(seed)
     np.random.seed(seed)
 
@@ -77,22 +76,20 @@ def build_model_and_data(config_path, seed):
 def run_one_seed(seed, config, model_args, optim_args,
                  dataloader, scaler, _max, _min, device,
                  num_epochs=3):
-    """指定seedでモデルを構築し num_epochs 訓練、best val MAEを返す。"""
     torch.manual_seed(seed)
     np.random.seed(seed)
 
     model = D2STGNN(**model_args).to(device)
 
-    total_epochs = num_epochs
     save_path = os.path.join(_REPO_ROOT, 'output', f'multi_seed_{seed}.pt')
     os.makedirs(os.path.join(_REPO_ROOT, 'output'), exist_ok=True)
 
-    engine = trainer(scaler, model, **optim_args)
+    engine = trainer(dataloader['scaler'], model, **optim_args)
     early_stopping = EarlyStopping(optim_args['patience'], save_path)
 
     val_maes = []
 
-    for epoch in range(1, total_epochs + 1):
+    for epoch in range(1, num_epochs + 1):
         train_loss = []
         dataloader['train_loader'].shuffle()
         batch_num = (epoch - 1) * len(dataloader['train_loader'])
@@ -112,7 +109,7 @@ def run_one_seed(seed, config, model_args, optim_args,
         mvalid_loss, mvalid_mape, mvalid_rmse = engine.eval(
             device, dataloader, f'seed_{seed}',
             _max=_max, _min=_min)
-        val_maes.append(float(mvalid_loss))
+        val_maes.append(round(float(mvalid_loss), 4))
 
         print(f"  [seed={seed}] Epoch {epoch:02d} | "
               f"Train MAE={np.mean(train_loss):.4f} | "
@@ -132,7 +129,7 @@ def main():
     config_path = os.path.join(
         _REPO_ROOT, 'src', 'walpurgis', 'configs', 'SYNTH.yaml')
 
-    seeds = [123, 456]
+    seeds = [42, 123, 456]
     num_epochs = 3
 
     print("=" * 60)
@@ -157,15 +154,19 @@ def main():
         results[f"seed_{seed}"] = {
             "seed": seed,
             "best_val_mae": round(best_val, 4),
-            "per_epoch_val_mae": [round(v, 4) for v in per_epoch],
+            "per_epoch_val_mae": per_epoch,
         }
 
-    # 与已知seed=42基线对比 (来自ablation.json)
-    baseline_mae_seed42 = 5.0362
+    # 以seed=42为基准，计算相对变化
+    baseline_mae = results["seed_42"]["best_val_mae"]
     for key, v in results.items():
-        delta = round(v["best_val_mae"] - baseline_mae_seed42, 4)
-        v["delta_vs_seed42"] = delta
-        v["pct_change_vs_seed42"] = round(delta / baseline_mae_seed42 * 100, 2)
+        if v["seed"] == 42:
+            v["delta_vs_seed42"] = 0.0
+            v["pct_change_vs_seed42"] = 0.0
+        else:
+            delta = round(v["best_val_mae"] - baseline_mae, 4)
+            v["delta_vs_seed42"] = delta
+            v["pct_change_vs_seed42"] = round(delta / baseline_mae * 100, 2)
 
     all_best = [results[f"seed_{s}"]["best_val_mae"] for s in seeds]
     multi_seed_doc = {
@@ -174,7 +175,6 @@ def main():
         "epochs_per_seed": num_epochs,
         "seeds_run": seeds,
         "device": "cpu",
-        "seed42_reference_mae": baseline_mae_seed42,
         "results": results,
         "summary": {
             "all_seeds_best_mae": {
@@ -183,10 +183,22 @@ def main():
             },
             "mean_best_mae": round(float(np.mean(all_best)), 4),
             "std_best_mae": round(float(np.std(all_best)), 4),
+            "min_best_mae": round(float(np.min(all_best)), 4),
+            "max_best_mae": round(float(np.max(all_best)), 4),
             "interpretation": (
-                "Multi-seed validation confirms model stability across different "
-                "random initializations on SYNTH (3 epoch CPU runs)."
+                "Multi-seed SYNTH validation (3 epoch CPU). "
+                "METR-LA full 200-epoch runs require server (ags1 GPU). "
+                "See experiments/run_server_experiment.sh for server instructions."
             ),
+        },
+        "metrla_note": {
+            "status": "requires_server",
+            "reason": "METR-LA has 207 nodes x 23974 samples; "
+                      "full training needs GPU (ags1 A6000/H100).",
+            "server_cmd": "for SEED in 42 123 456; do SEED=$SEED GPU=2 EPOCHS=200 "
+                          "bash experiments/run_server_experiment.sh; done",
+            "seed42_verified_mae": 2.93,
+            "seed42_source": "walpurgis_metrla_verified.json (14 epochs on ags1)"
         },
         "total_time_s": round(time.time() - t0, 1),
         "conducted_by": "Claude-5 M401-M425 (Phase 2 multi-seed)",
@@ -200,14 +212,14 @@ def main():
 
     print("\n" + "=" * 60)
     print(f"  多种子实验完成! 结果写入: {out_path}")
-    print(f"  seed=42 参考 MAE : {baseline_mae_seed42:.4f}")
     for s in seeds:
         r = results[f"seed_{s}"]
-        print(f"  seed={s:<4}  best_val_MAE={r['best_val_mae']:.4f}  "
-              f"(Δ{r['delta_vs_seed42']:+.4f}, {r['pct_change_vs_seed42']:+.1f}%)")
-    mean_mae = multi_seed_doc['summary']['mean_best_mae']
-    std_mae = multi_seed_doc['summary']['std_best_mae']
-    print(f"  mean±std : {mean_mae:.4f} ± {std_mae:.4f}")
+        delta_str = f"(Δ{r['delta_vs_seed42']:+.4f})" if r['seed'] != 42 else "(baseline)"
+        print(f"  seed={s:<4}  best_val_MAE={r['best_val_mae']:.4f}  {delta_str}")
+    print(f"  mean±std : {multi_seed_doc['summary']['mean_best_mae']:.4f} "
+          f"± {multi_seed_doc['summary']['std_best_mae']:.4f}")
+    print(f"  [METR-LA] seed=42 verified MAE=2.93 (server run). "
+          f"Full multi-seed needs ags1 GPU.")
     print("=" * 60)
 
     return multi_seed_doc

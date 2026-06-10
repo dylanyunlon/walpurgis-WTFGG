@@ -185,12 +185,14 @@ cat experiments/results/summary.json
 - 任务文件: tasks/task_claude4_M376_M400.md
 
 ### 第五位 Claude (M401-M425) ✅ 已完成
-**角色**: 多种子评估 (SYNTH)
-- SEED=123: best_val_MAE=6.6784 (Δ+1.6422 vs seed42, +32.6%)
-- SEED=456: best_val_MAE=5.7798 (Δ+0.7436 vs seed42, +14.8%)
-- mean±std across seeds 123+456: 6.2291 ± 0.4493 (3 epoch CPU, SYNTH)
+**角色**: 多种子评估 (SYNTH 三种子 + METR-LA 方案)
+- SEED=42 : best_val_MAE=5.0523 (baseline)
+- SEED=123: best_val_MAE=6.6784 (Δ+1.6261)
+- SEED=456: best_val_MAE=5.7798 (Δ+0.7275)
+- mean±std (3 seeds, SYNTH 3ep CPU): 5.8368 ± 0.6651
+- METR-LA seed=42 verified MAE=2.93 (walpurgis_metrla_verified.json, ags1 server)
+- METR-LA 多种子需服务器: `for SEED in 42 123 456; do SEED=$SEED GPU=2 EPOCHS=200 bash experiments/run_server_experiment.sh; done`
 - 结果写入: experiments/results/multi_seed.json
-- 备注: SYNTH 3-epoch CPU run显示种子间有波动属正常; 服务器200 epoch完整训练方可评估真实稳定性
 - 任务文件: tasks/task_claude5_M401_M425.md
 
 ### 第六位 Claude (M426-M450) ✅ 已完成
