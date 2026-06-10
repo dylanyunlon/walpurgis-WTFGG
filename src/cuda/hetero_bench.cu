@@ -317,10 +317,32 @@ public:
     }
 
     // Copy between any two tiers (async on stream)
+    // NOTE: This function is intentionally kept async (no cudaStreamSynchronize).
+    // For scatter operations whose output is host memory, callers MUST call
+    // scatter_sync_if_host() after this to guarantee visibility.
+    // Pattern: 466b5b9 adds sync at the Python-interface boundary
+    // (wholememory_scatter_mapped), NOT inside internal gather/scatter helpers.
     void copy_async(DeviceTier dst_tier, void* dst,
                     DeviceTier src_tier, const void* src,
                     size_t size, cudaStream_t stream) {
         CUDA_CHECK(cudaMemcpyAsync(dst, src, size, cudaMemcpyDefault, stream));
+    }
+
+    // ═══ 466b5b9 migration: explicit scatter-to-host synchronization ═══
+    // Call this after copy_async when dst_tier == HOST_DRAM, at the last
+    // scatter before user-visible host memory access.
+    // Mirrors scatter_op_impl_mapped.cu:
+    //   WM_CUDA_CHECK(cudaStreamSynchronize(stream));  // added in 466b5b9
+    //
+    // Separation of concerns: copy_async stays async (correct for E4 bandwidth),
+    // scatter_sync_if_host provides the mandatory barrier at the interface boundary.
+    void scatter_sync_if_host(DeviceTier dst_tier, cudaStream_t stream) {
+        if (dst_tier == DeviceTier::HOST_DRAM) {
+            // 断点调试: 打印D2H scatter sync触发，确认466b5b9 barrier位置正确
+            printf("[DEBUG 466b5b9 scatter_sync_if_host] dst=HOST_DRAM, "
+                   "cudaStreamSynchronize(stream=%p)\n", (void*)stream);
+            CUDA_CHECK(cudaStreamSynchronize(stream));
+        }
     }
 
     void print_usage() const {
@@ -686,6 +708,27 @@ static QueryResult cross_tier_query(
             // Host partition: direct memcpy, no CUDA event needed
             memcpy(gathered[gi].host_edges.data(), p.dev_ptr, p.size_bytes);
             events[gi] = nullptr;
+        }
+    }
+
+    // ═══ 466b5b9 migration: stream sync before scatter reaches host memory ═══
+    // cugraph-gnn bug: scatter output can be on host (emb_device='cpu'); without
+    // explicit synchronization, the CPU reads stale/partial data from the stream.
+    // Fix: cudaStreamSynchronize(stream) before any host-side access.
+    // Unlike gather (output stays on device), D2H scatter REQUIRES this barrier.
+    // Ref: wholememory_ops/scatter_op_impl_mapped.cu +WM_CUDA_CHECK(cudaStreamSynchronize(stream))
+    //
+    // Adaptation note: we keep cudaEventSynchronize for latency accounting but
+    // add an explicit stream sync per-partition so no pending stream work can
+    // race against the CPU scan in Step 3.
+    for (size_t gi = 0; gi < overlap_ids.size(); ++gi) {
+        auto& p = ps.parts[overlap_ids[gi]];
+        if (tier_to_gpu(p.tier) >= 0 && p.stream != nullptr) {
+            // 断点调试: 打印每个partition的stream sync以确认466b5b9 barrier生效
+            printf("[DEBUG 466b5b9 scatter-sync] partition=%zu dev=%d stream=%p "
+                   "→ host, calling cudaStreamSynchronize\n",
+                   overlap_ids[gi], tier_to_gpu(p.tier), (void*)p.stream);
+            CUDA_CHECK(cudaStreamSynchronize(p.stream));
         }
     }
 

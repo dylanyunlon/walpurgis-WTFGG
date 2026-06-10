@@ -367,13 +367,37 @@ public:
         // GPU mode would be: cudaMemcpyAsync(dst, src, size, kind, stream_);
         std::memcpy(dst_ptr, src_ptr, size);
 
-        // ═══ Stream sync barrier (from cugraph-gnn 466b5b9) ═══
-        // cugraph-gnn发现: scatter到host memory时, GPU kernel异步返回
-        // 但CPU侧以为数据已写回, 实际kernel还在跑 → 读到脏数据。
-        // 修复: 当目标是host层(DRAM), 在返回前插入同步屏障。
-        // GPU模式: cudaStreamSynchronize(stream_);
-        // CPU模式: memcpy本身是同步的, 这里加诊断fence验证一致性。
+        // ═══ 466b5b9 migration: stream sync before scatter reaches host memory ═══
+        // cugraph-gnn bug (466b5b9): scatter output can be on host (emb_device='cpu').
+        // Without explicit sync, the GPU stream is still in-flight when CPU reads
+        // the destination buffer -> stale/partial data.
+        //
+        // Fix (scatter_op_impl_mapped.cu line added in 466b5b9):
+        //   WM_CUDA_CHECK(cudaStreamSynchronize(stream));
+        //
+        // walpurgis adaptation:
+        //   GPU mode  -> cudaStreamSynchronize(migration_stream_) [see TODO]
+        //   CPU mode  -> memcpy is synchronous, but we add:
+        //               (a) std::atomic_thread_fence(seq_cst) for memory ordering
+        //               (b) first/last byte integrity check for debug visibility
+        //               (c) stderr print so the fence is always traceable
+        //
+        // Note: unlike gather (output stays on GPU device memory), D2H scatter
+        // is the ONLY path that requires this barrier. Matches 466b5b9 commit:
+        // "Unlike the gather operation, where the output is always in device
+        // memory, host side synchronization is unnecessary [for gather]."
         if (pm.dst_tier == MemoryTier::DRAM) {
+            // 断点调试: 每次DRAM scatter都打印fence触发，确认466b5b9 barrier生效
+            fprintf(stderr,
+                "[466b5b9 scatter-sync] alloc=%lu size=%zu %d->DRAM "
+                "inserting host memory fence (GPU: cudaStreamSynchronize)\n",
+                (unsigned long)alloc_id, size, static_cast<int>(src_tier));
+
+            // CPU-mode memory fence: ensures all stores from memcpy() above are
+            // visible to any thread that reads pm.completed == true.
+            // GPU mode equivalent: cudaStreamSynchronize(migration_stream_);
+            std::atomic_thread_fence(std::memory_order_seq_cst);
+
             // 诊断: 验证写入完整性 — 首尾字节校验
             auto* src_bytes = static_cast<const uint8_t*>(src_ptr);
             auto* dst_bytes = static_cast<const uint8_t*>(dst_ptr);
@@ -381,13 +405,21 @@ public:
                 (dst_bytes[0] == src_bytes[0] &&
                  dst_bytes[size - 1] == src_bytes[size - 1]);
             if (!fence_ok) {
-                std::cerr << "[MIGRATION FENCE FAIL] alloc=" << alloc_id
-                          << " size=" << size
-                          << " src_tier=" << static_cast<int>(src_tier)
-                          << " dst_tier=DRAM"
-                          << " — scatter data inconsistent after memcpy\n";
+                fprintf(stderr,
+                    "[466b5b9 FENCE FAIL] alloc=%lu size=%zu src_tier=%d "
+                    "dst_tier=DRAM -- scatter data inconsistent: "
+                    "src[0]=%02x dst[0]=%02x src[last]=%02x dst[last]=%02x\n",
+                    (unsigned long)alloc_id, size, static_cast<int>(src_tier),
+                    src_bytes[0], dst_bytes[0],
+                    src_bytes[size-1], dst_bytes[size-1]);
+            } else {
+                fprintf(stderr,
+                    "[466b5b9 fence OK] alloc=%lu size=%zu integrity verified\n",
+                    (unsigned long)alloc_id, size);
             }
-            // GPU模式这里换成: cudaStreamSynchronize(migration_stream_);
+            // TODO (GPU mode): replace the fence above with:
+            //   CudaRtLoader::syms().cudaStreamSync_fn(migration_stream_);
+            // This is the exact cudaStreamSynchronize(stream) from 466b5b9.
         }
         pm.completed = true;  // in CPU mode, memcpy is synchronous
 
