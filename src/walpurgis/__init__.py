@@ -476,3 +476,62 @@ class CascadeResidualTracker:
             bar = "#" * int(pct / 2)
             print(f"  Layer {i}: norm={avg:.4f} "
                   f"({pct:.1f}%) {bar}", file=sys.stderr)
+
+
+# ─── Phase 3: 空间自注意力追踪 ───────────────────────────
+class SpatialAttnTracker:
+    """追踪SpatialSelfAttention的门控强度与注意力熵轨迹
+    断点诊断要点:
+      - gate应从~0.12逐渐上升; 若长期<0.05说明模块被骨干抑制(无效)
+      - entropy接近log(N)=均匀分布(没学到结构); 接近0=单点坍缩(过拟合某节点)
+      - 健康区间: 大约0.3*log(N) ~ 0.85*log(N)
+    """
+    def __init__(self, num_nodes=None):
+        self.records = []
+        self.num_nodes = num_nodes
+
+    def record(self, gate, entropy, out_norm=None):
+        if isinstance(gate, torch.Tensor):
+            gate = gate.item()
+        if isinstance(entropy, torch.Tensor):
+            entropy = entropy.item()
+        self.records.append({
+            'gate': gate, 'entropy': entropy,
+            'out_norm': (out_norm.item()
+                         if isinstance(out_norm, torch.Tensor)
+                         else out_norm)})
+
+    def report(self):
+        if not _is_debug() or not self.records:
+            return
+        gates = [r['gate'] for r in self.records]
+        ents = [r['entropy'] for r in self.records]
+        recent_g = np.mean(gates[-20:])
+        recent_e = np.mean(ents[-20:])
+        print(f"\n[CAS-SPATTN] Spatial Self-Attention "
+              f"({len(self.records)} records):", file=sys.stderr)
+        print(f"  gate: first={gates[0]:.4f} "
+              f"recent={recent_g:.4f} "
+              f"trend={'UP' if recent_g > gates[0] else 'DOWN'}",
+              file=sys.stderr)
+        if self.num_nodes:
+            max_ent = float(np.log(self.num_nodes))
+            ratio = recent_e / max_ent
+            print(f"  entropy: recent={recent_e:.4f} "
+                  f"/ log(N)={max_ent:.4f} (ratio={ratio:.2f})",
+                  file=sys.stderr)
+            if ratio > 0.95:
+                print("  !! attention nearly UNIFORM — "
+                      "spatial structure not learned yet",
+                      file=sys.stderr)
+            elif ratio < 0.10:
+                print("  !! attention COLLAPSED to few nodes — "
+                      "check dropout/lr", file=sys.stderr)
+        if recent_g < 0.05:
+            print("  !! gate suppressed (<0.05) — module "
+                  "effectively disabled by backbone",
+                  file=sys.stderr)
+        _diag_write({
+            "ts": time.time(), "tag": "spatial_attn_summary",
+            "gate_first": gates[0], "gate_recent": recent_g,
+            "entropy_recent": recent_e})

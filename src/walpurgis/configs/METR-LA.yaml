@@ -21,6 +21,7 @@ model_args:
   k_s: 2
   gap: 3
   num_modalities: 2
+  use_spatial_attn: True
 optim_args:
   lrate: 0.001
   print_model: False

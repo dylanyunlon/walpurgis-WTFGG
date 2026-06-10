@@ -9,6 +9,8 @@ D2STGNN — Cascade变体
      forecast贡献是否被采纳, 实现推理时的动态深度
   4. 输出头: GELU激活 + LayerNorm + 残差shortcut
   5. embedding后接SE通道注意力块 (Cascade特有)
+  6. [Phase 3] 空间自注意力 (from STAEformer): 节点维multi-head attention,
+     门控残差注入+Pre-LN+轻量FFN+时间分块, 入口空间/出口时序对称结构
 """
 import torch
 import torch.nn as nn
@@ -178,6 +180,79 @@ class TemporalCrossAttention(nn.Module):
         return residual + out
 
 
+class SpatialSelfAttention(nn.Module):
+    """空间自注意力 — 从STAEformer的spatial AttentionLayer移植 (Phase 3 鲁迅拿法)
+    对节点维度N做multi-head self-attention: 动态图卷积只能传播k_s跳邻域,
+    attention可以一步连接任意两个传感器, 捕获超越图结构的全局空间依赖。
+    改写点 (~20%, vs upstream/staeformer/STAEformer.py:AttentionLayer):
+      1. 门控残差注入: sigmoid(spa_gate)控制强度, 初始-3.0→0.047极温和启动, 由训练自学开门(与CL sigmoid ramp同哲学)
+         (STAEformer是硬残差x+attn, 在已收敛的cascade骨干上硬注入会扰动训练)
+      2. Pre-LayerNorm (STAEformer是Post-LN) — 深骨干上pre-norm梯度更稳
+      3. 轻量FFN dim*2 (STAEformer用2048) — 控制参数量与显存
+      4. 时间维分块计算 — 与本项目chunked gconv同思路, 控制[B*L,h,N,N]峰值
+      5. 注意力熵诊断 — 监控attention是否退化(均匀=log N)或坍缩(→0)
+    """
+    def __init__(self, dim, num_heads=4, dropout=0.1, time_chunk=6):
+        super().__init__()
+        assert dim % num_heads == 0, \
+            f"dim={dim} must be divisible by num_heads={num_heads}"
+        self.num_heads = num_heads
+        self.head_dim = dim // num_heads
+        self.scale = self.head_dim ** -0.5
+        self.time_chunk = time_chunk
+        self.ln = nn.LayerNorm(dim)
+        self.qkv = nn.Linear(dim, 3 * dim, bias=False)
+        self.out_proj = nn.Linear(dim, dim)
+        self.ffn_ln = nn.LayerNorm(dim)
+        self.ffn = nn.Sequential(
+            nn.Linear(dim, dim * 2),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(dim * 2, dim))
+        self.dropout = nn.Dropout(dropout)
+        # 门控: sigmoid(-3.0)≈0.047, 早期几乎不扰动骨干, 训练中自学注入强度
+        self.spa_gate = nn.Parameter(torch.tensor(-3.0))
+        self._last_entropy = None  # 断点诊断: 最近一次注意力熵
+
+    def _attend(self, x_flat):
+        # x_flat: [B*Lc, N, D] — attention over node dim N
+        BL, N, D = x_flat.shape
+        qkv = self.qkv(x_flat).reshape(
+            BL, N, 3, self.num_heads, self.head_dim)
+        qkv = qkv.permute(2, 0, 3, 1, 4)  # [3, BL, h, N, hd]
+        q, k, v = qkv[0], qkv[1], qkv[2]
+        attn = (q @ k.transpose(-2, -1)) * self.scale  # [BL, h, N, N]
+        attn = attn.softmax(dim=-1)
+        with torch.no_grad():
+            self._last_entropy = -(
+                attn * attn.clamp(min=1e-9).log()
+            ).sum(-1).mean()
+        attn = self.dropout(attn)
+        out = (attn @ v).transpose(1, 2).reshape(BL, N, D)
+        return self.out_proj(out)
+
+    def forward(self, x):
+        # x: [B, L, N, D]
+        B, L, N, D = x.shape
+        h = self.ln(x)  # pre-norm
+        outs = []
+        for s in range(0, L, self.time_chunk):
+            chunk = h[:, s:s + self.time_chunk]
+            Lc = chunk.shape[1]
+            o = self._attend(chunk.reshape(B * Lc, N, D))
+            outs.append(o.reshape(B, Lc, N, D))
+        attn_out = torch.cat(outs, dim=1)
+        gate = torch.sigmoid(self.spa_gate)
+        x = x + gate * attn_out                  # 门控残差注入
+        x = x + gate * self.ffn(self.ffn_ln(x))  # 轻量FFN, 同门控
+        _dbg("spatial_attn.gate", gate, "model")
+        if self._last_entropy is not None:
+            _dbg("spatial_attn.entropy", self._last_entropy, "model")
+        _dbg("spatial_attn.out_norm",
+             attn_out.detach().norm(), "model")
+        return x
+
+
 class D2STGNN(nn.Module):
     def __init__(self, **model_args):
         super().__init__()
@@ -277,6 +352,17 @@ class D2STGNN(nn.Module):
             self._forecast_dim, num_heads=2,
             dropout=model_args.get('dropout', 0.1))
 
+        # ═══ 从STAEformer移植: 空间自注意力 (Phase 3) ═══
+        # 在embedding+自适应嵌入后、decouple层前对节点维做self-attention
+        # 与输出头temporal attention形成"入口空间/出口时序"对称结构
+        # use_spatial_attn: False 时完全跳过 (消融实验用)
+        self._use_spatial_attn = model_args.get(
+            'use_spatial_attn', True)
+        if self._use_spatial_attn:
+            self.spatial_attn = SpatialSelfAttention(
+                self._hidden_dim, num_heads=4,
+                dropout=model_args.get('dropout', 0.1))
+
         self.reset_parameter()
 
     def reset_parameter(self):
@@ -365,6 +451,20 @@ class D2STGNN(nn.Module):
         _dbg("adaptive_emb.gate", gate_val, "model")
         _dbg("adaptive_emb.feat_norm", adp_feat.detach().norm(), "model")
         dataflow_checkpoint("model.post_adaptive_emb", history_data)
+
+        # ═══ 空间自注意力 (从STAEformer移植, Phase 3) ═══
+        if self._use_spatial_attn:
+            history_data = self.spatial_attn(history_data)
+            dataflow_checkpoint(
+                "model.post_spatial_attn", history_data)
+            dump_struct_state(
+                "spatial_attn",
+                features=history_data,
+                gate_raw=float(self.spatial_attn.spa_gate.item()),
+                attn_entropy=(
+                    float(self.spatial_attn._last_entropy.item())
+                    if self.spatial_attn._last_entropy is not None
+                    else -1.0))
 
         dif_forecast_hidden_list = []
         inh_forecast_hidden_list = []
