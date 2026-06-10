@@ -190,7 +190,7 @@ cat experiments/results/summary.json
 - SEED=123: best_val_MAE=6.6784 (Δ+1.6261)
 - SEED=456: best_val_MAE=5.7798 (Δ+0.7275)
 - mean±std (3 seeds, SYNTH 3ep CPU): 5.8368 ± 0.6651
-- METR-LA seed=42 verified MAE=2.93 (walpurgis_metrla_verified.json, ags1 server)
+- METR-LA seed=42 verified MAE=2.93 (METR-LA_seed42.json, ags1 server)
 - METR-LA 多种子需服务器: `for SEED in 42 123 456; do SEED=$SEED GPU=2 EPOCHS=200 bash experiments/run_server_experiment.sh; done`
 - 结果写入: experiments/results/multi_seed.json
 - 任务文件: tasks/task_claude5_M401_M425.md
@@ -225,3 +225,36 @@ cat experiments/results/summary.json
 **原理**: 在cascade聚合后、regression前，对时间维度做2-head self-attention。
 捕获输出序列步间的依赖关系（e.g. h3和h6的关联）。
 **预期效果**: 更一致的多步预测，减少远horizon退化。
+
+---
+
+## Phase 3: 空间自注意力 + 服务器闭环 (M451-M600)
+
+### 第一位 Claude (M451-M475) ✅ 本轮主控 (当前)
+**角色**: 算法移植 (鲁迅拿法) + 仓库治理 + 派发基建
+- 从STAEformer移植: 空间自注意力 SpatialSelfAttention (节点维multi-head attention)
+  改写~20%: 门控残差(init -3.0→0.047, CL ramp同哲学) + Pre-LN + 轻量FFN dim*2 + 时间分块 + 注意力熵诊断
+- SYNTH 3ep A/B (seed42, CPU): OFF Best Val 5.2510 → ON 4.4708 (-14.9%), 零NaN/Inf
+  (gate init -2.0 时为 6.5641, 证实早期扰动假设, 故降至 -3.0)
+- 断点调试扩展: SpatialAttnTracker (gate轨迹/熵/log(N)量尺) + dataflow_checkpoint + dump_struct_state
+- 后缀清理: verified→METR-LA_seed42.json, headtohead折叠进run_baselines.sh, output/并入experiments/results/
+- 派发修复: claude_hk_chat.sh org动态解析(/api/organizations) + CONV_ID续传(截断后发Continue)
+- 消融开关: configs 中 use_spatial_attn (Claude-4用)
+
+### 第二位 Claude (M476-M500) — 已派发
+**角色**: 服务器 METR-LA 200ep 完整实验 (空间自注意力首战)
+- 任务文件: tasks/task_claude2_M476_M500.md
+- 服务器先 git pull (旧checkout报GIT_TOKEN unbound, 已修), 然后 GPU=2 EPOCHS=200 bash experiments/run_server_experiment.sh
+- 判据: <2.85 SOTA / 2.85-2.90 微调spa_gate或heads / >2.93 回退use_spatial_attn=False并记录消融
+
+### 第三位 Claude (M501-M525) — 待执行
+**角色**: 多种子评估 42/123/456 + 汇总 multi_seed (服务器)
+
+### 第四位 Claude (M526-M550) — 待执行
+**角色**: 消融实验 use_spatial_attn=False 对照 + 既有组件逐项关闭
+
+### 第五位 Claude (M551-M575) — 待执行
+**角色**: TeX 数据填充 (SOTA表/per-horizon/消融表) + pdflatex 两遍编译
+
+### 第六位 Claude (M576-M600) — 待执行
+**角色**: PEMS-BAY 扩展 (若 METR-LA MAE < 2.85)

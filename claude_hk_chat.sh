@@ -30,6 +30,24 @@ if [ -z "$COOKIE" ] || [ -z "$ORG_ID" ]; then
     echo "ERROR: Cannot extract cookie/org"; exit 1
 fi
 
+# ── org 动态解析: raw_curl.txt里的orgid可能过期, 以cookie实际所属org为准 ──
+ORG_LIVE=$(curl -s "${ORIGIN}/api/organizations" \
+    -H "accept: application/json" -b "$COOKIE" 2>/dev/null | python3 -c "
+import sys, json
+try:
+    orgs = json.load(sys.stdin)
+    if isinstance(orgs, list) and orgs:
+        print(orgs[0].get('uuid', ''))
+except Exception:
+    pass" 2>/dev/null || echo "")
+if [ -n "$ORG_LIVE" ]; then
+    if [ "$ORG_LIVE" != "$ORG_ID" ]; then
+        echo "Org updated: raw_curl=$ORG_ID -> live=$ORG_LIVE"
+    fi
+    ORG_ID="$ORG_LIVE"
+fi
+echo "Org: $ORG_ID"
+
 if [ -n "${TASK_FILE:-}" ] && [ -f "$TASK_FILE" ]; then
     PROMPT=$(cat "$TASK_FILE")
 elif [ $# -gt 0 ]; then
@@ -45,15 +63,19 @@ ESCAPED_PROMPT=$(python3 -c "import json,sys; print(json.dumps(sys.stdin.read())
 HUMAN_UUID=$(python3 -c "import uuid; print(str(uuid.uuid4()))")
 ASST_UUID=$(python3 -c "import uuid; print(str(uuid.uuid4()))")
 
-# 创建对话
-CREATE_RESP=$(curl -s -X POST "${ORIGIN}/api/organizations/${ORG_ID}/chat_conversations" \
-    -H "Content-Type: application/json" -H "origin: ${ORIGIN}" -b "$COOKIE" \
-    --data-raw '{"name":"","model":"claude-sonnet-4-6","is_temporary":false}' 2>/dev/null)
-CONV_ID=$(echo "$CREATE_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin).get('uuid',''))" 2>/dev/null || echo "")
-if [ -z "$CONV_ID" ]; then
-    echo "ERROR: Create conversation failed: ${CREATE_RESP:0:300}"; exit 1
+# 创建或复用对话 (CONV_ID=xxx bash claude_hk_chat.sh "Continue" 可在截断后续传)
+if [ -n "${CONV_ID:-}" ]; then
+    echo "Conv (reuse): $CONV_ID"
+else
+    CREATE_RESP=$(curl -s -X POST "${ORIGIN}/api/organizations/${ORG_ID}/chat_conversations" \
+        -H "Content-Type: application/json" -H "origin: ${ORIGIN}" -b "$COOKIE" \
+        --data-raw '{"name":"","model":"claude-sonnet-4-6","is_temporary":false}' 2>/dev/null)
+    CONV_ID=$(echo "$CREATE_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin).get('uuid',''))" 2>/dev/null || echo "")
+    if [ -z "$CONV_ID" ]; then
+        echo "ERROR: Create conversation failed: ${CREATE_RESP:0:300}"; exit 1
+    fi
+    echo "Conv (new): $CONV_ID  — 续传: CONV_ID=$CONV_ID bash claude_hk_chat.sh Continue"
 fi
-echo "Conv: $CONV_ID"
 
 OUTPUT_FILE="${SCRIPT_DIR}/submodel_response_$(date +%Y%m%d_%H%M%S).txt"
 > "$OUTPUT_FILE"

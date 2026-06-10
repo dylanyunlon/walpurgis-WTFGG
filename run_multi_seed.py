@@ -198,7 +198,7 @@ def main():
             "server_cmd": "for SEED in 42 123 456; do SEED=$SEED GPU=2 EPOCHS=200 "
                           "bash experiments/run_server_experiment.sh; done",
             "seed42_verified_mae": 2.93,
-            "seed42_source": "walpurgis_metrla_verified.json (14 epochs on ags1)"
+            "seed42_source": "METR-LA_seed42.json (14 epochs on ags1)"
         },
         "total_time_s": round(time.time() - t0, 1),
         "conducted_by": "Claude-5 M401-M425 (Phase 2 multi-seed)",

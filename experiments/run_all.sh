@@ -44,7 +44,7 @@ PIDS=()
 
 # GPU0: D2STGNN baseline
 echo "  GPU0 (A6000): D2STGNN baseline..."
-GPU=0 DATASET=METR-LA bash experiments/run_baselines.sh --model d2stgnn --gpu 0 \
+GPU=0 DATASET=METR-LA bash experiments/run_baselines.sh \
     > experiments/results/baseline_d2stgnn.log 2>&1 &
 PIDS+=($!)
 

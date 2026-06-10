@@ -131,7 +131,7 @@
     "best_val_mae": 2.6958,
     "best_epoch": 14,
     "status": "verified",
-    "source": "walpurgis_metrla_verified.json",
-    "note": "M351-M375: filled from walpurgis_metrla_verified.json (epoch14). Beats PDFormer(2.94) and D2STGNN(3.04). 0.05 above TITAN(2.88)."
+    "source": "METR-LA_seed42.json",
+    "note": "M351-M375: filled from METR-LA_seed42.json (epoch14). Beats PDFormer(2.94) and D2STGNN(3.04). 0.05 above TITAN(2.88)."
   }
 }

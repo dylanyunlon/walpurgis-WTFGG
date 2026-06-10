@@ -1,99 +1,143 @@
 #!/usr/bin/env bash
-# experiments/run_baselines.sh — 下载并运行 D2STGNN/STAEFormer 基线
-# 用法: bash experiments/run_baselines.sh [--gpu 0] [--model d2stgnn|staeformer|all]
-set -euo pipefail
+# experiments/run_baselines.sh
+# Head-to-head comparison: Walpurgis vs STAEformer vs D2STGNN (upstream)
+# 在同一台机器、同一份数据、同一评估协议下跑三个模型
+#
+# 用法: GPU=2 bash experiments/run_baselines.sh
+set -uo pipefail
 export CUDA_DEVICE_ORDER=PCI_BUS_ID
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_DIR"
 
-GPU="${GPU:-1}"
-MODEL="${MODEL:-all}"
-DATASET="${DATASET:-METR-LA}"
-BASELINES_DIR="experiments/baselines"
+GPU="${GPU:-2}"
+SEED="${SEED:-42}"
+TIMESTAMP="$(date '+%Y%m%d_%H%M%S')"
+RESULT_DIR="experiments/results/baselines_${TIMESTAMP}"
+mkdir -p "$RESULT_DIR"
 
-while [[ $# -gt 0 ]]; do
-    case "$1" in
-        --gpu)     GPU="$2";     shift 2;;
-        --model)   MODEL="$2";   shift 2;;
-        --dataset) DATASET="$2"; shift 2;;
-        *) shift;;
-    esac
-done
+echo "============================================"
+echo " Head-to-Head Baseline Comparison"
+echo " GPU: $GPU  SEED: $SEED"
+echo " Results: $RESULT_DIR/"
+echo "============================================"
 
+# Conda
 set +u
 eval "$(conda shell.bash hook)" 2>/dev/null || true
 conda activate walking3 2>/dev/null || true
 set -u
 
-mkdir -p "$BASELINES_DIR"
+# ── 1. Walpurgis (our model) — 200 epochs ──
+echo ""
+echo "[1/3] Walpurgis (Cascade D2STGNN) — 200 epochs"
+echo "================================================"
+WALPURGIS_DEBUG=0 \
+CASCADE_DIAG_LOG="${RESULT_DIR}/walpurgis_diag.jsonl" \
+CUDA_VISIBLE_DEVICES="$GPU" \
+python3 train_walpurgis.py \
+    --dataset METR-LA \
+    --device cuda:0 \
+    --epochs 200 \
+    --seed "$SEED" \
+    --save_dir "${RESULT_DIR}/walpurgis" \
+    2>&1 | tee "${RESULT_DIR}/walpurgis.log" || true
 
-# ── D2STGNN 基线 (upstream 代码) ────────────────────────
-run_d2stgnn() {
-    echo "============================================"
-    echo " D2STGNN Baseline on $DATASET"
-    echo "============================================"
-    local BDIR="$BASELINES_DIR/d2stgnn"
-    mkdir -p "$BDIR"
+# ── 2. STAEformer — 200 epochs (same data, same eval) ──
+echo ""
+echo "[2/3] STAEformer — 200 epochs"
+echo "================================================"
+CUDA_VISIBLE_DEVICES="$GPU" \
+python3 upstream/staeformer/train.py \
+    --dataset METR-LA \
+    --device cuda:0 \
+    --epochs 200 \
+    --seed "$SEED" \
+    2>&1 | tee "${RESULT_DIR}/staeformer.log" || true
 
-    # 每次从 upstream 同步最新代码
-    cp -r upstream/d2stgnn/* "$BDIR/"
-
-    # 确保数据链接 (upstream 有空的 datasets/, cp 会覆盖 symlink)
-    rm -rf "$BDIR/datasets"
-    ln -s "$REPO_DIR/datasets" "$BDIR/datasets"
-    echo "  Data symlink: $BDIR/datasets -> $REPO_DIR/datasets"
-    ls "$BDIR/datasets/METR-LA/train.npz" > /dev/null || { echo "ERROR: data symlink broken"; return 1; }
-
-    # 修改 config 的 epochs 和 device
-    cd "$BDIR"
-    python3 -c "
-import yaml
-cfg_path = 'configs/${DATASET}.yaml'
-with open(cfg_path) as f:
-    cfg = yaml.safe_load(f)
-cfg['start_up']['device'] = 'cuda:0'
-cfg['optim_args']['epochs'] = 100
-cfg['optim_args']['patience'] = 15
-with open(cfg_path, 'w') as f:
-    yaml.dump(cfg, f, default_flow_style=False)
-print(f'Config updated: epochs=100, device=cuda:0')
-"
-
-    CUDA_VISIBLE_DEVICES="$GPU" python3 main.py --dataset "$DATASET" \
-        2>&1 | tee "train_${DATASET}.log"
+# ── 3. D2STGNN (upstream, unmodified) ──
+echo ""
+echo "[3/3] D2STGNN (upstream) — 200 epochs"
+echo "================================================"
+if [ -f "upstream/d2stgnn/main.py" ]; then
+    cd upstream/d2stgnn
+    CUDA_VISIBLE_DEVICES="$GPU" \
+    python3 main.py \
+        --device cuda:0 \
+        --epochs 200 \
+        --seed "$SEED" \
+        2>&1 | tee "${RESULT_DIR}/d2stgnn.log" || true
     cd "$REPO_DIR"
+else
+    echo "SKIP: upstream/d2stgnn/main.py not found"
+fi
+
+# ── 汇总对比 ──
+echo ""
+echo "============================================"
+echo " Parsing results..."
+echo "============================================"
+python3 << 'PYEOF'
+import json, os, re, sys
+
+result_dir = os.environ.get("RESULT_DIR", "experiments/results/baselines_latest")
+models = {}
+
+for name, logfile in [
+    ("Walpurgis", "walpurgis.log"),
+    ("STAEformer", "staeformer.log"),
+    ("D2STGNN", "d2stgnn.log"),
+]:
+    path = os.path.join(result_dir, logfile)
+    if not os.path.exists(path):
+        continue
+    log = open(path).read()
+    avg = re.findall(
+        r'\(On average over 12 horizons\) Test MAE: ([\d.]+) \| Test RMSE: ([\d.]+) \| Test MAPE: ([\d.]+)%',
+        log)
+    if avg:
+        best = min(avg, key=lambda x: float(x[0]))
+        models[name] = {
+            "MAE": float(best[0]),
+            "RMSE": float(best[1]),
+            "MAPE": float(best[2]),
+        }
+    # Per-horizon for the best run
+    horizons = re.findall(
+        r'horizon (\d+), Test MAE: ([\d.]+), Test RMSE: ([\d.]+), Test MAPE: ([\d.]+)', log)
+    if horizons and name in models:
+        models[name]["per_horizon"] = [
+            {"h": int(h), "mae": float(m), "rmse": float(r), "mape": float(p)}
+            for h, m, r, p in horizons[-12:]
+        ]
+
+# Published baselines (from bench/sota.json)
+published = {
+    "TITAN (published)": {"MAE": 2.88, "RMSE": 5.33, "MAPE": None},
+    "STAEFormer (published)": {"MAE": 2.90, "RMSE": 5.91, "MAPE": 8.12},
+    "PDFormer (published)": {"MAE": 2.94, "RMSE": 6.08, "MAPE": 8.56},
 }
 
-# ── STAEFormer 基线 ─────────────────────────────────────
-run_staeformer() {
-    echo "============================================"
-    echo " STAEFormer Baseline on $DATASET"
-    echo "============================================"
-    local BDIR="$BASELINES_DIR/staeformer"
+print(f"\n{'='*70}")
+print(f"  HEAD-TO-HEAD COMPARISON — METR-LA (avg 12 horizons)")
+print(f"{'='*70}")
+print(f"  {'Model':<30s} {'MAE':>8s} {'RMSE':>8s} {'MAPE':>8s}")
+print(f"  {'-'*54}")
+for name, vals in sorted({**published, **models}.items(), key=lambda x: x[1].get("MAE", 99)):
+    mae = f"{vals['MAE']:.2f}" if vals.get("MAE") else "—"
+    rmse = f"{vals['RMSE']:.2f}" if vals.get("RMSE") else "—"
+    mape = f"{vals['MAPE']:.2f}%" if vals.get("MAPE") else "—"
+    marker = " ← OURS" if "Walpurgis" in name else ""
+    print(f"  {name:<30s} {mae:>8s} {rmse:>8s} {mape:>8s}{marker}")
+print(f"{'='*70}")
 
-    if [ ! -d "$BDIR" ]; then
-        echo "Cloning STAEFormer..."
-        git clone https://github.com/XDZhelheim/STAEformer.git "$BDIR"
-    fi
-
-    cd "$BDIR"
-    # STAEFormer 需要特定数据格式, 链接数据
-    ln -sf "$REPO_DIR/datasets" "$BDIR/data" 2>/dev/null || true
-
-    echo "STAEFormer training — see $BDIR/README.md for data prep"
-    echo "典型命令:"
-    echo "  CUDA_VISIBLE_DEVICES=$GPU python3 train.py --dataset $DATASET --epochs 100"
-    cd "$REPO_DIR"
-}
-
-# ── 执行 ────────────────────────────────────────────────
-case "$MODEL" in
-    d2stgnn)    run_d2stgnn ;;
-    staeformer) run_staeformer ;;
-    all)        run_d2stgnn; run_staeformer ;;
-    *) echo "Unknown model: $MODEL (use d2stgnn|staeformer|all)"; exit 1;;
-esac
+# Write JSON
+with open(os.path.join(result_dir, "comparison.json"), "w") as f:
+    json.dump({"our_runs": models, "published": published}, f, indent=2)
+print(f"\nSaved: {result_dir}/comparison.json")
+PYEOF
 
 echo ""
-echo "Baselines complete. Results in $BASELINES_DIR/"
+echo "============================================"
+echo " Done: $RESULT_DIR/"
+echo "============================================"
