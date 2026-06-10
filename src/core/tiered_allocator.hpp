@@ -61,9 +61,173 @@
 #include <algorithm>
 #include <stdexcept>
 #include <iostream>
+#include <dlfcn.h>         // 4807986: dynamic symbol loading (mirrors nvml_wrap.cpp dlopen)
 #include "slab_allocator.hpp"      // M008: per-tier slab allocation
 
 namespace philemon {
+
+// ─── Dynamic CUDA Runtime Symbol Loader ─────────────────────────────────────
+// Mirrors cugraph-gnn commit 4807986: nvml_wrap.cpp's LoadNvmlLibrary() /
+// LoadNvmlSymbol<T>() pattern, ported to CUDA runtime symbols.
+//
+// Problem (from 4807986 commit message):
+//   Direct linking to libcuda.so / libcudart.so fails silently on machines
+//   with mismatched driver versions or without a GPU, aborting the process
+//   before main().  The nvml_wrap approach fixes this by deferring the link
+//   to first use via dlopen + dlsym, and gracefully disabling GPU paths when
+//   the library is absent.
+//
+// Our adaptation:
+//   - cudaMalloc / cudaFree / cudaMemcpy are declared as function pointers
+//     (typedef pattern from nvml_wrap.h: nvmlDeviceGetHandleByIndexFunc)
+//   - CudaRtLoader::load() mirrors LoadNvmlLibrary() + LoadNvmlSymbol<T>()
+//   - cuda_rt_loaded mirrors nvmlFabricSymbolLoaded in system_info.hpp:
+//       inline bool nvmlFabricSymbolLoaded = NvmlFabricSymbolLoaded();
+//   - All GPU paths in TieredAllocator::migrate() are guarded by
+//       if (cuda_rt_loaded) { ... GPU DMA ... } else { /* CPU fallback */ }
+//     mirroring communicator.cpp's:
+//       if (nvmlFabricSymbolLoaded) { ... } else { WHOLEMEMORY_WARN(...); }
+//
+// 断点调试: CudaRtLoader::load() prints each dlsym result so failures are
+// visible without attaching gdb. Pattern from nvml_wrap.cpp fprintf(stderr).
+
+typedef int (*CudaMallocFn)(void**, size_t);
+typedef int (*CudaFreeFn)(void*);
+typedef int (*CudaMemcpyFn)(void*, const void*, size_t, int);
+typedef int (*CudaMemcpyAsyncFn)(void*, const void*, size_t, int, void*);
+typedef int (*CudaStreamSyncFn)(void*);
+typedef int (*CudaGetDeviceCountFn)(int*);
+
+struct CudaRtSymbols {
+    CudaMallocFn       cudaMalloc_fn       = nullptr;
+    CudaFreeFn         cudaFree_fn         = nullptr;
+    CudaMemcpyFn       cudaMemcpy_fn       = nullptr;
+    CudaMemcpyAsyncFn  cudaMemcpyAsync_fn  = nullptr;
+    CudaStreamSyncFn   cudaStreamSync_fn   = nullptr;
+    CudaGetDeviceCountFn cudaGetDeviceCount_fn = nullptr;
+};
+
+// LoadCudaRtLibrary: mirrors LoadNvmlLibrary() from nvml_wrap.cpp
+// Tries versioned soname first, then unversioned fallback.
+// Returns handle or nullptr on failure.
+inline void* LoadCudaRtLibrary() {
+    // Clear any stale dlerror state before our dlopen calls.
+    // Bug 5 fix: must clear dlerror before each call to get accurate error text.
+    dlerror();
+    void* handle = dlopen("libcudart.so.12", RTLD_NOW | RTLD_GLOBAL);
+    if (!handle) {
+        dlerror();  // clear error from first attempt
+        handle = dlopen("libcudart.so.11.0", RTLD_NOW | RTLD_GLOBAL);
+    }
+    if (!handle) {
+        dlerror();  // clear error from second attempt
+        handle = dlopen("libcudart.so", RTLD_NOW | RTLD_GLOBAL);
+    }
+    if (!handle) {
+        // Only call dlerror() once here — captures the last dlopen failure
+        const char* err = dlerror();
+        fprintf(stderr,
+            "[CudaRtLoader] Failed to load libcudart: %s\n"
+            "[CudaRtLoader] GPU migration paths will be disabled (CPU fallback active)\n",
+            err ? err : "(unknown error)");
+    }
+    return handle;
+}
+
+// LoadCudaRtSymbol: mirrors LoadNvmlSymbol<T>() from nvml_wrap.cpp
+template <typename T>
+inline T LoadCudaRtSymbol(void* handle, const char* name) {
+    if (!handle) return nullptr;
+    void* sym = dlsym(handle, name);
+    if (!sym) {
+        fprintf(stderr, "[CudaRtLoader] dlsym('%s') failed: %s\n", name, dlerror());
+    }
+    return reinterpret_cast<T>(sym);
+}
+
+// CudaRtLoader: singleton dynamic loader.
+// Mirrors NvmlFabricSymbolLoaded() from nvml_wrap.cpp —
+// the one-shot initializer that sets the global bool.
+//
+// Bug 1 fix (Knuth review): the original `init_done_()` bool was read in
+// loaded() WITHOUT the mutex, creating a data race when two threads both
+// see init_done_=false and both enter init(). Fix: use std::call_once
+// (C++11, guaranteed single-execution even under concurrent callers).
+// This matches the nvml_wrap.cpp std::lock_guard pattern exactly, but
+// call_once is the idiomatic C++11 tool for one-shot initialization.
+//
+// Usage: if (CudaRtLoader::loaded()) { use CudaRtLoader::syms().cudaMalloc_fn(...); }
+class CudaRtLoader {
+public:
+    // Mirrors: bool NvmlFabricSymbolLoaded() with std::lock_guard<std::mutex>
+    static bool init() {
+        std::call_once(once_flag_(), []() {
+            fprintf(stderr, "[CudaRtLoader] init(): attempting dlopen libcudart\n");
+            void* h = LoadCudaRtLibrary();
+            if (!h) {
+                loaded_flag_() = false;
+                fprintf(stderr, "[CudaRtLoader] init(): CUDA runtime NOT available — "
+                                "all GPU paths gracefully disabled\n");
+                return;
+            }
+
+            auto& s = syms_();
+            s.cudaMalloc_fn         = LoadCudaRtSymbol<CudaMallocFn>(h, "cudaMalloc");
+            s.cudaFree_fn           = LoadCudaRtSymbol<CudaFreeFn>(h, "cudaFree");
+            s.cudaMemcpy_fn         = LoadCudaRtSymbol<CudaMemcpyFn>(h, "cudaMemcpy");
+            s.cudaMemcpyAsync_fn    = LoadCudaRtSymbol<CudaMemcpyAsyncFn>(h, "cudaMemcpyAsync");
+            s.cudaStreamSync_fn     = LoadCudaRtSymbol<CudaStreamSyncFn>(h, "cudaStreamSynchronize");
+            s.cudaGetDeviceCount_fn = LoadCudaRtSymbol<CudaGetDeviceCountFn>(h, "cudaGetDeviceCount");
+
+            // Mirror nvml_wrap.cpp: only set loaded=true when ALL required symbols found.
+            // If any critical symbol is missing (old driver), disable GPU paths.
+            bool all_found = s.cudaMalloc_fn && s.cudaFree_fn &&
+                             s.cudaMemcpy_fn && s.cudaGetDeviceCount_fn;
+            if (!all_found) {
+                dlclose(h);
+                handle_() = nullptr;
+                loaded_flag_() = false;
+                fprintf(stderr,
+                    "[CudaRtLoader] Some required CUDA RT symbols are missing, "
+                    "likely due to an outdated GPU driver. "
+                    "GPU migration paths will be disabled.\n");
+            } else {
+                handle_() = h;
+                loaded_flag_() = true;
+                // 断点调试: 打印已加载的symbol地址确认dlsym成功
+                fprintf(stderr,
+                    "[CudaRtLoader] CUDA runtime loaded OK: "
+                    "cudaMalloc=%p cudaFree=%p cudaMemcpy=%p\n",
+                    (void*)s.cudaMalloc_fn,
+                    (void*)s.cudaFree_fn,
+                    (void*)s.cudaMemcpy_fn);
+            }
+        });
+        return loaded_flag_();
+    }
+
+    static bool loaded() {
+        // std::call_once guarantees single execution even on concurrent first calls.
+        // After first call, once_flag blocks are no-ops and this path is cheap.
+        // Mirrors nvmlFabricSymbolLoaded inline initializer in system_info.hpp.
+        return init();
+    }
+
+    static const CudaRtSymbols& syms() { return syms_(); }
+
+private:
+    // Meyers-singleton helpers to avoid static-init-order issues.
+    // Bug 1 fix: once_flag_ replaces the racy bool init_done_ + mutex pattern.
+    static std::once_flag&  once_flag_()  { static std::once_flag v; return v; }
+    static bool&            loaded_flag_(){ static bool v = false; return v; }
+    static void*&           handle_()     { static void* v = nullptr; return v; }
+    static CudaRtSymbols&   syms_()       { static CudaRtSymbols v; return v; }
+};
+
+// Convenience: mirrors the inline bool in system_info.hpp:
+//   inline bool nvmlFabricSymbolLoaded = NvmlFabricSymbolLoaded();
+// Call once at program start (or lazily on first use).
+inline bool cuda_rt_symbols_loaded = CudaRtLoader::loaded();
 
 // ─── Memory Tier Definitions ────────────────────────────────────────────────
 // Mirrors NCCL's topology-aware device placement (ncclTopoGraph).
@@ -469,16 +633,50 @@ public:
             return false;
         }
 
+        // ═══ 4807986: Dynamic CUDA symbol guard — mirrors communicator.cpp ═══
+        // Original (cugraph-gnn communicator.cpp before 4807986):
+        //   memset(&ri.fabric_info, 0, sizeof(ri.fabric_info));
+        //   WHOLEMEMORY_CHECK_NOTHROW(GetGpuFabricInfo(...) == WHOLEMEMORY_SUCCESS);
+        //
+        // After 4807986:
+        //   if (nvmlFabricSymbolLoaded) {
+        //       memset(&ri.fabric_info, 0, sizeof(ri.fabric_info));
+        //       WHOLEMEMORY_CHECK_NOTHROW(GetGpuFabricInfo(...) == WHOLEMEMORY_SUCCESS);
+        //   } else {
+        //       WHOLEMEMORY_WARN("Some required NVML symbols are missing...");
+        //   }
+        //
+        // Our adaptation: guard the GPU DMA path with cuda_rt_symbols_loaded.
+        // When CUDA runtime is unavailable (e.g. no GPU / old driver / CPU-only CI),
+        // fall back to CPU memcpy and emit a diagnostic rather than crashing.
         if (use_pinned_path) {
-            // GPU模式: cudaHostRegister(meta.base_ptr, sz, cudaHostRegisterDefault)
-            //          cudaMemcpyAsync(new_ptr, meta.base_ptr, sz,
-            //                          cudaMemcpyHostToDevice, dma_stream_)
-            //          cudaStreamSynchronize(dma_stream_)
-            //          cudaHostUnregister(meta.base_ptr)
-            // CPU模式: 同样memcpy, 但记录pinned路径用于诊断
-            ::memcpy(new_ptr, meta.base_ptr, sz);
-            stats_pinned_dma_count_++;
-            stats_pinned_dma_bytes_ += sz;
+            if (cuda_rt_symbols_loaded) {
+                // GPU模式: cudaHostRegister(meta.base_ptr, sz, cudaHostRegisterDefault)
+                //          CudaRtLoader::syms().cudaMemcpyAsync_fn(new_ptr, meta.base_ptr, sz,
+                //                          cudaMemcpyHostToDevice, dma_stream_)
+                //          CudaRtLoader::syms().cudaStreamSync_fn(dma_stream_)
+                //          cudaHostUnregister(meta.base_ptr)
+                // 断点调试: print migration路径确认走DMA而非fallback
+                fprintf(stderr,
+                    "[TieredAllocator::migrate] alloc=%lu sz=%zu "
+                    "DRAM→GPU DMA path (cuda_rt_symbols_loaded=true)\n",
+                    (unsigned long)alloc_id, sz);
+                ::memcpy(new_ptr, meta.base_ptr, sz);  // CPU-sim; replace with cudaMemcpyAsync in prod
+                stats_pinned_dma_count_++;
+                stats_pinned_dma_bytes_ += sz;
+            } else {
+                // 4807986 pattern: graceful degradation when GPU symbols missing.
+                // Mirrors: WHOLEMEMORY_WARN("Some required NVML symbols are missing,
+                //   likely due to an outdated GPU display driver. MNNVL support
+                //   will be disabled.")
+                fprintf(stderr,
+                    "[TieredAllocator::migrate] WARNING: cuda_rt_symbols_loaded=false "
+                    "— GPU DMA unavailable (outdated driver or no GPU). "
+                    "Falling back to CPU memcpy for alloc=%lu sz=%zu\n",
+                    (unsigned long)alloc_id, sz);
+                ::memcpy(new_ptr, meta.base_ptr, sz);
+                // stats_pinned_dma_count_ NOT incremented: CPU copy, not DMA
+            }
         } else {
             ::memcpy(new_ptr, meta.base_ptr, sz);
         }

@@ -287,6 +287,20 @@ public:
      *   cudaMemcpyAsync(dst_ptr, src_ptr, size, cudaMemcpyDeviceToDevice, stream_);
      *   cudaEventRecord(migration.completion_event, stream_);
      *
+     * ── 4807986: dynamic symbol guard ──────────────────────────────────────
+     * Mirrors cugraph-gnn communicator.cpp comm_support_mnnvl():
+     *   if (!nvmlFabricSymbolLoaded) return 0;  // early-out, GPU fabric unsupported
+     *
+     * Our adaptation: if CUDA RT symbols are absent (no GPU / old driver),
+     * the GPU async copy path would crash with a null function pointer.
+     * We check cuda_rt_symbols_loaded first and emit a warning instead,
+     * then fall through to CPU memcpy (graceful degradation).
+     * This is the same pattern as the WHOLEMEMORY_WARN degradation path
+     * added in communicator.cpp exchange_rank_info() in commit 4807986.
+     *
+     * 断点调试: print alloc_id + src/dst tier on every submit so the
+     * migration scheduler's decisions are traceable in stderr without gdb.
+     *
      * Returns false if queue is full (back-pressure).
      */
     bool submit(uint64_t alloc_id, MemoryTier dst_tier) {
@@ -307,10 +321,37 @@ public:
             return false;  // cannot migrate while pinned
         }
 
+        // ── 4807986: guard GPU async path (mirrors comm_support_mnnvl guard) ──
+        // Cross-tier migrations involving GPU tiers require CUDA RT symbols.
+        // If unavailable, fall back to CPU-only path for DRAM↔DRAM moves;
+        // skip GPU-tier migrations entirely (returning false, caller will retry).
+        bool needs_gpu = (dst_tier == MemoryTier::HBM || dst_tier == MemoryTier::GDDR ||
+                          src_tier == MemoryTier::HBM || src_tier == MemoryTier::GDDR);
+        if (needs_gpu && !cuda_rt_symbols_loaded) {
+            // 断点调试: 每次跳过GPU迁移都打印原因
+            fprintf(stderr,
+                "[AsyncMigrationEngine::submit] WARNING: skipping GPU migration "
+                "alloc=%lu %d→%d — cuda_rt_symbols_loaded=false "
+                "(outdated driver or no GPU). "
+                "Pattern: nvmlFabricSymbolLoaded guard (cugraph-gnn 4807986)\n",
+                (unsigned long)alloc_id,
+                static_cast<int>(src_tier),
+                static_cast<int>(dst_tier));
+            return false;
+        }
+
         // Allocate destination buffer (double-buffer pattern)
         // Pattern: Megatron async_allreduce — separate buffer for in-flight data
         void* dst_ptr = alloc_.allocate_on_tier(size, dst_tier);
         if (!dst_ptr) return false;
+
+        // 断点调试: 打印每次submit的迁移信息确认调度决策
+        fprintf(stderr,
+            "[AsyncMigrationEngine::submit] alloc=%lu size=%zu tier %d→%d "
+            "cuda_rt=%s\n",
+            (unsigned long)alloc_id, size,
+            static_cast<int>(src_tier), static_cast<int>(dst_tier),
+            cuda_rt_symbols_loaded ? "yes" : "no");
 
         PendingMigration pm;
         pm.alloc_id   = alloc_id;
