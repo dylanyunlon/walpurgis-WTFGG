@@ -169,7 +169,47 @@ public:
         fprintf(stderr,
             "[MigrationScheduler] sweep_once: migrated=%zu budget_utilisation=%.1f%%\n",
             n, budget_.utilisation() * 100.0);
+        // 3f11d45 migration: Guard zero-migration sweep before computing rates.
+        //
+        // This is the scheduler-layer application of the 3f11d45 design pattern:
+        //   Python: uxn = (ux.max() + 1) if ux.numel() > 0 else torch.tensor(0)
+        //   C++:    rate = (n > 0) ? total/n : 0.0   ← guard empty sweep
+        //
+        // When n==0, no edges of the relevant hetero-edge type were present in
+        // the batch — analogous to a batch with no positive edges of a given type.
+        // Callers computing "average migrations per sweep" or "migration rate" MUST
+        // apply this guard before dividing by n, just as 3f11d45 applied the
+        // numel() guard before calling .max() on the sampled node tensor.
+        //
+        // The safe_avg_migrations_per_sweep() helper below implements this pattern.
+        // 断点调试: n==0 case is printed so the "no migrations this sweep" event
+        // is explicitly visible rather than silently producing a divide-by-zero.
+        if (n == 0) {
+            fprintf(stderr,
+                "[DEBUG 3f11d45 MigrationScheduler::sweep_once] n=0 — "
+                "no migrations this sweep (mirrors numel()==0 case in 3f11d45).\n"
+                "  Downstream aggregations that compute max/avg MUST guard n==0.\n");
+        }
         return n;
+    }
+
+    // safe_avg_migrations_per_sweep: guard empty sweep count before averaging.
+    //
+    // 3f11d45 pattern: return 0.0 if no sweeps have occurred (same sentinel as
+    // torch.tensor(0, device=ux.device) for the empty-numel case).
+    //
+    // 断点调试: prints sweep_count so "not yet started" vs "zero migrations" are
+    // distinguishable in logs.
+    double safe_avg_migrations_per_sweep() const {
+        uint64_t sc = stats_.sweep_count.load(std::memory_order_relaxed);
+        if (sc == 0) {
+            fprintf(stderr,
+                "[DEBUG 3f11d45 safe_avg_migrations_per_sweep] sweep_count=0"
+                " — returning 0.0 (mirrors numel()==0 guard from 3f11d45)\n");
+            return 0.0;
+        }
+        return static_cast<double>(
+            stats_.total_migrations.load(std::memory_order_relaxed)) / sc;
     }
 
     const MigrationStats& stats() const { return stats_; }

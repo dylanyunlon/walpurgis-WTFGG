@@ -415,16 +415,51 @@ public:
 
         void print() const {
             uint64_t c = completed.load();
+            // 3f11d45 migration: Guard zero-completed case before computing average.
+            //
+            // The same design pattern as 3f11d45 HeterogeneousSampleReader fix:
+            //   BEFORE: avg = total_latency_ns / completed   ← division by zero if c==0
+            //   AFTER:  avg = (c > 0) ? total_latency_ns/c : 0
+            //
+            // The Python fix checked numel() > 0 before calling .max(); here we
+            // check c > 0 before dividing. Both are the same idiom: guard the
+            // aggregation before operating on a potentially empty set.
+            //
+            // 断点调试: prints c=0 explicitly so callers can detect the
+            // "no migrations completed yet" case vs "latency really is 0μs".
             double avg_us = c > 0 ? (total_latency_ns.load() / 1000.0) / c : 0;
             std::cout << "[AsyncMigration] submitted=" << submitted.load()
                       << " completed=" << c
                       << " bytes=" << bytes_transferred.load()
                       << " avg_latency=" << avg_us << "μs"
+                      << (c == 0 ? " [3f11d45: no completions yet — avg is sentinel 0]" : "")
                       << " [b58ea19 dtype breakdown]"
                       << " fp32=" << bytes_float32.load()
                       << "B fp16=" << bytes_float16.load()
                       << "B bf16=" << bytes_bfloat16.load()
                       << "B\n";
+        }
+
+        // safe_avg_latency_us — guard empty completed-set before computing average.
+        //
+        // 3f11d45 design principle:
+        //   uxn = (ux.max() + 1) if ux.numel() > 0 else torch.tensor(0)
+        // translates to:
+        //   avg = (c > 0) ? total_ns / c : 0    ← return 0 for empty set
+        //
+        // Callers computing "max latency seen" or "p99 latency" MUST also
+        // check completed > 0 before calling those aggregations.
+        // This method is the canonical pattern for all Stats aggregations.
+        double safe_avg_latency_us() const {
+            uint64_t c = completed.load(std::memory_order_relaxed);
+            if (c == 0) {
+                // 3f11d45: empty set → return 0 (same as tensor(0) sentinel)
+                fprintf(stderr,
+                    "[DEBUG 3f11d45 safe_avg_latency_us] completed=0"
+                    " — returning 0.0 (mirrors numel()==0 guard)\n");
+                return 0.0;
+            }
+            return (total_latency_ns.load(std::memory_order_relaxed) / 1000.0) / c;
         }
 
         // Record a transfer with its dtype (0=float32, 1=float16, 2=bfloat16).

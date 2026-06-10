@@ -1504,16 +1504,55 @@ struct NodeTimeStore {
         return times[local];
     }
 
+    // 3f11d45 migration: Guard empty times array before calling min_element.
+    //
+    // cugraph-gnn 3f11d45 fixed HeterogeneousSampleReader to check numel() > 0
+    // before calling .max() on sampled node tensors.  In C++, calling
+    // std::min_element(begin, end) on an empty range returns `end`, and then
+    // dereferencing it is undefined behavior — exactly the same hazard.
+    //
+    // The fix (same pattern as 3f11d45):
+    //   if (ux.numel() > 0)  → result = ux.max() + 1
+    //   else                 → result = torch.tensor(0, device=ux.device)
+    //
+    // Our C++ equivalent:
+    //   if (times.empty())   → return sentinel (INT64_MAX or 0)
+    //   else                 → return *std::min_element(...)
+    //
+    // 断点调试: prints a warning when the empty path fires, so callers can
+    // detect unexpected empty NodeTimeStore at batch-processing time.
     int64_t min_time() const {
+        if (times.empty()) {
+            // 3f11d45: empty tensor → return 0 (safe sentinel for time comparisons)
+            fprintf(stderr,
+                "[DEBUG 3f11d45 NodeTimeStore::min_time] times is empty"
+                " — returning 0 (mirrors numel()==0 guard)\n");
+            return 0;
+        }
         return *std::min_element(times.begin(), times.end());
     }
 
-    // Index of node with minimum timestamp (used in fallback path of a056923)
+    // Index of node with minimum timestamp (used in fallback path of a056923).
+    // 3f11d45: if times is empty, argmin() would dereference end() → UB.
+    // Return offset (first valid node index) as a safe sentinel for empty stores.
     uint64_t argmin() const {
+        if (times.empty()) {
+            // 3f11d45: empty store — no valid argmin. Return offset as sentinel.
+            // Callers must check NodeTimeStore::size() before using this value
+            // for fallback broadcast (same as checking numel()>0 in Python).
+            fprintf(stderr,
+                "[DEBUG 3f11d45 NodeTimeStore::argmin] times is empty"
+                " — returning offset=%lu (sentinel, mirrors numel()==0 guard)\n",
+                (unsigned long)offset);
+            return offset;
+        }
         return static_cast<uint64_t>(
             std::min_element(times.begin(), times.end()) - times.begin()
         ) + offset;
     }
+
+    // 3f11d45: expose size so callers can apply the numel()==0 guard explicitly.
+    size_t size() const { return times.size(); }
 };
 
 // ── call_graph_neg_sampling: _call_plc_negative_sampling equivalent ──────────
@@ -1847,8 +1886,63 @@ static void experiment_temporal_neg_sampling() {
                " deduplicate_seeds_with_time (async_migration.hpp).\n");
     }
 
+    // ── E7b: 3f11d45 empty-batch regression ──────────────────────────────────
+    // Direct port of the 3f11d45 fix validation.
+    //
+    // cugraph-gnn 3f11d45 scenario: movielens_mnmg.py with large negative
+    // edges causes some batches to have ZERO positive edges of a given type.
+    // In HeterogeneousSampleReader:
+    //   ux = col[pyg_can_etype][:num_sampled_edges[0]]  ← empty if no positive edges
+    //   uxn = ux.max() + 1   ← CRASH: max() on empty tensor
+    // Fix: check numel() > 0 first, else return tensor(0).
+    //
+    // Our C++ equivalent: NodeTimeStore with times.size()==0 passed to
+    // min_time() or argmin() → was UB before this fix.
+    //
+    // 断点调试: prints whether each empty-guard fired vs returned real data.
+    {
+        printf("\n  ── E7b: 3f11d45 Empty-Batch NodeTimeStore Guard ──\n");
+
+        // Case 1: empty NodeTimeStore — all aggregation methods must return 0/safe
+        NodeTimeStore empty_store;
+        int64_t  empty_min   = empty_store.min_time();
+        uint64_t empty_argm  = empty_store.argmin();
+        size_t   empty_sz    = empty_store.size();
+        printf("  [3f11d45] empty NodeTimeStore:"
+               " min_time=%ld argmin=%lu size=%zu\n",
+               (long)empty_min, (unsigned long)empty_argm, empty_sz);
+        bool ok_empty = (empty_min == 0) && (empty_sz == 0);
+        printf("  [3f11d45] empty guard: %s\n", ok_empty ? "PASS" : "FAIL");
+
+        // Case 2: non-empty NodeTimeStore — must return real min (not sentinel)
+        std::mt19937 rng2(12345);
+        NodeTimeStore non_empty_store(8, 100, rng2);
+        int64_t  real_min  = non_empty_store.min_time();
+        uint64_t real_argm = non_empty_store.argmin();
+        size_t   real_sz   = non_empty_store.size();
+        printf("  [3f11d45] non-empty NodeTimeStore (n=8):"
+               " min_time=%ld argmin=%lu size=%zu\n",
+               (long)real_min, (unsigned long)real_argm, real_sz);
+        bool ok_nonempty = (real_sz == 8) && (real_min >= 100);
+        printf("  [3f11d45] non-empty pass: %s\n", ok_nonempty ? "PASS" : "FAIL");
+
+        // Case 3: single-element store — boundary condition (was valid before fix,
+        // but must continue to work correctly after the empty-guard addition)
+        NodeTimeStore single_store(1, 500, rng2);
+        int64_t  single_min  = single_store.min_time();
+        uint64_t single_argm = single_store.argmin();
+        bool ok_single = (single_store.size() == 1) && (single_min >= 500);
+        printf("  [3f11d45] single-element: min_time=%ld argmin=%lu → %s\n",
+               (long)single_min, (unsigned long)single_argm,
+               ok_single ? "PASS" : "FAIL");
+
+        bool all_ok = ok_empty && ok_nonempty && ok_single;
+        printf("  [3f11d45] E7b result: %s\n\n",
+               all_ok ? "ALL PASS — empty-batch guard correct"
+                      : "SOME FAILURES — check NodeTimeStore guards");
+    }
+
     printf("\n");
-}
 
 
 // ════════════════════════════════════════════════════════════════════════════

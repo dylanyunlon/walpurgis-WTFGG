@@ -748,6 +748,37 @@ public:
         void* raw = allocator_.get_ptr(part.alloc_id);
         if (!raw) return 0;
 
+        // 3f11d45 migration: Guard zero-edge partitions before invoking any
+        // aggregation over the edge array.
+        //
+        // cugraph-gnn 3f11d45 fixed HeterogeneousSampleReader: when a batch
+        // had zero positive edges of a given hetero-edge type, calling
+        //   ux = col[pyg_can_etype][:num_sampled_edges[0]]   # empty slice
+        //   ux.max()   # ← PyTorch exception: max() on empty tensor
+        // The fix: check numel() > 0 first, return 0 for the empty case.
+        //
+        // C++ equivalent: if edge_count == 0, the lower_bound + scan loop
+        // would execute zero iterations and return 0 — already safe.
+        // However, any caller that calls scan_partition and then uses the
+        // RESULT to compute "max sampled node id = max(src_ids) + 1" would
+        // crash on an empty result set (same UB as ux.max() on empty tensor).
+        //
+        // We add an explicit early-return with a debug trace so:
+        //   (a) the zero-edge case is visible in logs (断点调试), and
+        //   (b) future callers cannot accidentally "fall through" to aggregation
+        //       code that assumes at least one matched edge.
+        //
+        // Pattern: 3f11d45 numel() > 0 guard applied at the scanning boundary.
+        if (part.edge_count == 0) {
+            // 断点调试: empty partition — equivalent to 3f11d45's numel()==0 guard
+            fprintf(stderr,
+                "[DEBUG 3f11d45 scan_partition] partition alloc_id=%lu has"
+                " edge_count=0 — returning 0 without iterating"
+                " (mirrors 3f11d45 numel()==0 → tensor(0) guard)\n",
+                (unsigned long)part.alloc_id);
+            return 0;
+        }
+
         const TemporalEdge* edges = reinterpret_cast<const TemporalEdge*>(raw);
         const TemporalEdge* edges_end = edges + part.edge_count;
         uint64_t matched = 0;
@@ -771,6 +802,76 @@ public:
             }
         }
         return matched;
+    }
+
+    // safe_compute_hetero_sampled_counts — compute (num_sampled_src, num_sampled_dst)
+    // for a given edge type query, returning {0, 0} when the matched edge set is empty.
+    //
+    // 3f11d45 pattern (from HeterogeneousSampleReader):
+    //   ux = col[pyg_can_etype][:num_sampled_edges[0]]
+    //   uxn = (ux.max() + 1) if ux.numel() > 0 else torch.tensor(0, device=ux.device)
+    //   num_sampled_nodes[dst_type][0] = torch.max(num_sampled_nodes[dst_type][0], uxn)
+    //
+    // C++ equivalent:
+    //   If the matched src/dst node id sets are empty, return 0 for the count.
+    //   Otherwise return max_node_id + 1 as the "number of unique sampled nodes"
+    //   (since node ids are compact, max+1 == count for the sampled set).
+    //
+    // 断点调试: prints sampled_src_count and sampled_dst_count so callers can
+    // detect the zero-input case (which would previously cause a crash if
+    // max() was called directly on the empty node-id vectors).
+    struct HeteroSampledCounts {
+        uint64_t num_src_nodes;  // max(src_node_id) + 1, or 0 if no edges sampled
+        uint64_t num_dst_nodes;  // max(dst_node_id) + 1, or 0 if no edges sampled
+        uint64_t num_edges;      // number of matched edges
+    };
+
+    HeteroSampledCounts safe_compute_hetero_sampled_counts(
+            int32_t ts_lo, int32_t ts_hi) const {
+        // Collect all matched edges
+        uint64_t max_src = 0, max_dst = 0, edge_count = 0;
+        bool any_edge = false;
+
+        auto parts = query_partitions(ts_lo, ts_hi);
+        for (auto* p : parts) {
+            scan_partition(*p, ts_lo, ts_hi, [&](const TemporalEdge& e) {
+                // 3f11d45: max_src/max_dst are only updated when we have edges.
+                // If no edges match at all, any_edge stays false and we return {0,0,0}.
+                if (!any_edge) {
+                    max_src = e.source;
+                    max_dst = e.destination;
+                    any_edge = true;
+                } else {
+                    max_src = std::max(max_src, e.source);
+                    max_dst = std::max(max_dst, e.destination);
+                }
+                ++edge_count;
+            });
+        }
+
+        // 3f11d45: if no edges matched (empty result), return {0,0,0}.
+        // DO NOT call max_src+1 on an uninitialized max_src — that is the
+        // exact crash that 3f11d45 fixed in the Python layer.
+        HeteroSampledCounts result;
+        if (!any_edge) {
+            // 断点调试: zero-input case — mirrors 3f11d45 numel()==0 branch
+            fprintf(stderr,
+                "[DEBUG 3f11d45 safe_compute_hetero_sampled_counts]"
+                " ts=[%d,%d] → 0 edges matched, returning {0,0,0}"
+                " (mirrors numel()==0 → tensor(0) guard)\n",
+                ts_lo, ts_hi);
+            result = {0, 0, 0};
+        } else {
+            result = {max_src + 1, max_dst + 1, edge_count};
+            fprintf(stderr,
+                "[DEBUG 3f11d45 safe_compute_hetero_sampled_counts]"
+                " ts=[%d,%d] → edges=%lu src_nodes=%lu dst_nodes=%lu\n",
+                ts_lo, ts_hi,
+                (unsigned long)edge_count,
+                (unsigned long)result.num_src_nodes,
+                (unsigned long)result.num_dst_nodes);
+        }
+        return result;
     }
 
     // Full temporal subgraph query: locate partitions, scan edges.

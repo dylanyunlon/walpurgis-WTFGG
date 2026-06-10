@@ -989,11 +989,84 @@ public:
 
     // Iterate all allocations (for migration scheduling).
     // M005: shared_lock — concurrent reads allowed.
+    //
+    // 3f11d45 migration: Guard empty registry before invoking any aggregation cb.
+    //
+    // cugraph-gnn 3f11d45 fixed HeterogeneousSampleReader: when a batch contained
+    // zero positive edges of a given type, calling ux.max() on an empty tensor
+    // crashed with a PyTorch exception.  The fix: check numel() > 0 first and
+    // return torch.tensor(0) for the empty case.
+    //
+    // The analogous C++ hazard here: callers that iterate for_each_alloc and
+    // compute max/min over the visited set must guard against an empty registry.
+    // Example of the UNSAFE pattern (do NOT use):
+    //   uint64_t max_id = 0;
+    //   alloc.for_each_alloc([&](uint64_t id, const AllocMeta&) {
+    //       max_id = std::max(max_id, id);   // safe only if registry non-empty
+    //   });
+    //   // BUG if registry is empty: max_id remains 0 — caller assumes valid data.
+    //
+    // The SAFE pattern (mirrors 3f11d45 fix):
+    //   if (alloc.alloc_count() == 0) { result = 0; return; }  // ← guard
+    //   alloc.for_each_alloc([&](...) { ... max/min aggregation ... });
+    //
+    // 断点调试: when PHILEMON_DEBUG_MIGRATE is defined, logs each iteration entry
+    // so callers can verify the callback fires 0 times for an empty registry.
     void for_each_alloc(std::function<void(uint64_t, const AllocMeta&)> cb) const {
         std::shared_lock<std::shared_mutex> lk(mu_);  // M005: shared read lock
+        // 3f11d45: explicitly handle empty registry — cb is never called,
+        // so aggregations that depend on at least one call must guard at the
+        // call site (see safe_max_sampled_count() for the canonical pattern).
+        if (registry_.empty()) {
+#ifdef PHILEMON_DEBUG_MIGRATE
+            fprintf(stderr,
+                "[DEBUG 3f11d45 for_each_alloc] registry empty — 0 callbacks fired\n");
+#endif
+            return;
+        }
         for (auto& [id, meta] : registry_) {
             cb(id, meta);
         }
+    }
+
+    // safe_max_sampled_count — compute max alloc_id across all registrations,
+    // returning 0 if the registry is empty.
+    //
+    // 3f11d45 pattern: mirrors the Python fix
+    //   uxn = (ux.max() + 1) if ux.numel() > 0 else torch.tensor(0, ...)
+    // translated to C++:
+    //   result = registry_.empty() ? 0 : max(id for id in registry_)
+    //
+    // This is the canonical "compute size of sampled set from output" helper —
+    // use it instead of raw for_each_alloc + external max aggregation.
+    //
+    // 断点调试: prints the computed count and whether the empty-guard fired.
+    uint64_t safe_max_sampled_count(MemoryTier tier) const {
+        std::shared_lock<std::shared_mutex> lk(mu_);
+        if (registry_.empty()) {
+            // 3f11d45: empty input → return 0, do NOT call max on empty set
+            fprintf(stderr,
+                "[DEBUG 3f11d45 safe_max_sampled_count] tier=%s registry empty"
+                " → returning 0 (mirrors 3f11d45 numel()==0 guard)\n",
+                tier_name(tier));
+            return 0;
+        }
+        uint64_t max_id = 0;
+        for (auto& [id, meta] : registry_) {
+            if (meta.current_tier == tier) {
+                max_id = std::max(max_id, id);
+            }
+        }
+        fprintf(stderr,
+            "[DEBUG 3f11d45 safe_max_sampled_count] tier=%s count=%lu\n",
+            tier_name(tier), (unsigned long)max_id);
+        return max_id;
+    }
+
+    // alloc_count — number of live allocations (for empty-guard at call sites).
+    size_t alloc_count() const {
+        std::shared_lock<std::shared_mutex> lk(mu_);
+        return registry_.size();
     }
 
     // Budget introspection.
