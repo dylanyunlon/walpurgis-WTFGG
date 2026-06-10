@@ -1908,3 +1908,82 @@ make_temporal_session_from_loader_args()  # 便利builder对应NeighborLoader.__
   train_loop epoch loss/auc →
   main barrier 检查点 / eli_train/test shape / feat_dims
 
+
+## migrate dbb33ad: Use PyBuffer_FillInfo for simple buffers and simplify cleanup
+
+- **Upstream commit**: dbb33ad (cugraph-gnn, NVIDIA, 2026-03-24)
+- **Commit message**: `Use \`PyBuffer_FillInfo\` for simple buffers & simplify Python buffer cleanup`
+- **Upstream diff** (1 file changed, 11 insertions, 25 deletions):
+  - `python/pylibwholegraph/pylibwholegraph/binding/wholememory_binding.pyx`
+  - 新增 import: `from cpython.buffer cimport PyBuffer_FillInfo`
+  - `PyWholeMemoryUniqueID.__getbuffer__`: 11行手工赋值 → `PyBuffer_FillInfo(buffer, self, &internal[0], shape[0], False, flags)` 6行调用
+  - `PyWholeMemoryUniqueID.__releasebuffer__`: 7行手工清空 (含 `buffer.obj = None` BUG) → `pass`
+  - `PyWholeMemoryFlattenDlpack.__releasebuffer__`: 同样 7行清空 → `pass`
+
+- **BUG 根因**:
+  旧 `__releasebuffer__` 中 `buffer.obj = None` 破坏 CPython Buffer Protocol 引用计数协议:
+  1. `PyBuffer_FillInfo` (在 `__getbuffer__` 中调用) 对 `buffer.obj = self` 执行 `Py_INCREF` → refcount(self) += 1
+  2. 旧 `__releasebuffer__` 执行 `buffer.obj = None` → Python 赋值导致 self 的 refcount -= 1 (提前归还)
+  3. Python 运行时在 `__releasebuffer__` 返回后对原 `buffer.obj` 再执行 `Py_DECREF` → 双重释放
+  结果: `self` (PyWholeMemoryUniqueID) 引用计数比预期少 1, 在多 memoryview 视图叠加时
+  触发 use-after-free。低并发下不易复现, 高并发 SIGSEGV 或静默数据损坏 (ID 值已错误但校验通过)。
+  `pass` 修复: Py_buffer 由 Python 运行时统一清理, `__releasebuffer__` 不应提前操作任何字段。
+
+- **Knuth 审查**:
+  1. **diff 对比源**:
+     | 上游 dbb33ad | Walpurgis 迁移 |
+     |---|---|
+     | Cython .pyx, `PyBuffer_FillInfo` 直接调用 C API | Python 抽象层 `FillInfoArgs` dataclass + `call_fill_info()` |
+     | 旧 11 行手工赋值 → 新 6 行 `PyBuffer_FillInfo` 调用 | `assert_fill_info_semantic()` 逐字段对比等价性 |
+     | `__releasebuffer__` 改为 `pass` | `ReleaseBufferPolicy` 枚举, NOOP vs MANUAL_CLEAR |
+     | `buffer.obj = None` BUG 仅 commit message 文字说明 | `ObjDoubleDecrefBug` 类: `simulate_bug()` 引用计数路径演示 |
+     | `flags` 由 `PyBuffer_FillInfo` C API 内部处理 | `BufferFlags` IntFlag 枚举, 对应 `PyBUF_SIMPLE/WRITABLE/FORMAT/ND/STRIDES` |
+     | 两处 `__releasebuffer__` (UniqueID + FlattenDlpack) | `WalpurgisUniqueIdBuffer` 统一封装 + `release_policy` 参数 |
+
+  2. **用户角度 bug**:
+     - 调用 `memoryview(py_unique_id)` 或 `bytearray(py_unique_id)` 时触发 `__getbuffer__` + `__releasebuffer__` 对。
+       旧代码 `buffer.obj = None` 在 `__releasebuffer__` 中执行后,
+       memoryview 析构时 Python 运行时再对原 obj 执行 `Py_DECREF` → double free。
+       若同时有第二个 memoryview 持有同一缓冲区地址, 下次访问即 use-after-free。
+       错误形式: 随机 SIGSEGV (obj 已释放内存被复用) 或 UniqueID 字节值损坏 (但 len/format 通过检查)。
+     - 旧 `__getbuffer__` 固定 `buffer.format = 'c'` (char), 无视 `flags & PyBUF_FORMAT`。
+       调用方请求 `PyBUF_FORMAT` 时仍返回 `'c'`, 可能绕过下游格式校验。
+       `PyBuffer_FillInfo` 按 flags 正确处理: 未设 `PyBUF_FORMAT` 时 `format=NULL`。
+
+  3. **系统角度安全**:
+     - `Py_buffer.obj` 字段遵循"借用引用"协议: `__getbuffer__` 做 INCREF (通过 `PyBuffer_FillInfo`),
+       `__releasebuffer__` 不做 DECREF (运行时做)。旧代码 `obj=None` 破坏此协议,
+       是经典 CPython 扩展模块引用计数陷阱, 静态分析工具 (如 `refcount-checker`) 可检出但易被忽略。
+     - `PyBuffer_FillInfo` 处理 `PyBUF_WRITABLE` flag: `readonly=True` 但请求可写时抛 `BufferError`。
+       旧代码 `buffer.readonly = 0` 无条件设可写, 不验证 flags, 调用方无法区分"确认可写"与"未检查"。
+     - 两处 `__releasebuffer__` (UniqueID 和 FlattenDlpack) 是同一 BUG 模式的两个实例,
+       表明此写法是代码库内的系统性问题而非孤立错误, 迁移时应全部覆盖。
+
+### Walpurgis 迁移位置
+
+**文件: `src/walpurgis/core/unique_id_buffer.py`** — 新增
+
+**迁移要点**:
+- `BufferFlags`: `IntFlag` 枚举对应 `PyBUF_SIMPLE/WRITABLE/FORMAT/ND/STRIDES` 常量,
+  旧代码完全忽略 flags 参数, 本枚举明示各 flag 语义
+- `FillInfoArgs`: dataclass 封装 `PyBuffer_FillInfo` 的 6 个参数 (buf/obj/len/readonly/flags/format),
+  `__post_init__` 校验 `length >= 0`
+- `call_fill_info()`: `PyBuffer_FillInfo` Python 层模拟, 实现 `PyBUF_WRITABLE` 冲突检测 → `BufferError`,
+  返回等价 `Py_buffer` 字段 dict
+- `ReleaseBufferPolicy`: 枚举, `NOOP` (dbb33ad 新, 正确) vs `MANUAL_CLEAR` (旧 BUG, 文档用)
+- `ObjDoubleDecrefBug`: 文档类, `simulate_bug()` 用 `sys.getrefcount` 逐步演示双重释放引用计数路径
+- `assert_fill_info_semantic()`: 逐字段对比 `call_fill_info` vs 旧 11 行手工赋值等价性,
+  注明 format 字段有意差异 (旧 `'c'` vs 新按 flags)
+- `WalpurgisUniqueIdBuffer`: Buffer Protocol Python 层实现,
+  `get_buffer_fields()` 对应 `__getbuffer__`, `release_buffer()` 对应 `__releasebuffer__`,
+  `release_policy=NOOP` 为默认正确模式
+- 全链路 `WALPURGIS_DEBUG=1` 断点 print:
+  `FillInfoArgs.__post_init__` 构建验证 →
+  `call_fill_info.entry` flags 解析 →
+  `call_fill_info.WRITABLE_CONFLICT` 冲突告警 →
+  `call_fill_info.result` 字段填充结果 →
+  `assert_fill_info_semantic.field_check` 逐字段对比 →
+  `WalpurgisUniqueIdBuffer.__init__` 构建 →
+  `get_buffer_fields.__getbuffer__` 视图获取 →
+  `release_buffer.__releasebuffer__` 策略选择 →
+  `ObjDoubleDecrefBug.simulate` 引用计数路径演示
