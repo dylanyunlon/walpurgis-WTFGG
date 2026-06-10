@@ -71,6 +71,24 @@ struct TemporalEdge {
     int32_t  ts_start;
     int32_t  ts_end;
     int64_t  etime;        // edge creation timestamp (from cugraph-gnn d4b52c9)
+
+    // ════ b58ea19 migration: embedding dtype for edge feature storage ════
+    // b58ea19 changed optimizer kernels from float-only to templated
+    // <typename EmbeddingT>, supporting float/half/bf16 storage with
+    // fp32 compute in the update step (static_cast<float>(emb) for read,
+    // static_cast<EmbeddingT>(result) for write).
+    //
+    // In our graph context, TemporalEdge "features" (weight here) are stored
+    // as double.  The EmbeddingStorageDtype records the intended precision for
+    // feature tensors attached to this edge partition — used by the benchmark
+    // to size and align feature buffers correctly.
+    //
+    // align_count from b58ea19:embedding_optimizer_func.cu:86:
+    //   align_count = 16 / emb_element_size
+    //   float(4B)→4, half(2B)→8, bf16(2B)→8
+    //
+    // Print debug: TemporalEdge::dump() now shows the feature dtype.
+    uint8_t  feature_dtype;  // 0=float, 1=half, 2=bf16 (mirrors EmbeddingDtype)
 };
 
 // Memory tier — now maps to actual devices
@@ -162,6 +180,55 @@ struct Partition {
     Partition(const Partition&)            = delete;
     Partition& operator=(const Partition&) = delete;
 };
+
+// ════════════════════════════════════════════════════════════════════════════
+//  b58ea19 migration: Embedding dtype alignment helpers
+//
+//  b58ea19 embedding_optimizer_func.cu:86 introduced dtype-aware alignment:
+//    size_t emb_element_size = wholememory_dtype_get_element_size(emb_dtype);
+//    int align_count = static_cast<int>(16 / emb_element_size);
+//    // float→4, half→8, bf16→8 (all yield 16-byte aligned blocks)
+//
+//  This replaces the hardcoded round_up_unsafe(dim, 4) that only worked for
+//  float32.  In our benchmark we use this to compute padded feature dims.
+// ════════════════════════════════════════════════════════════════════════════
+
+// Returns element size in bytes for the three trainable dtypes.
+static size_t emb_element_size(uint8_t dtype) {
+    switch (dtype) {
+        case 0: return 4;  // float32
+        case 1: return 2;  // float16
+        case 2: return 2;  // bfloat16
+        default: return 4;
+    }
+}
+
+// b58ea19: align_count = 16 / element_size — yields 16-byte aligned dim.
+// Used for feature buffer stride computation (mirrors padded_embedding_dim).
+static int emb_align_count(uint8_t dtype) {
+    return static_cast<int>(16 / emb_element_size(dtype));
+}
+
+// Round embedding_dim up to the nearest multiple of align_count.
+// b58ea19 removed the hardcoded round_up(dim, 4) and replaced with this.
+static int emb_padded_dim(int dim, uint8_t dtype) {
+    int ac = emb_align_count(dtype);
+    return ((dim + ac - 1) / ac) * ac;
+}
+
+// Print-debug: validate that padded_dim satisfies 16-byte alignment.
+// Called at partition creation to catch misconfigured feature buffers.
+static void debug_check_emb_alignment(int dim, int padded, uint8_t dtype) {
+    int ac = emb_align_count(dtype);
+    if (padded % ac != 0 || padded < dim) {
+        fprintf(stderr,
+            "[DEBUG b58ea19 align] FAIL: dim=%d padded=%d align_count=%d dtype=%u\n",
+            dim, padded, ac, dtype);
+    } else {
+        printf("[DEBUG b58ea19 align] OK: dim=%d padded=%d align_count=%d dtype=%u\n",
+               dim, padded, ac, dtype);
+    }
+}
 
 // ════════════════════════════════════════════════════════════════════════════
 //  HeteroAllocator — real CUDA memory across devices
@@ -278,7 +345,14 @@ private:
 // ════════════════════════════════════════════════════════════════════════════
 
 static std::vector<TemporalEdge>
-generate_edges(size_t n, int32_t ts_min, int32_t ts_max, uint64_t max_vertex) {
+generate_edges(size_t n, int32_t ts_min, int32_t ts_max, uint64_t max_vertex,
+               uint8_t feature_dtype = 0 /* 0=float, 1=half, 2=bf16 */) {
+    // b58ea19: generate_edges now accepts feature_dtype to simulate
+    // mixed-precision edge feature storage (float/half/bf16).
+    // Print debug: show alignment for this dtype at generation time.
+    printf("[DEBUG generate_edges] n=%zu feature_dtype=%u align_count=%d\n",
+           n, feature_dtype, emb_align_count(feature_dtype));
+
     std::mt19937_64 rng(42);
     std::uniform_int_distribution<int32_t> ts_dist(ts_min, ts_max);
     std::vector<TemporalEdge> edges(n);
@@ -294,6 +368,12 @@ generate_edges(size_t n, int32_t ts_min, int32_t ts_max, uint64_t max_vertex) {
         edges[i].ts_start = ts_dist(rng);
         int32_t dur = std::uniform_int_distribution<int32_t>(1, 100)(rng);
         edges[i].ts_end   = std::min(edges[i].ts_start + dur, ts_max);
+        // Pre-existing omission (now explicit): etime was never initialized.
+        // b58ea19 self-review: uninitialized etime would corrupt temporal
+        // neighbor sampling's causal filter (etime <= query_time check).
+        edges[i].etime    = static_cast<int64_t>(edges[i].ts_start) * 1000LL;
+        // b58ea19: record the feature dtype for this batch
+        edges[i].feature_dtype = feature_dtype;
     }
     return edges;
 }

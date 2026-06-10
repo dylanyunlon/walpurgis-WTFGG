@@ -71,6 +71,69 @@ namespace philemon {
 // DRAM = posix_memalign.  In CPU-only dev: all tiers simulated via DRAM
 // with artificial latency accounting.
 
+// ─── Embedding dtype support (migrated from b58ea19) ────────────────────────
+// b58ea19: Expanded training support from float-only to float/half/bf16.
+// Maps to our tier dtype validation: allocations for embedding training
+// must use float, half, or bf16.  Other dtypes (double, int) are rejected
+// at the optimizer-state creation boundary.
+//
+// Pattern: wholememory embedding.cpp set_optimizer() dtype check:
+//   if (dtype != FLOAT && dtype != HALF && dtype != BF16)
+//     return WHOLEMEMORY_NOT_IMPLEMENTED;
+//
+// Our corresponding enum mirrors the three trainable types.  Optimizer-state
+// allocations are ALWAYS promoted to float32 (cachable_state_desc.dtype =
+// WHOLEMEMORY_DT_FLOAT in b58ea19:embedding.cpp:364), regardless of the
+// embedding storage dtype.
+enum class EmbeddingDtype : uint8_t {
+    FLOAT = 0,  // fp32 — full precision training
+    HALF  = 1,  // fp16 — mixed precision (storage fp16, optimizer states fp32)
+    BF16  = 2,  // bf16 — mixed precision (storage bf16, optimizer states fp32)
+};
+
+// Returns true if dtype supports gradient-based optimizer training.
+// b58ea19: only FLOAT/HALF/BF16 are trainable; all others → NOT_IMPLEMENTED.
+//
+// Knuth self-review: the current EmbeddingDtype enum only contains three values,
+// so this function is a tautology over the current enum — it always returns true.
+// The guard is FORWARD-LOOKING: if a future EmbeddingDtype::INT8 or
+// EmbeddingDtype::DOUBLE is added, this will correctly return false and prevent
+// optimizer-state allocation.  The function must be updated in tandem with any
+// EmbeddingDtype extension.
+inline bool embedding_dtype_is_trainable(EmbeddingDtype dt) {
+    return dt == EmbeddingDtype::FLOAT ||
+           dt == EmbeddingDtype::HALF  ||
+           dt == EmbeddingDtype::BF16;
+}
+
+// b58ea19 embedding.cpp:364: optimizer-state allocations are ALWAYS fp32,
+// even when embedding storage is fp16 or bf16.  This prevents precision loss
+// in momentum/variance accumulators (Adam m/v, AdaGrad state_sum, etc.).
+// Returns the dtype to use when creating optimizer-state buffers.
+inline EmbeddingDtype optimizer_state_dtype(EmbeddingDtype /*emb_dtype*/) {
+    return EmbeddingDtype::FLOAT;  // always fp32, regardless of storage dtype
+}
+
+// Size in bytes for each embedding dtype element.
+// b58ea19 embedding_optimizer_func.cu:86: align_count = 16 / emb_element_size
+//   float → 4 bytes → align_count = 4
+//   half  → 2 bytes → align_count = 8
+//   bf16  → 2 bytes → align_count = 8
+inline size_t embedding_dtype_element_size(EmbeddingDtype dt) {
+    switch (dt) {
+        case EmbeddingDtype::FLOAT: return 4;
+        case EmbeddingDtype::HALF:  return 2;
+        case EmbeddingDtype::BF16:  return 2;
+        default: return 4;
+    }
+}
+
+// b58ea19: align_count = 16 / emb_element_size — ensures 16-byte alignment
+// for all float types (4 floats, 8 halves, 8 bf16s per 16-byte vector lane).
+inline int embedding_dtype_align_count(EmbeddingDtype dt) {
+    return static_cast<int>(16 / embedding_dtype_element_size(dt));
+}
+
 enum class MemoryTier : uint8_t {
     HBM   = 0,   // H100 High-Bandwidth Memory (3.35 TB/s)
     GDDR  = 1,   // A6000 GDDR6 (768 GB/s)
@@ -254,8 +317,31 @@ public:
     // Allocate on the preferred tier; fall back to lower tiers if full.
     // Returns allocation id (0 on failure).
     // Takes UNIQUE lock — structural mutation.
+    //
+    // b58ea19 migration: If embedding_dtype is provided and NOT trainable
+    // (i.e., not float/half/bf16), log and refuse to allocate an optimizer-
+    // state buffer.  This mirrors embedding.cpp:set_optimizer dtype check.
     uint64_t allocate(size_t size, MemoryTier preferred,
-                      int32_t ts_start = -1, int32_t ts_end = -1) {
+                      int32_t ts_start = -1, int32_t ts_end = -1,
+                      EmbeddingDtype dtype = EmbeddingDtype::FLOAT,
+                      bool is_optimizer_state = false) {
+        // b58ea19: guard — optimizer states only for trainable dtypes
+        if (is_optimizer_state && !embedding_dtype_is_trainable(dtype)) {
+            std::cout << "[TieredAllocator] ERROR: allocate() optimizer_state=true"
+                      << " but dtype=" << static_cast<int>(dtype)
+                      << " is not trainable (only FLOAT/HALF/BF16)."
+                      << " Returning 0 (NOT_IMPLEMENTED).\n";
+            return 0;
+        }
+        // b58ea19 embedding.cpp:364: optimizer states are always fp32,
+        // so the actual alloc size does not change here (caller passes
+        // float-sized size already), but we record the intended dtype.
+        if (is_optimizer_state) {
+            // Print-debug: confirm state dtype promotion
+            std::cout << "[TieredAllocator] DEBUG allocate(): optimizer_state"
+                      << " storage_dtype=" << static_cast<int>(dtype)
+                      << " -> state_dtype=FLOAT (promoted per b58ea19)\n";
+        }
         MemoryTier actual = preferred;
 
         // Waterfall: HBM → GDDR → DRAM

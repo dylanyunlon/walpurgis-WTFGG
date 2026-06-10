@@ -231,13 +231,42 @@ public:
         std::atomic<uint64_t> bytes_transferred{0};
         std::atomic<uint64_t> total_latency_ns{0};
 
+        // ════ b58ea19 migration: per-dtype transfer accounting ════
+        // b58ea19 test_dist_tensor_mg.py parametrizes dtype=float32/float16/bfloat16.
+        // Each dtype has different bandwidth characteristics:
+        //   float32: 4 bytes/elem — baseline
+        //   float16: 2 bytes/elem — 2× more elements per cache line
+        //   bfloat16: 2 bytes/elem — same as float16, wider dynamic range
+        //
+        // We track bytes by dtype to expose per-precision migration cost.
+        // Print-debug: Stats::print() now breaks out bytes by dtype.
+        std::atomic<uint64_t> bytes_float32{0};
+        std::atomic<uint64_t> bytes_float16{0};
+        std::atomic<uint64_t> bytes_bfloat16{0};
+
         void print() const {
             uint64_t c = completed.load();
             double avg_us = c > 0 ? (total_latency_ns.load() / 1000.0) / c : 0;
             std::cout << "[AsyncMigration] submitted=" << submitted.load()
                       << " completed=" << c
                       << " bytes=" << bytes_transferred.load()
-                      << " avg_latency=" << avg_us << "μs\n";
+                      << " avg_latency=" << avg_us << "μs"
+                      << " [b58ea19 dtype breakdown]"
+                      << " fp32=" << bytes_float32.load()
+                      << "B fp16=" << bytes_float16.load()
+                      << "B bf16=" << bytes_bfloat16.load()
+                      << "B\n";
+        }
+
+        // Record a transfer with its dtype (0=float32, 1=float16, 2=bfloat16).
+        // b58ea19: allclose uses .float() cast on both sides before comparison,
+        // so all dtypes reduce to float32 for validation.
+        void record_dtype_bytes(uint8_t dtype, uint64_t nb) {
+            switch (dtype) {
+                case 1: bytes_float16.fetch_add(nb, std::memory_order_relaxed); break;
+                case 2: bytes_bfloat16.fetch_add(nb, std::memory_order_relaxed); break;
+                default: bytes_float32.fetch_add(nb, std::memory_order_relaxed); break;
+            }
         }
     };
 
@@ -366,6 +395,9 @@ public:
             stats_.completed.fetch_add(1, std::memory_order_relaxed);
             stats_.bytes_transferred.fetch_add(pm.size_bytes, std::memory_order_relaxed);
             stats_.total_latency_ns.fetch_add(latency, std::memory_order_relaxed);
+            // b58ea19: record dtype breakdown — default to float32 since
+            // PendingMigration doesn't carry dtype yet (future: add field).
+            stats_.record_dtype_bytes(0, pm.size_bytes);
 
             pending_.pop();
             completed++;
