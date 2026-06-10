@@ -2973,3 +2973,21 @@ if d > 0:           # 整除时 d==0，跳过切片，保留完整 perm
 3. **系统安全**: 无安全隐患，删除本地 docs 目录不影响库的正确性
 
 **迁移决策**: SKIP — 纯文档目录清理，Walpurgis 有独立文档体系，无任何可迁移内容
+
+## migrate cf71bc7: [SKIP] remove pycache — 纯编译缓存清理，无迁移价值
+
+**上游 commit**: `cf71bc7` (remove pycache)
+
+**diff 分析**:
+- 变更范围: 共 47 个文件，全部删除，0 行新增
+- 全部位于 `python/cugraph-dgl/` 和 `python/cugraph-pyg/` 的各级 `__pycache__/` 目录
+- 删除内容: CPython 3.11 编译生成的 `.pyc` 字节码缓存文件，以及 pytest-8.2.0 生成的测试 `.pyc`
+  - `cugraph-dgl`: `__init__`、`convert`、`cugraph_storage`、`dataloading`、`nn/conv/base`、`utils/*` 等模块的 `.pyc`
+  - `cugraph-pyg`: `__init__`、`_version`、`data/*`、`loader/*`、`nn/conv/*`（gat/gatv2/hetero_gat/rgcn/sage/transformer）、`sampler/*`、全套 `tests/**/*.pyc`
+
+**Knuth 审查**:
+1. **diff 对比源**: 无任何 `.py`/`.cu`/`.cpp` 源码改动，全部是二进制构建产物；`.gitignore` 应早已屏蔽 `__pycache__/`，此 commit 是补救性清理
+2. **用户角度 bug**: 无运行时影响；但若 `.gitignore` 未同步修复，开发者每次运行 Python 后这些文件会重新污染 `git status`，制造持续噪音
+3. **系统安全**: `.pyc` 文件头部嵌有编译时绝对路径（开发者本机路径/用户名），入库属轻微信息泄露；此 commit 正确清除，安全性略有提升
+
+**迁移决策**: SKIP — 纯 `__pycache__` 清理，Walpurgis 项目无此类缓存文件入库问题，无任何可迁移内容
