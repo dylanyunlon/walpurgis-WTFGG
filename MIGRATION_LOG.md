@@ -1,4 +1,15 @@
 
+## migrate 68bad40: [SKIP] Allow latest OS in devcontainers — 纯 devcontainer 配置，无迁移价值
+
+- **Upstream commit**: 68bad40 (cugraph-gnn, Bradley Dice, 2025-07-24, PR #257)
+- **Commit message**: `Allow latest OS in devcontainers (#257)`
+- **Upstream diff** (2 files changed, 2 insertions, 2 deletions):
+  - `.devcontainer/cuda12.9-conda/devcontainer.json`: `BASE` 从 `rapidsai/devcontainers:25.10-cpp-mambaforge-ubuntu22.04` 改为 `rapidsai/devcontainers:25.10-cpp-mambaforge`（去掉 OS 后缀，由上游镜像自动决定 OS 版本）
+  - `.devcontainer/cuda12.9-pip/devcontainer.json`: `BASE` 从 `rapidsai/devcontainers:25.10-cpp-cuda12.9-ucx1.18.0-openmpi-ubuntu22.04` 改为 `rapidsai/devcontainers:25.10-cpp-cuda12.9-ucx1.18.0-openmpi5.0.7`（OS 后缀替换为 openmpi 版本号）
+- **跳过原因**: 纯 devcontainer JSON 配置变更，仅影响 VS Code Remote Container 开发环境的基础镜像选择。Walpurgis 无 `.devcontainer/` 目录，无 rapidsai devcontainer 体系，零算法/运行时代码变更，零迁移价值。
+
+---
+
 ## migrate 03292cf: Migrate cugraph gnn packages to cugraph-pyg
 
 - **Upstream commit**: 03292cf (cugraph-gnn, NVIDIA)
