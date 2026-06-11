@@ -411,6 +411,17 @@ class WalpurgisDisjointSession:
 #           tree_vertices[n_id].update(e_h[0][e_in].tolist())
 #       for i, j: assert tv_items[i] & tv_items[j] == set()
 #
+# 659a0e1 bug fix (从 b25bc88 之后修复):
+#   旧: for n_id in batch.input_id → tree_vertices[n_id] = ...
+#       问题: input_id 是张量, 用张量作 dict key → hash(tensor) 不稳定, 偶发 CI 失败
+#   新: for n_id in torch.arange(batch.num_sampled_nodes[0].item())
+#       → tree_vertices[n_id.item()] = ...
+#       问题2: edges_hop = batch.num_sampled_edges[hop] 是张量 scalar,
+#              用于切片 [:, offset:offset+edges_hop] → 偶发 TypeError
+#   新: edges_hop = int(batch.num_sampled_edges[hop])
+#       问题3: tv_items[i] & tv_items[j] == set() 优先级歧义
+#   新: (tv_items[i] & tv_items[j]) == set()
+#
 # 改写: 提取为独立函数, 加断点调试 + overlap 统计
 # (Python 是 test 内联逻辑, 改写为可复用验证器)
 def validate_disjoint_batches(
@@ -421,18 +432,25 @@ def validate_disjoint_batches(
     """
     Verify that per-seed subgraphs are disjoint across all batches.
 
-    对应 b25bc88 test_neighbor_loader_disjoint_batch_structure 的验证逻辑.
+    对应 b25bc88/659a0e1 test_neighbor_loader_disjoint_batch_structure 的验证逻辑.
+
+    659a0e1 修复了三个 bug:
+      1. hash table 用张量作 key → 改用 torch.arange + .item() 作整数 key
+      2. edges_hop 是张量 scalar 用于切片 → 强制 int() 转换
+      3. 集合比较优先级歧义 → 括号化
 
     Python: test 内联, 仅 assert, 无统计
     改写: 提取为验证函数, 返回 (all_disjoint, stats), 加 overlap 统计
 
     Args:
-        batches: List of batch objects with .input_id, .edge_index, .num_sampled_edges
+        batches: List of batch objects with .num_sampled_nodes, .edge_index, .num_sampled_edges
         print_overlap_stats: 是否打印 overlap 统计 (默认 False, WALPURGIS_DEBUG=1 时自动打印)
 
     Returns:
         (all_disjoint: bool, stats: dict with overlap_count, total_pairs, etc.)
     """
+    import torch as _torch  # 延迟导入, 避免无 torch 环境报错
+
     print_stats = print_overlap_stats or _DBG
     total_pairs = 0
     overlap_pairs = 0
@@ -442,20 +460,45 @@ def validate_disjoint_batches(
 
     for batch_idx, batch in enumerate(batches):
         total_batches += 1
-        tree_vertices: Dict[Any, set] = {}
+        tree_vertices: Dict[int, set] = {}
 
-        # b25bc88 test 逻辑: per-seed 树遍历
-        for n_id in batch.input_id:
-            key = n_id.item() if hasattr(n_id, 'item') else n_id
+        # 659a0e1 fix #1: 用 torch.arange(num_sampled_nodes[0]) 而非 batch.input_id
+        # 原因: input_id 是张量, 张量作 dict key 导致 hash 不稳定 (张量 hash = id(), 非值语义)
+        # num_sampled_nodes[0] 是第0跳采样的节点数 = batch中实际种子节点数
+        num_seeds = int(batch.num_sampled_nodes[0].item()
+                        if hasattr(batch.num_sampled_nodes[0], 'item')
+                        else batch.num_sampled_nodes[0])
+        seed_range = range(num_seeds)  # 0-based 连续整数索引
+
+        _dbg_disjoint(
+            "validate_disjoint_batches",
+            f"batch_idx={batch_idx} num_seeds={num_seeds} "
+            f"(659a0e1: arange instead of input_id)"
+        )
+
+        for raw_nid in seed_range:
+            # 659a0e1 fix #1 cont: key 是 Python int, 非张量 — hash 稳定
+            key = raw_nid
             tree_vertices[key] = {key}
 
             edge_offset = 0
             for hop in range(len(batch.num_sampled_edges)):
-                edges_hop = batch.num_sampled_edges[hop]
+                # 659a0e1 fix #2: int() 强制转换, 防止张量 scalar 用于切片偶发 TypeError
+                edges_hop = int(batch.num_sampled_edges[hop].item()
+                                if hasattr(batch.num_sampled_edges[hop], 'item')
+                                else batch.num_sampled_edges[hop])
                 if edges_hop == 0:
+                    edge_offset += edges_hop
                     continue
 
                 e_h = batch.edge_index[:, edge_offset: edge_offset + edges_hop]
+
+                _dbg_disjoint(
+                    "validate_disjoint_batches",
+                    f"  batch={batch_idx} seed={key} hop={hop} "
+                    f"edges_hop={edges_hop} edge_offset={edge_offset} "
+                    f"e_h.shape={getattr(e_h, 'shape', '?')}"
+                )
 
                 # 找属于当前 seed 子树的入边
                 current_set = tree_vertices[key]
@@ -469,19 +512,21 @@ def validate_disjoint_batches(
 
                 edge_offset += edges_hop
 
-        # b25bc88 test: 检查所有 seed 对的子图互不相交
+        # 659a0e1 fix #3: (A & B) == set() — 括号化防止优先级歧义
+        # 等价: assert not (tv_items[i] & tv_items[j])
         tv_items = list(tree_vertices.values())
         for i in range(len(tv_items)):
             for j in range(i + 1, len(tv_items)):
                 total_pairs += 1
                 overlap = tv_items[i] & tv_items[j]
-                if overlap:
+                # 659a0e1 fix #3 applied: 括号化集合比较
+                if not (overlap == set()):
                     overlap_pairs += 1
                     all_disjoint = False
                     _dbg_disjoint(
                         "validate_disjoint_batches",
                         f"batch_idx={batch_idx} seed_pair=({i},{j}) "
-                        f"OVERLAP={overlap} (b25bc88 test 应为空集)"
+                        f"OVERLAP={overlap} (659a0e1 修复后应为空集)"
                     )
 
     stats = {
