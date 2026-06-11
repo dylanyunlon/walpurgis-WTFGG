@@ -99,7 +99,8 @@ from pylibwholegraph.torch.initialize import (
 )
 from sklearn.metrics import roc_auc_score
 
-os.environ["CUDF_SPILL"] = "1"
+# e01196b: CUDF_SPILL removed — RMM managed_memory handles over-subscription now.
+# cudf spilling via CUDF_SPILL=1 depended on cudf which is no longer required.
 os.environ["RAPIDS_NO_INITIALIZE"] = "1"
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -138,9 +139,9 @@ def init_pytorch_worker(global_rank, local_rank, world_size, cugraph_id):
     from rmm.allocators.cupy import rmm_cupy_allocator
     cupy.cuda.set_allocator(rmm_cupy_allocator)
     _dbg("cupy allocator set", tag="INIT")
-
-    from cugraph.testing.mg_utils import enable_spilling
-    enable_spilling()
+    # e01196b: enable_spilling() removed — cudf dependency eliminated.
+    # Memory over-subscription handled by RMM managed_memory + WholeGraph UVA.
+    _dbg("cudf spilling skipped (e01196b: use RMM managed_memory instead)", tag="INIT")
 
     torch.cuda.set_device(local_rank)
 

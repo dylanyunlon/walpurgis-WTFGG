@@ -193,8 +193,13 @@ def _get_or_build_gates():
     """
     延迟 import cugraph_pyg.loader.dask_node_loader，
     避免在无 GPU 环境 import 本模块时引发 ImportError。
+
+    51fa4e8: 首次调用时发出模块级 Dask 废弃警告 (参见 _emit_dask_module_warning)。
     """
     global _DaskNeighborLoader_gate, _BulkSampleLoader_gate
+
+    # 51fa4e8: emit once-per-process module-level warning on first real use
+    _emit_dask_module_warning()
 
     if _DaskNeighborLoader_gate is not None:
         return
@@ -279,3 +284,59 @@ def CuGraphNeighborLoader(*args, **kwargs):
     )
     _dbg("CuGraphNeighborLoader", "redirecting to DaskNeighborLoader")
     return DaskNeighborLoader(*args, **kwargs)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 51fa4e8 / ee58e32: 模块级废弃警告 (DGL pattern 迁移)
+#
+# 上游 51fa4e8 在 cugraph_dgl/__init__.py 顶层加了：
+#   warnings.warn("cuGraph-DGL is no longer under active development. ...")
+# 上游 ee58e32 把同样的警告作为正式 PR 合并进 branch-25.06。
+#
+# Walpurgis 对应位置: Dask-based loader API (DaskNeighborLoader / BulkSampleLoader)
+# 与 cuGraph-DGL 同属「待移除的旧 API 层」。
+# 区别在于我们不在模块 import 时就触发 (避免噪声)，而是在首次调用 _get_or_build_gates()
+# 时通过 _emit_dask_module_warning() 发出一次性模块级警告。
+# 相当于 DGL 的「import 即警告」但延迟到实际使用，减少无关代码路径的噪声。
+#
+# WALPURGIS_DEBUG=1 时额外打印触发调用栈摘要，定位遗留代码位置。
+# ─────────────────────────────────────────────────────────────────────────────
+
+_dask_module_warning_emitted: bool = False
+
+
+def _emit_dask_module_warning() -> None:
+    """
+    51fa4e8: 发出一次性模块级 Dask loader 废弃警告。
+
+    上游在 cugraph_dgl/__init__.py 顶层用裸 warnings.warn() 对整个 DGL 子包发警告；
+    我们在首次实际调用 Dask loader 入口时触发，语义等价但无 import 噪声。
+
+    Knuth 视角: 上游的模块级警告在 CI 环境会导致每次 import cugraph_dgl 都打印
+    FutureWarning，而 test_dask_dataloader.py 里有多处 import，每次都触发。
+    延迟到首次调用更干净；但 stacklevel 必须足够深才能指向用户代码而不是这里。
+    """
+    global _dask_module_warning_emitted
+    if _dask_module_warning_emitted:
+        return
+
+    _dask_module_warning_emitted = True
+
+    warnings.warn(
+        "The Dask-based distributed loader API (DaskNeighborLoader, BulkSampleLoader) "
+        "in Walpurgis is no longer under active development and will be removed in a "
+        "future release. We strongly recommend migrating to the WholeGraph-backed "
+        "NeighborLoader / NodeLoader launched via torchrun.",
+        FutureWarning,
+        stacklevel=3,
+    )
+
+    if os.environ.get("WALPURGIS_DEBUG", "0") == "1":
+        import traceback
+        import sys
+        print(
+            "[WALPURGIS-LOADER:loader_deprecation][51fa4e8] "
+            "Dask module-level warning emitted. Call stack:",
+            file=sys.stderr, flush=True,
+        )
+        traceback.print_stack(file=sys.stderr, limit=8)

@@ -57,6 +57,18 @@ import torch
 
 _WDBG = os.environ.get("WALPURGIS_DEBUG", "0") == "1"
 
+# 70c33af: SG (single-GPU) examples are transitioning to torchrun-based unified API.
+# The upstream cugraph-gnn removed gcn_dist_sg.py and gcn_dist_snmg.py in favor of
+# the unified MNMG example that handles SG/SNMG/MNMG through one torchrun entrypoint.
+# This file is retained for reference but emits a FutureWarning on import.
+# Migration path: use gcn_dist_mnmg.py with torchrun --nproc_per_node=1 instead.
+warnings.warn(
+    "gcn_dist_sg.py (single-GPU, non-torchrun) is deprecated as of 70c33af. "
+    "Prefer gcn_dist_mnmg.py launched via `torchrun --nproc_per_node=1` which "
+    "supports SG, SNMG, and MNMG workflows through the unified WholeGraph API.",
+    FutureWarning,
+    stacklevel=1,
+)
 
 def _dbg(tag: str, msg: str, **kv):
     if _WDBG:
@@ -350,8 +362,13 @@ if __name__ == "__main__":
     torch.cuda.memory.change_current_allocator(rmm_torch_allocator)
 
     import torch_geometric
-    from cugraph.testing.mg_utils import enable_spilling
-    enable_spilling()
+    # e01196b: cuDF spilling removed — WholeGraph UVA/managed_memory via RMM handles OOM.
+    # enable_spilling() was cugraph.testing.mg_utils which depended on cudf;
+    # managed_memory=True above achieves equivalent over-subscription via driver.
+    if _DEBUG:
+        import sys
+        print("[WALPURGIS-EXAMPLE:gcn_dist_sg][__main__] cuDF spilling disabled; "
+              "RMM managed_memory=True active", file=sys.stderr, flush=True)
 
     args = parse_args()
     wall_clock_start = time.perf_counter()
