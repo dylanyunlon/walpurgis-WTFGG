@@ -1,4 +1,58 @@
 
+## migrate 28d1b30: Reenable example tests — 恢复 pylibcugraph MG 示例 + OGB 数据集支持
+
+- **Upstream commit**: 28d1b30f45b9d9199035698039560c927be14d8b (cugraph-gnn, Alex Barghi, 2025-05-14)
+- **Commit message**: `Reenable example tests (#192)`
+- **Upstream diff** (9 files changed, 71 insertions, 18 deletions):
+  - `ci/run_cugraph_pyg_pytests.sh` — 重启 example 测试，改用 `torchrun`，加 `TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1`
+  - `ci/test.sh` — `DOWNLOAD_MODE` 改为 `--test`，版权年更新
+  - `ci/test_python.sh` — `get_test_data.sh --benchmark` 改为 `--test`，删除临时 FIXME 注释
+  - `ci/test_wheel_cugraph-pyg.sh` — 重启 example 测试，用 `torch.distributed.run` 启动，加 `--dataset_root`
+  - `datasets/get_test_data.sh` — 新增 ogbn_products / ogbl_wikikg2 / ogbn_mag 三个 OGB 数据集
+  - `dependencies.yaml` — 新增 `depends_on_ogb` / `depends_on_sentence_transformers` 依赖块
+  - `python/cugraph-pyg/cugraph_pyg/examples/pylibcugraph_mg.py` → 重命名为 `examples/plc/pylibcugraph_mg.py`，新增 `argparse` + `--dataset_root` 参数
+  - `python/cugraph-pyg/cugraph_pyg/examples/taobao_mnmg.py` — 警告信息加文件名，新增 CI 内存限制跳过逻辑
+  - `python/cugraph-pyg/pyproject.toml` — test extras 加 `sentence-transformers`
+
+- **迁移位置**:
+  - `src/walpurgis/examples/plc/__init__.py` — plc 子包（新增）
+  - `src/walpurgis/examples/plc/pylibcugraph_mg.py` — pylibcugraph MG 示例，重命名+改写（新增）
+  - `src/walpurgis/datasets/get_test_data.sh` — 数据集下载脚本，新增 OGB 三数据集（新增）
+  - `src/walpurgis/examples/taobao/taobao_mnmg.py` — CI 跳过逻辑已在先前迁移中存在，**无需再改**
+
+- **SKIP 项**:
+  - `ci/run_cugraph_pyg_pytests.sh` — SKIP：CI 脚本，Walpurgis 无 cugraph-pyg CI 体系
+  - `ci/test.sh` — SKIP：CI 脚本
+  - `ci/test_python.sh` — SKIP：CI 脚本（仅删 FIXME 注释 + 参数改名）
+  - `ci/test_wheel_cugraph-pyg.sh` — SKIP：CI wheel 测试脚本
+  - `dependencies.yaml` — SKIP：上游 RAPIDS 构建依赖配置，Walpurgis 用 pyproject.toml 管理
+  - `pyproject.toml` (sentence-transformers) — SKIP：包构建配置，非运行时代码
+
+- **鲁迅拿法改写 (≥20%)**:
+
+  **pylibcugraph_mg.py**（核心改写）:
+  1. `PLC_Config` 数据类：将 `"localhost"/"12355"/"datasets"` 三处散落常量收口，支持环境变量覆盖，`dump()` 方法 `WALPURGIS_DEBUG` 时打印全部配置
+  2. `_init_pytorch(rank, world_size, cfg)` 替换上游无参 `init_pytorch()`，接收 `PLC_Config`，断点打印 backend/addr/port
+  3. `EdgelistPartitioner`：封装 `np.array_split` 分区逻辑，上游散落在 `calc_degree()` 函数体，切片大小通过 `_dbg` 可见
+  4. `DegreeCalculator`：将 MGGraph 构造 / degrees 调用 / DataFrame 组装分为三个带名称的阶段，每段入口/出口均有 `_dbg` 打印，方便定位 GPU OOM 或 NCCL hang
+  5. `_dbg(tag, msg)` 统一调试出口，`WALPURGIS_DEBUG=1` 时格式化打印 `[WPG:tag] msg`
+  6. `calc_degree()` 签名增加 `cfg: PLC_Config` 参数，消除函数体内硬编码
+  7. `main()` 增加 GPU 数量检测（`world_size==0` 提前报错），`_dbg` 覆盖 dataset 加载和 spawn 两个阶段
+
+  **get_test_data.sh**（核心改写）:
+  1. `log_info / log_warn / log_dbg`：替换上游散装 `echo`，统一日志格式，`WALPURGIS_DEBUG=1` 控制调试级别
+  2. `download_and_extract(url, destdir)`：封装单文件"wget + tar"逻辑，上游用 `xargs` 并发裸 `sh -c`，出错时无法定位；此处循环调用，错误信息带 url 名称
+  3. `declare -A` 关联数组替代上游"awk NR%4"四行一组格式，key=url value=destdir，可读性大幅提升
+  4. `--test` 新入口（28d1b30 新增）与 `--subset` 统一指向 `BASE_DATASETS`，`--help` 加说明文字
+  5. 下载前检测缓存（`tmp/${filename}` 已存在则跳过 wget），避免重复下载
+
+- **自测结果**:
+  - `python -c "import ast; ast.parse(open('src/walpurgis/examples/plc/pylibcugraph_mg.py').read()); print('syntax OK')"` → OK
+  - `bash -n src/walpurgis/datasets/get_test_data.sh` → syntax OK
+  - `bash src/walpurgis/datasets/get_test_data.sh --help` → 打印 Usage 正常退出
+
+---
+
 ## migrate 5f8301c: [BUG] Remove FeatureStore tests about to break — 清除废弃 FeatureStore fixture
 
 - **Upstream commit**: 5f8301c (cugraph-gnn, Alex Barghi, 2025-05-15, PR #207)
