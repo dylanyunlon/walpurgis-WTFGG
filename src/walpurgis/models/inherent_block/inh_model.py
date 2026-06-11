@@ -29,6 +29,12 @@ class RNNLayer(nn.Module):
         self.ema_proj = nn.Linear(hidden_dim, hidden_dim, bias=False)
         # 门控初始化: 初期以原始GRU为主, EMA缓慢介入
         self.ema_inject_gate = nn.Parameter(th.tensor(-2.0))  # sigmoid(-2)≈0.12
+        # ═══ 频域低通滤波参数 (鲁迅拿法, 从TITAN移植) ═══
+        # spectral_gate: 决定低频截止点, 初始0.0 → sigmoid mask在中频处=0.5
+        # 训练中学习: 正值→保留更多低频, 负值→允许更多高频
+        self.spectral_gate = nn.Parameter(th.tensor(0.0))
+        # spectral_inject_gate: sigmoid(-3)≈0.047, 初期几乎不影响
+        self.spectral_inject_gate = nn.Parameter(th.tensor(-3.0))
 
     def forward(self, X):
         [batch_size, seq_len, num_nodes, hidden_dim]    = X.shape
@@ -52,6 +58,32 @@ class RNNLayer(nn.Module):
             inject = th.sigmoid(self.ema_inject_gate)
             hx = hx + inject * self.ema_proj(ema_mix - hx)  # 残差注入
             output.append(hx)
+        # ═══ 频域低通滤波残差注入 (鲁迅拿法, ~20%改写) ═══
+        # 原理: 交通流是周期性信号, FFT后截断高频(噪声), 只保留低频成分
+        # 实现: 对时间序列output做FFT, 可学习gate决定低频保留比例
+        # 改写点vs原始FFT滤波: 不硬截断而是用sigmoid mask软截断, 门控残差注入
+        output_stack = th.stack(output, dim=1)  # [BN, T, D]
+        if output_stack.shape[1] >= 4:  # 序列足够长才做频域处理
+            fft_out = th.fft.rfft(output_stack, dim=1)  # [BN, T//2+1, D]
+            freq_len = fft_out.shape[1]
+            # 可学习低频权重: 低频保留, 高频衰减; 初始保留前50%
+            freq_idx = th.arange(freq_len, dtype=th.float32,
+                                 device=output_stack.device)
+            freq_mask = th.sigmoid(
+                self.spectral_gate - freq_idx / (freq_len * 0.5))
+            freq_mask = freq_mask.unsqueeze(0).unsqueeze(-1)  # [1, F, 1]
+            fft_filtered = fft_out * freq_mask
+            filtered = th.fft.irfft(
+                fft_filtered, n=output_stack.shape[1], dim=1)  # [BN, T, D]
+            # 门控残差注入: sigmoid gate控制频域修正的影响
+            spec_inject = th.sigmoid(self.spectral_inject_gate)
+            output_stack = output_stack + spec_inject * (filtered - output_stack)
+            if _CAS_DBG:
+                print(f"[CAS:spectral@inh_model] spec_inject={spec_inject.item():.4f} "
+                      f"spectral_gate={self.spectral_gate.item():.4f} "
+                      f"freq_mask_mean={freq_mask.mean().item():.4f}",
+                      file=sys.stderr)
+            output = [output_stack[:, t] for t in range(output_stack.shape[1])]
         output  = th.stack(output, dim=0)
         output  = self.dropout(output)
         if _CAS_DBG:

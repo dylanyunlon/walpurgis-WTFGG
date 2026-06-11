@@ -11,6 +11,10 @@ D2STGNN — Cascade变体
   5. embedding后接SE通道注意力块 (Cascade特有)
   6. [Phase 3] 空间自注意力 (from STAEformer): 节点维multi-head attention,
      门控残差注入+Pre-LN+轻量FFN+时间分块, 入口空间/出口时序对称结构
+  7. [Phase 3] 非对称自适应邻接矩阵 (from Graph WaveNet鲁迅拿法):
+     前向/后向双矩阵独立投影, 可学习blend gate混合为单矩阵
+  8. [Phase 3] Dif/Inh自适应融合门控: 内容感知gate替代固定等权相加,
+     根据dif/inh特征动态决定各分支贡献比例
 """
 import torch
 import torch.nn as nn
@@ -334,6 +338,17 @@ class D2STGNN(nn.Module):
 
         # Adaptive adjacency learning: learnable temperature for static graph
         self._adj_temperature = nn.Parameter(torch.tensor(1.0))
+        # ═══ 非对称邻接矩阵投影 (Graph WaveNet鲁迅拿法) ═══
+        # 前向/后向各一个线性投影, 使双向adj捕获不同的图结构语义
+        # 低秩投影 (node_dim→node_dim) 参数量小但表达力足够
+        self._adj_proj_fwd = nn.Linear(
+            self._node_dim, self._node_dim, bias=False)
+        self._adj_proj_bwd = nn.Linear(
+            self._node_dim, self._node_dim, bias=False)
+        nn.init.eye_(self._adj_proj_fwd.weight)  # 初始为恒等, 训练中学偏转
+        nn.init.eye_(self._adj_proj_bwd.weight)
+        # 混合门控: sigmoid(0.0)=0.5, 初始前向/后向各占50%
+        self._adj_blend_gate = nn.Parameter(torch.tensor(0.0))
 
         # 输出头: GELU + LayerNorm + 残差shortcut (Cascade特有)
         self.out_fc_1 = nn.Linear(
@@ -351,6 +366,17 @@ class D2STGNN(nn.Module):
         self.output_temporal_attn = TemporalCrossAttention(
             self._forecast_dim, num_heads=2,
             dropout=model_args.get('dropout', 0.1))
+
+        # ═══ Dif/Inh自适应融合门控 (算法改写) ═══
+        # 原始: forecast = dif_sum + inh_sum (硬性等权相加)
+        # 改写: 可学习gate决定各节点在每个时间步的dif/inh贡献比
+        # 门控基于dif/inh特征做轻量注意力 — 内容自适应而非固定权重
+        # 初始sigmoid(0)=0.5, 各占一半, 训练中学偏好
+        self.dif_inh_gate_fc = nn.Linear(
+            self._forecast_dim * 2, self._forecast_dim, bias=False)
+        self.dif_inh_gate_out = nn.Linear(
+            self._forecast_dim, 1, bias=True)
+        nn.init.zeros_(self.dif_inh_gate_out.bias)  # 初始gate=0.5
 
         # ═══ 从STAEformer移植: 空间自注意力 (Phase 3) ═══
         # 在embedding+自适应嵌入后、decouple层前对节点维做self-attention
@@ -375,15 +401,25 @@ class D2STGNN(nn.Module):
         E_d = inputs['node_embedding_u']
         E_u = inputs['node_embedding_d']
         if self._model_args['sta_graph']:
-            # Adaptive adjacency learning: learnable graph + temperature-scaled softmax
-            # Base graph from node embeddings
-            raw_adj = torch.mm(E_d, E_u.T)
-            # Symmetrize: traffic graphs are largely bidirectional
-            raw_adj = 0.5 * (raw_adj + raw_adj.T)
-            # Learnable temperature for sharper/softer attention
-            adj = F.softmax(F.relu(raw_adj) / self._adj_temperature, dim=1)
+            # ═══ 非对称自适应邻接矩阵 (从Graph WaveNet鲁迅拿法, 改写~20%) ═══
+            # 原始GW: A_adp = softmax(relu(E1 @ E2^T))
+            # Cascade改写: 双向非对称矩阵混合, 可学习blend gate决定前向/后向贡献
+            # 物理意义: 交通流是有向的(upstream→downstream), 非对称更合理
+            # 改写点: 不直接暴露两个矩阵给gcn (避免修改num_matric),
+            #   而是用可学习gate混合成单矩阵, 训练中自学方向偏好
+            # forward adj: E_d -> E_u (下行方向)
+            raw_adj_fwd = torch.mm(E_d, self._adj_proj_fwd(E_u).T)
+            adj_fwd = F.softmax(F.relu(raw_adj_fwd) / self._adj_temperature, dim=1)
+            # backward adj: E_u -> E_d (上行方向), 捕获反向依赖
+            raw_adj_bwd = torch.mm(E_u, self._adj_proj_bwd(E_d).T)
+            adj_bwd = F.softmax(F.relu(raw_adj_bwd) / (self._adj_temperature * 1.5), dim=1)
+            # 可学习混合: sigmoid gate控制前向/后向比例
+            blend = torch.sigmoid(self._adj_blend_gate)
+            adj = blend * adj_fwd + (1.0 - blend) * adj_bwd
             static_graph = [adj]
             _dbg("adj_temperature", self._adj_temperature, "model")
+            _dbg("adj_blend_fwd_ratio", blend, "model")
+            _dbg("adj.sparsity", (adj > 0.01).float().mean(), "model")
         else:
             static_graph = []
         if self._model_args['dy_graph']:
@@ -485,7 +521,18 @@ class D2STGNN(nn.Module):
         # Output Layer: 动态深度门控已应用于各层
         dif_forecast_hidden = sum(dif_forecast_hidden_list)
         inh_forecast_hidden = sum(inh_forecast_hidden_list)
-        forecast_hidden = dif_forecast_hidden + inh_forecast_hidden
+        # ═══ Dif/Inh自适应融合 (算法改写) ═══
+        # 原始: forecast = dif + inh (固定等权)
+        # 改写: 内容自适应gate — 根据两个分支各自的特征决定混合比例
+        # 物理意义: 某些节点/时刻扩散主导(事故传播), 某些固有主导(周期模式)
+        dif_inh_cat = torch.cat(
+            [dif_forecast_hidden, inh_forecast_hidden], dim=-1)  # [B, L, N, 2D]
+        # 轻量gate: 2D→D→1, sigmoid得到[0,1] dif权重
+        gate_h = torch.tanh(self.dif_inh_gate_fc(dif_inh_cat))
+        dif_gate = torch.sigmoid(self.dif_inh_gate_out(gate_h))  # [B, L, N, 1]
+        forecast_hidden = dif_gate * dif_forecast_hidden + (1.0 - dif_gate) * inh_forecast_hidden
+        _dbg("dif_inh_gate.mean_dif_ratio", dif_gate.mean(), "model")
+        _dbg("dif_inh_gate.std", dif_gate.std(), "model")
 
         # Cascade特有: 级联残差聚合 — 将每层的cascade residual加权聚合到forecast
         cascade_w = F.softmax(self.cascade_weights, dim=0)
