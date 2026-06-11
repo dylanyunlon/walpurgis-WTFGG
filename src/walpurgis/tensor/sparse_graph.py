@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # migrate db74d87: Merge pull request #2 from alexbarghi-nv/copy-from-cugraph
+# migrate 1295d2f: update branch — PEP 8 E225: f-string 内算术表达式加空格
+#                  size[0]+1 → size[0] + 1，size[1]+1 → size[1] + 1
 # 上游源: python/cugraph-dgl/cugraph_dgl/nn/conv/base.py (SparseGraph)
 # Walpurgis 迁移: 稀疏图多格式转换工具
 #
@@ -196,13 +198,15 @@ class SparseGraph:
 
         if csrc_ids is not None and csrc_ids.numel() != size[0] + 1:
             raise RuntimeError(
-                f"csrc_ids 尺寸不符: 期望 ({size[0]+1},), "
+                # migrate 1295d2f: f-string 内算术加空格（PEP 8 E225）
+                f"csrc_ids 尺寸不符: 期望 ({size[0] + 1},), "
                 f"实际 {tuple(csrc_ids.size())}。"
             )
 
         if cdst_ids is not None and cdst_ids.numel() != size[1] + 1:
             raise RuntimeError(
-                f"cdst_ids 尺寸不符: 期望 ({size[1]+1},), "
+                # migrate 1295d2f: f-string 内算术加空格（PEP 8 E225）
+                f"cdst_ids 尺寸不符: 期望 ({size[1] + 1},), "
                 f"实际 {tuple(cdst_ids.size())}。"
             )
 
