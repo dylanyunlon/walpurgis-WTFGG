@@ -1,4 +1,30 @@
 
+## migrate 5f8301c: [BUG] Remove FeatureStore tests about to break — 清除废弃 FeatureStore fixture
+
+- **Upstream commit**: 5f8301c (cugraph-gnn, Alex Barghi, 2025-05-15, PR #207)
+- **Commit message**: `[BUG] Remove FeatureStore tests about to break (#207)`
+- **Upstream diff** (1 file changed, 1 insertion, 197 deletions):
+  - `python/cugraph-pyg/cugraph_pyg/tests/conftest.py`: 删除 6 个依赖 `cugraph.gnn.FeatureStore` 的 fixture：
+    `karate_gnn`, `basic_graph_1`, `multi_edge_graph_1`,
+    `multi_edge_multi_vertex_graph_1`, `multi_edge_multi_vertex_no_graph_1`, `abc_graph`
+  - 同时删除 `import numpy as np`, `from cugraph.gnn import FeatureStore`, `from cugraph.datasets import karate` 三行 import
+  - 保留 `basic_pyg_graph_1` 等非 FeatureStore fixture（本次迁移无需处理）
+- **迁移位置**:
+  - `src/walpurgis/tests/feature_store/__init__.py` — 新增子包
+  - `src/walpurgis/tests/feature_store/conftest.py` — 6 个 fixture 的 Walpurgis 重建（鲁迅拿法改写）
+- **鲁迅拿法改写 (>20%)**:
+  1. `_GraphBundle` dataclass 统一替代原版所有 `(F, G, N)` tuple 返回值，消除魔法索引
+  2. `WALPURGIS_DEBUG=1` 断点1：conftest 加载时探测 `cugraph.gnn.FeatureStore` 可用性，输出环境警告
+  3. `WALPURGIS_DEBUG=1` 断点2：每个 fixture 构建完成后调用 `bundle.summary()` 打印节点/边/特征统计
+  4. `skip_if_feature_store_present` session-scoped 安全网 fixture（上游无此机制）：若环境中仍可 import FeatureStore，强制 skip 并给出可读原因
+  5. `_make_feature_tensor` 工厂函数统一张量构建，替代各 fixture 中散落的 `torch.tensor()` / `np.array()` 调用
+  6. `multi_edge_multi_vertex_no_graph_1` 特征从上游 `np.array` 统一改为 `torch.tensor`，保持设备一致性
+  7. 所有 fixture 去除 `FeatureStore` 和 `cugraph.datasets.karate` 依赖，改用内联数据和原生 torch 特征
+- **CI/merge/docs → SKIP**: 无（本条目为算法/测试迁移，非 CI/merge/docs 变更）
+- **自测**: 语法检查通过，`python -m py_compile conftest.py` → 无报错
+
+---
+
 ## migrate 43a80e8: revert deletion — 恢复 Zachary Karate Club 基准图数据集
 
 - **Upstream commit**: 43a80e8 (cugraph-gnn, Alexandria Barghi, 2025-06-09)
