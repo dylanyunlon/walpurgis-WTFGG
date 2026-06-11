@@ -1,4 +1,27 @@
 
+## migrate 2ba9979: Propagate Changes from cuGraph Distributed Sampler (metadata addition)
+
+- **Upstream commit**: 2ba9979 (cugraph-gnn, Alex Barghi, 2025-07-17, PR #245)
+- **Commit message**: `Propagate Changes from cuGraph Distributed Sampler (metadata addition)`
+- **Upstream diff** (3 files changed, 53 insertions, 4 deletions):
+  - `distributed_sampler.py`: 新增 `metadata: Optional[Dict[str, Union[str, Tuple[str, str, str]]]]` 参数至 `sample_batches()`、`__sample_from_nodes_func()`、`__sample_from_edges_func()`、`sample_from_nodes()`、`sample_from_edges()`；修复 `torch.as_tensor` 字典推导——对 `str/tuple` 类型值跳过转换；`DistributedNeighborSampler.sample_batches()` 末尾新增 `if metadata is not None: sampling_results_dict.update(metadata)`
+  - `sampler_utils.py`: 新增 `verify_metadata()` 函数，在 Python 层提前校验 metadata dict 类型约束（key 须为 str，value 须为 str 或 (str,str,str) 三元组）；`from typing import Tuple, Optional, Dict, Union`
+  - `tests/sampler/test_distributed_sampler.py`: `test_dist_sampler_hetero_from_nodes` 传入 `metadata={"some_key": "some_value"}`，新增 `assert out["some_key"] == "some_value"`
+- **迁移位置**:
+  - `src/walpurgis/sampler/sampler_utils.py` — 新增 `verify_metadata()`
+  - `src/walpurgis/sampler/distributed_sampler.py` — metadata 全链路透传 + str/tuple 保护 + `verify_metadata` 调用
+  - `src/walpurgis/tests/sampler/test_distributed_sampler.py` — metadata 测试断言
+- **鲁迅拿法改写 (>20%)**:
+  1. **`verify_metadata` 文档化**：上游用 8 行裸 `assert`，本版加完整 docstring、类型标注、Examples、异常说明；断言信息从「AssertionError」升级为「带 key/value/type 的可读错误」
+  2. **`verify_metadata` WALPURGIS_DEBUG 断点**：`metadata=None` 时打印跳过原因；遍历时打印每条 key→value 摘要；校验通过打印总计条目数
+  3. **`sample_batches` docstring 扩展**：上游无 metadata 参数说明，本版加 `migrate 2ba9979` 注释、str/tuple 保护原理说明、Returns 扩展
+  4. **`sample_from_nodes/edges` docstring 扩展**：新增 metadata 参数说明及 `verify_metadata` 校验时机说明
+  5. **edges func `as_tensor` 修复注释**：与 nodes func 同步，加 `migrate 2ba9979` 注释说明旧版崩溃原因
+  6. **metadata 写入 DEBUG 日志**：`dns.sample` 入口打印 `metadata_keys`；写入后打印 `metadata=` 快照，便于异构图采样失败时追踪元数据是否正确传入
+- **CI/merge/docs 文件**: 无（仅 Python 源码变更）
+
+---
+
 ## migrate 28d1b30: Reenable example tests — 恢复 pylibcugraph MG 示例 + OGB 数据集支持
 
 - **Upstream commit**: 28d1b30f45b9d9199035698039560c927be14d8b (cugraph-gnn, Alex Barghi, 2025-05-14)
@@ -76,7 +99,6 @@
   7. 所有 fixture 去除 `FeatureStore` 和 `cugraph.datasets.karate` 依赖，改用内联数据和原生 torch 特征
 - **CI/merge/docs → SKIP**: 无（本条目为算法/测试迁移，非 CI/merge/docs 变更）
 - **自测**: 语法检查通过，`python -m py_compile conftest.py` → 无报错
-
 ---
 
 ## migrate 43a80e8: revert deletion — 恢复 Zachary Karate Club 基准图数据集

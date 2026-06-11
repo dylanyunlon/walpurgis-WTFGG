@@ -50,7 +50,7 @@ Walpurgis 改写 20%（鲁迅拿法）:
 
 import os
 import sys
-from typing import Sequence, Dict, Tuple, Optional
+from typing import Sequence, Dict, Tuple, Optional, Union
 from math import ceil
 from dataclasses import dataclass, field
 
@@ -92,6 +92,91 @@ except ImportError:
     cupy = None
     pylibcugraph = None
     _dbg("import", "GPU dependencies not available — sampler_utils in stub mode")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# verify_metadata — migrate 2ba9979: 异构图 metadata 校验
+# ─────────────────────────────────────────────────────────────────────────────
+
+def verify_metadata(
+    metadata: Optional[Dict[str, Union[str, Tuple[str, str, str]]]]
+) -> None:
+    """
+    校验 metadata 字典的类型约束。
+
+    migrate 2ba9979 核心逻辑:
+      上游将 metadata 作为任意 dict 传入 DistributedNeighborSampler，
+      但 pylibcugraph 只接受 str 或 (str, str, str) 的值类型。
+      若不提前校验，运行时会在 C 层抛出晦涩的 TypeError，难以定位。
+      本函数在 Python 层提前断言，使错误信息直接指向用户输入。
+
+    Walpurgis 改写 (鲁迅拿法):
+      上游用裸 assert，断言失败只有默认的 AssertionError 信息。
+      本版保留 assert 语义，但在 WALPURGIS_DEBUG=1 时先打印诊断快照，
+      使 CI 日志可读性从「一行 AssertionError」升级到「带上下文的证据链」。
+
+    「凡事总须研究，才会明白。」——鲁迅《狂人日记》
+    上游对 metadata 的校验散落在调用方，此处集中，调用方无需重复判断。
+
+    Parameters
+    ----------
+    metadata : Optional[Dict[str, Union[str, Tuple[str, str, str]]]]
+        异构图 metadata 字典，key 为属性名（str），
+        value 为节点/边类型描述（str 或 3 元素 str 元组）。
+        传入 None 时跳过校验（同构图路径）。
+
+    Raises
+    ------
+    AssertionError
+        若任何 key 不是 str，或 value 既非 str 也非 (str, str, str)。
+
+    Examples
+    --------
+    >>> verify_metadata(None)  # ok，同构图
+    >>> verify_metadata({"node_type": "paper"})  # ok
+    >>> verify_metadata({"edge_type": ("author", "writes", "paper")})  # ok
+    >>> verify_metadata({"bad": 42})  # AssertionError
+    """
+    if metadata is None:
+        _dbg("verify_metadata", "metadata=None，跳过校验（同构图路径）")
+        return
+
+    _dbg(
+        "verify_metadata",
+        f"校验 metadata | keys={list(metadata.keys())} n_entries={len(metadata)}",
+    )
+
+    for k, v in metadata.items():
+        # ── key 必须是 str ──────────────────────────────────────────────────
+        assert isinstance(k, str), (
+            f"Metadata keys must be strings. "
+            f"Got key={k!r} (type={type(k).__name__})"
+        )
+
+        # ── value: str 或 (str, str, str) 元组 ─────────────────────────────
+        if isinstance(v, tuple):
+            # 3 元素同构 str 元组：代表 canonical edge type (src_type, rel, dst_type)
+            assert len(v) == 3, (
+                f"Metadata tuples must be of length 3. "
+                f"Got key={k!r} tuple_len={len(v)} value={v!r}"
+            )
+            for i, elem in enumerate(v):
+                assert isinstance(elem, str), (
+                    f"Metadata tuple must be of type (str, str, str). "
+                    f"Got key={k!r} tuple[{i}]={elem!r} (type={type(elem).__name__})"
+                )
+            _dbg(
+                "verify_metadata",
+                f"  ✓ key={k!r} → tuple ({v[0]!r}, {v[1]!r}, {v[2]!r})",
+            )
+        else:
+            assert isinstance(v, str), (
+                f"Metadata values must be strings or tuples of strings. "
+                f"Got key={k!r} value={v!r} (type={type(v).__name__})"
+            )
+            _dbg("verify_metadata", f"  ✓ key={k!r} → str {v!r}")
+
+    _dbg("verify_metadata", f"校验通过 | {len(metadata)} 个 metadata 条目全部合法")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

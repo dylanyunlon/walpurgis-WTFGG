@@ -97,6 +97,8 @@ def test_dist_sampler_hetero_from_nodes(hetero_sg_graph):
     out_iter = sampler.sample_from_nodes(
         nodes=cupy.array([4, 5]),
         input_id=cupy.array([5, 10]),
+        # migrate 2ba9979: 传入 metadata，验证其被正确写入采样结果并原样保留（非 tensor）
+        metadata={"some_key": "some_value"},
     )
 
     out = list(out_iter)
@@ -104,6 +106,12 @@ def test_dist_sampler_hetero_from_nodes(hetero_sg_graph):
 
     assert len(out) == 1, f"期望 1 个 call_group 输出，实际 {len(out)}"
     out, _, _ = out[0]
+
+    # migrate 2ba9979: 验证 metadata 条目被原样写入 minibatch_dict（str，非 tensor）
+    assert out["some_key"] == "some_value", (
+        f"metadata['some_key'] 应等于 'some_value'，实际: {out.get('some_key')!r}"
+    )
+    print(f"[test] ✓ metadata 透传验证通过: some_key={out['some_key']!r}", flush=True)
 
     lho = out["label_type_hop_offsets"]
     print(f"[test] label_type_hop_offsets={lho.tolist()}", flush=True)

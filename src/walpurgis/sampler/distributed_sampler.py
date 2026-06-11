@@ -39,6 +39,7 @@ import cudf
 from cugraph.utilities.utils import import_optional, MissingModule
 from cugraph.gnn.comms import cugraph_comms_get_raft_handle
 
+from walpurgis.sampler.sampler_utils import verify_metadata
 from walpurgis.sampler.io import BufferedSampleReader
 
 torch = MissingModule("torch")
@@ -164,6 +165,7 @@ class BaseDistributedSampler:
         batch_id_offsets: TensorType,
         random_state: int = 0,
         assume_equal_input_size: bool = False,
+        metadata: Optional[Dict[str, Union[str, Tuple[str, str, str]]]] = None,
     ) -> Dict[str, TensorType]:
         """
         对一个 call_group 的种子执行采样。子类必须实现。
@@ -178,6 +180,10 @@ class BaseDistributedSampler:
             采样随机种子。
         assume_equal_input_size: bool
             若 True，跳过 rank 间同步检查，假设各 rank 输入量相同。
+        metadata: Optional[Dict[str, Union[str, Tuple[str, str, str]]]]
+            异构图 metadata 字典。key 为属性名，value 为节点/边类型描述。
+            仅异构图路径使用，同构图传 None。
+            migrate 2ba9979: 透传至 sampling_results_dict，使下游可读取图类型信息。
 
         Returns
         -------
@@ -272,6 +278,7 @@ class BaseDistributedSampler:
         batches_per_call: int,
         random_state: int,
         assume_equal_input_size: bool,
+        metadata: Optional[Dict[str, Union[str, Tuple[str, str, str]]]] = None,
     ) -> Union[None, Iterator[Tuple[Dict[str, "torch.Tensor"], int, int]]]:
         torch = import_optional("torch")
         current_seeds, current_ix = current_seeds_and_ix
@@ -304,6 +311,7 @@ class BaseDistributedSampler:
             seeds=current_seeds,
             batch_id_offsets=input_offsets,
             random_state=random_state,
+            metadata=metadata,
         )
 
         minibatch_dict["input_index"] = current_ix.cuda()
@@ -313,8 +321,10 @@ class BaseDistributedSampler:
         minibatch_dict["map"] = minibatch_dict["renumber_map"]
         del minibatch_dict["renumber_map"]
 
+        # migrate 2ba9979: str/tuple 类型值（metadata 写入的图类型描述）不能转 tensor，
+        # 跳过 torch.as_tensor，原样保留。上游旧版无此判断，metadata 含 str 时会崩溃。
         minibatch_dict = {
-            k: torch.as_tensor(v, device="cuda")
+            k: v if isinstance(v, (str, tuple)) else torch.as_tensor(v, device="cuda")
             for k, v in minibatch_dict.items()
             if v is not None
         }
@@ -405,6 +415,7 @@ class BaseDistributedSampler:
         random_state: int = 62,
         assume_equal_input_size: bool = False,
         input_id: Optional[TensorType] = None,
+        metadata: Optional[Dict[str, Union[str, Tuple[str, str, str]]]] = None,
     ) -> Iterator[Tuple[Dict[str, "torch.Tensor"], int, int]]:
         """
         节点种子批量采样。
@@ -421,8 +432,14 @@ class BaseDistributedSampler:
             是否假设各 rank 输入等长（跳过同步检查）。
         input_id: Optional[TensorType]
             若种子在调用前被 permute，此参数记录原始 batch 对应关系。
+        metadata: Optional[Dict[str, Union[str, Tuple[str, str, str]]]]
+            异构图 metadata 字典，描述图类型和边类型。
+            仅异构图使用；同构图传 None。
+            migrate 2ba9979: 调用前通过 verify_metadata 校验，再透传至 sample_batches。
         """
         torch = import_optional("torch")
+
+        verify_metadata(metadata)
 
         nodes = torch.as_tensor(nodes, device="cuda")
         num_seeds = nodes.numel()
@@ -465,6 +482,7 @@ class BaseDistributedSampler:
             batches_per_call,
             random_state,
             input_size_is_equal,
+            metadata,
         ]
 
         _dbg(
@@ -493,6 +511,7 @@ class BaseDistributedSampler:
         batches_per_call: int,
         random_state: int,
         assume_equal_input_size: bool,
+        metadata: Optional[Dict[str, Union[str, Tuple[str, str, str]]]] = None,
     ) -> Union[None, Iterator[Tuple[Dict[str, "torch.Tensor"], int, int]]]:
         torch = import_optional("torch")
         current_seeds, current_ix, current_label = current_seeds_and_ix
@@ -593,6 +612,7 @@ class BaseDistributedSampler:
             seeds=current_seeds,
             batch_id_offsets=current_batch_offsets,
             random_state=random_state,
+            metadata=metadata,
         )
 
         minibatch_dict["input_index"] = current_ix.cuda()
@@ -604,8 +624,10 @@ class BaseDistributedSampler:
         minibatch_dict["map"] = minibatch_dict["renumber_map"]
         del minibatch_dict["renumber_map"]
 
+        # migrate 2ba9979: str/tuple 类型值（metadata 写入的图类型描述）不能转 tensor，
+        # 跳过 torch.as_tensor，原样保留。
         minibatch_dict = {
-            k: torch.as_tensor(v, device="cuda")
+            k: v if isinstance(v, (str, tuple)) else torch.as_tensor(v, device="cuda")
             for k, v in minibatch_dict.items()
             if v is not None
         }
@@ -632,6 +654,7 @@ class BaseDistributedSampler:
         assume_equal_input_size: bool = False,
         input_id: Optional[TensorType] = None,
         input_label: Optional[TensorType] = None,
+        metadata: Optional[Dict[str, Union[str, Tuple[str, str, str]]]] = None,
     ) -> Iterator[Tuple[Dict[str, "torch.Tensor"], int, int]]:
         """
         边种子批量采样（链路预测场景）。
@@ -650,8 +673,14 @@ class BaseDistributedSampler:
             若输入前被 permute，此参数记录原始对应关系。
         input_label: Optional[TensorType]
             链路预测标签。与负采样一般不兼容。
+        metadata: Optional[Dict[str, Union[str, Tuple[str, str, str]]]]
+            异构图 metadata 字典，描述图类型和边类型。
+            仅异构图使用；同构图传 None。
+            migrate 2ba9979: 调用前通过 verify_metadata 校验，再透传至 sample_batches。
         """
         torch = import_optional("torch")
+
+        verify_metadata(metadata)
 
         edges = torch.as_tensor(edges, device="cuda")
         num_seed_edges = edges.shape[-1]
@@ -702,6 +731,7 @@ class BaseDistributedSampler:
             batches_per_call,
             random_state,
             input_size_is_equal,
+            metadata,
         ]
 
         _dbg(
@@ -932,6 +962,7 @@ class DistributedNeighborSampler(BaseDistributedSampler):
         seeds: TensorType,
         batch_id_offsets: TensorType,
         random_state: int = 0,
+        metadata: Optional[Dict[str, Union[str, Tuple[str, str, str]]]] = None,
     ) -> Dict[str, TensorType]:
         """
         执行一次 pylibcugraph 邻居采样调用。
@@ -944,10 +975,16 @@ class DistributedNeighborSampler(BaseDistributedSampler):
             各 batch 的边界偏移。
         random_state: int
             随机种子，multi-GPU 时会加上 rank 偏移。
+        metadata: Optional[Dict[str, Union[str, Tuple[str, str, str]]]]
+            异构图 metadata 字典。
+            migrate 2ba9979: 若非 None，通过 dict.update 写入 sampling_results_dict，
+            使下游 minibatch_dict 可直接读取图类型信息。
+            str/tuple 值在调用方的 as_tensor 字典推导中会被跳过（isinstance 保护）。
 
         Returns
         -------
         包含 majors / minors / renumber_map / fanout / rank 等键的字典。
+        若 metadata 非 None，结果中还包含 metadata 的所有 key-value。
         """
         torch = import_optional("torch")
         rank = torch.distributed.get_rank() if self.is_multi_gpu else 0
@@ -969,12 +1006,22 @@ class DistributedNeighborSampler(BaseDistributedSampler):
             f"rank={rank} | seeds.shape={cupy.asarray(seeds).shape} "
             f"offsets.shape={cupy.asarray(batch_id_offsets).shape} "
             f"func={self.__func.__name__} "
-            f"random_state={random_state + rank}",
+            f"random_state={random_state + rank} "
+            f"metadata_keys={list(metadata.keys()) if metadata is not None else None}",
         )
 
         sampling_results_dict = self.__func(**kwargs)
         sampling_results_dict["fanout"] = cupy.array(self.__fanout, dtype="int32")
         sampling_results_dict["rank"] = rank
+
+        # migrate 2ba9979: 将 metadata 写入采样结果，使下游可读取图类型信息。
+        # 仅异构图路径传入非 None metadata；同构图路径 metadata=None，此分支跳过。
+        if metadata is not None:
+            sampling_results_dict.update(metadata)
+            _dbg(
+                "dns.sample",
+                f"metadata 已写入 sampling_results | metadata={metadata}",
+            )
 
         _dbg(
             "dns.sample",
