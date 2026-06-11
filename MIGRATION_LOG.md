@@ -1,4 +1,31 @@
 
+## migrate b89f57d: Enable device code compression (fatbin) for CUDA binary size reduction
+
+- **Upstream commit**: b89f57d (cugraph-gnn, NVIDIA / Robert Maynard)
+- **Commit message**: `Enable device code compression (#202)`
+- **Upstream diff** (1 文件变动):
+  - `cpp/CMakeLists.txt` — 在 `message("-- Building for GPU_ARCHS ...")` 之后插入 9 行：
+    - 无条件添加 `-Xfatbin=-compress-all` 到 `WHOLEGRAPH_CUDA_FLAGS`
+    - 当 `CMAKE_CUDA_COMPILER_VERSION` 在 `[12.9, 13.0)` 时额外添加 `-Xfatbin=--compress-level=3`
+
+- **Walpurgis 适配** (迁移目标: `Makefile` → `NVFLAGS`):
+  - walpurgis 无 CMake，构建系统为 `Makefile`；`NVFLAGS` 是等价的 nvcc 编译标志集合
+  - `FATBIN_COMPRESS_BASE`: `$(shell nvcc --version >/dev/null 2>&1 && echo "-Xfatbin=-compress-all" || echo "")` — nvcc 不存在时安全降级为空，与上游无条件追加语义等价
+  - `FATBIN_COMPRESS_TUNE`: shell 级别检测 `CUDA_MAJOR==12 && CUDA_MINOR==9`，输出 `-Xfatbin=--compress-level=3`；与上游 CMake `VERSION_GREATER_EQUAL 12.9 AND VERSION_LESS 13.0` 等价（Makefile 无法做浮点版本比较，拆成整数比对）
+  - `NVFLAGS += $(FATBIN_FLAGS)` 追加，不覆盖已有 `-lineinfo` 等标志
+
+- **WALPURGIS_DEBUG 断点**:
+  - `hetero_bench` target 在调用 nvcc 前加 `@if [ "$$WALPURGIS_DEBUG" = "1" ]` 断点块，打印 `CUDA_VER / FATBIN_COMPRESS_BASE / FATBIN_COMPRESS_TUNE / FATBIN_FLAGS / full NVFLAGS`
+  - 用法: `WALPURGIS_DEBUG=1 make cuda` 即可在编译前看到实际注入的压缩参数
+
+- **与上游差异**:
+  | 上游 b89f57d (CMake) | Walpurgis 迁移 (Makefile) |
+  |---|---|
+  | `list(APPEND WHOLEGRAPH_CUDA_FLAGS -Xfatbin=-compress-all)` | `FATBIN_COMPRESS_BASE := $(shell nvcc ... && echo ...)` + `NVFLAGS += $(FATBIN_FLAGS)` |
+  | CMake `VERSION_GREATER_EQUAL 12.9 AND VERSION_LESS 13.0` | shell `[ MAJOR=12 ] && [ MINOR=9 ]`（等价，拆整数比较） |
+  | 无调试输出 | `WALPURGIS_DEBUG=1` 断点 print 暴露实际 flag 解析结果 |
+  | `rapids_cuda_enable_fatbin_compression` 宏（后续版本重构） | 直接 shell 展开，无外部 cmake 模块依赖，适合 Makefile 环境 |
+
 ## migrate 03292cf: Migrate cugraph gnn packages to cugraph-pyg
 
 - **Upstream commit**: 03292cf (cugraph-gnn, NVIDIA)
