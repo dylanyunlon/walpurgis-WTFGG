@@ -1,4 +1,11 @@
 from .dataloader import DataLoader
+# f4ca484 迁移新增：DGL DataLoader (非 dask 路径) 和 DaskDataLoader
+from .dgl_dataloader import DataLoader as DGLDataLoader
+from .dask_dataloader import (
+    DaskDataLoader,
+    create_batch_df,
+    get_batch_id_series,
+)
 from .edge_input_id import (
     EdgeInputIdError,
     validate_edges_shape,

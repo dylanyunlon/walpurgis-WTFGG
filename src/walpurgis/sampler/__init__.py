@@ -28,6 +28,9 @@ _dbg_import(">>> sampler 子包开始加载")
 
 from .sampler import BaseSampler, SampleIterator
 from .distributed_sampler import DistributedNeighborSampler, BaseDistributedSampler
+# f4ca484 迁移新增：DGL 架构采样器基类和 NeighborSampler
+from .dgl_sampler import Sampler, SampleReader, HomogeneousSampleReader
+from .dgl_neighbor_sampler import NeighborSampler as DGLNeighborSampler
 from .sampling_csc_helpers import (
     create_homogeneous_sampled_graphs_from_dataframe_csc,
     _process_sampled_df_csc,
