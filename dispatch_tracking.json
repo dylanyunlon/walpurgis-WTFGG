@@ -1,0 +1,152 @@
+{
+  "batch_00": {
+    "conv_id": "09fcdb37-cf22-4ed5-a557-1e50cf71caf3",
+    "commits": 15,
+    "dispatched_at": "2026-06-11 09:52:51",
+    "status": "dispatched"
+  },
+  "batch_01": {
+    "conv_id": "22ffe3a7-8a50-4b15-851a-2e05c647ed6d",
+    "commits": 15,
+    "dispatched_at": "2026-06-11 09:55:59",
+    "status": "dispatched"
+  },
+  "batch_02": {
+    "conv_id": "b484684c-9624-4265-8dc1-557fbee72176",
+    "commits": 15,
+    "dispatched_at": "2026-06-11 09:56:06",
+    "status": "dispatched"
+  },
+  "batch_03": {
+    "conv_id": "7994a5e2-99ad-44b4-b933-b40c02950be6",
+    "commits": 15,
+    "dispatched_at": "2026-06-11 09:56:14",
+    "status": "dispatched"
+  },
+  "batch_04": {
+    "conv_id": "dc3386a9-f957-4f8d-9863-17a39aedeeaf",
+    "commits": 15,
+    "dispatched_at": "2026-06-11 09:56:19",
+    "status": "dispatched"
+  },
+  "batch_05": {
+    "conv_id": "acded90b-e17a-4c80-8f61-3c63203f856b",
+    "commits": 15,
+    "dispatched_at": "2026-06-11 09:56:25",
+    "status": "dispatched"
+  },
+  "batch_06": {
+    "conv_id": "73266c1e-d3c1-442d-ba55-02cb6260b876",
+    "commits": 15,
+    "dispatched_at": "2026-06-11 09:56:31",
+    "status": "dispatched"
+  },
+  "batch_07": {
+    "conv_id": "54e400b3-1859-43b9-a281-f027b1d46020",
+    "commits": 15,
+    "dispatched_at": "2026-06-11 09:56:38",
+    "status": "dispatched"
+  },
+  "batch_08": {
+    "conv_id": "4c4aa325-25ff-4e54-8ebe-5815c9e414be",
+    "commits": 15,
+    "dispatched_at": "2026-06-11 09:56:44",
+    "status": "dispatched"
+  },
+  "batch_09": {
+    "conv_id": "cb2d47c9-206b-456a-ba3e-26645fb606dd",
+    "commits": 15,
+    "dispatched_at": "2026-06-11 09:56:53",
+    "status": "dispatched"
+  },
+  "batch_10": {
+    "conv_id": "e28aaf6f-eeac-45c1-8703-75ae6b718bff",
+    "commits": 15,
+    "dispatched_at": "2026-06-11 09:56:59",
+    "status": "dispatched"
+  },
+  "batch_11": {
+    "conv_id": "49e901c1-5698-474d-8b33-b869fe160198",
+    "commits": 15,
+    "dispatched_at": "2026-06-11 09:57:04",
+    "status": "dispatched"
+  },
+  "batch_12": {
+    "conv_id": "223d27ed-1c52-4d45-9ae6-94828978eda6",
+    "commits": 15,
+    "dispatched_at": "2026-06-11 09:57:09",
+    "status": "dispatched"
+  },
+  "batch_13": {
+    "conv_id": "1fbb48cc-e568-48fe-a80b-024dc8df5d3c",
+    "commits": 15,
+    "dispatched_at": "2026-06-11 09:57:14",
+    "status": "dispatched"
+  },
+  "batch_14": {
+    "conv_id": "9a165f3a-a6df-4a30-ba95-108b4194f4de",
+    "commits": 15,
+    "dispatched_at": "2026-06-11 09:57:18",
+    "status": "dispatched"
+  },
+  "batch_15": {
+    "conv_id": "e2cbe9d5-6b3f-44bb-9e49-732034e13f79",
+    "commits": 15,
+    "dispatched_at": "2026-06-11 09:57:24",
+    "status": "dispatched"
+  },
+  "batch_16": {
+    "conv_id": "8af1a9cd-0d3f-4d3e-bd7e-59a463df0e2a",
+    "commits": 15,
+    "dispatched_at": "2026-06-11 09:57:28",
+    "status": "dispatched"
+  },
+  "batch_17": {
+    "conv_id": "d27ab017-79e2-4477-95dc-a8b159cf7f80",
+    "commits": 15,
+    "dispatched_at": "2026-06-11 09:57:39",
+    "status": "dispatched"
+  },
+  "batch_18": {
+    "conv_id": "596838e1-07d6-47a7-9ae4-98936bdd9db1",
+    "commits": 15,
+    "dispatched_at": "2026-06-11 09:57:44",
+    "status": "dispatched"
+  },
+  "batch_19": {
+    "conv_id": "43d14e5e-af15-4dbe-b956-79daa5381fca",
+    "commits": 15,
+    "dispatched_at": "2026-06-11 09:57:48",
+    "status": "dispatched"
+  },
+  "batch_20": {
+    "conv_id": "42107bfb-25d6-438d-9594-30567e379ea5",
+    "commits": 15,
+    "dispatched_at": "2026-06-11 09:57:54",
+    "status": "dispatched"
+  },
+  "batch_21": {
+    "conv_id": "18e63fda-5095-42b6-ae09-416d84817716",
+    "commits": 15,
+    "dispatched_at": "2026-06-11 09:57:58",
+    "status": "dispatched"
+  },
+  "batch_22": {
+    "conv_id": "22e58445-9117-479f-b1ab-5283abf9ff65",
+    "commits": 15,
+    "dispatched_at": "2026-06-11 09:58:04",
+    "status": "dispatched"
+  },
+  "batch_23": {
+    "conv_id": "05ad22d8-eabd-4f2c-8586-88204697e0be",
+    "commits": 15,
+    "dispatched_at": "2026-06-11 09:58:09",
+    "status": "dispatched"
+  },
+  "batch_24": {
+    "conv_id": "5e416e09-427a-4587-8257-8510c715a8ca",
+    "commits": 7,
+    "dispatched_at": "2026-06-11 09:58:14",
+    "status": "dispatched"
+  }
+}

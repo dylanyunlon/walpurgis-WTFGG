@@ -1,36 +1,36 @@
 {
-  "run_id": "walpurgis_METR-LA_epoch14_best",
+  "run_id": "walpurgis_METR-LA_epoch15_best",
   "dataset": "METR-LA",
   "status": "complete",
-  "source": "server ags1 real training log (attached by user)",
-  "best_epoch": 14,
-  "test_mae_avg12": 2.93,
-  "test_rmse_avg12": 5.88,
-  "test_mape_avg12": 8.08,
+  "source": "server ags1 real training log, epoch 15 best checkpoint",
+  "best_epoch": 15,
+  "test_mae_avg12": 2.90,
+  "test_rmse_avg12": 5.89,
+  "test_mape_avg12": 7.92,
+  "best_val_mae": 2.6585,
   "per_horizon": [
-    {"h": 1,  "mae": 2.1823, "rmse": 3.7661, "mape": 0.0532},
-    {"h": 2,  "mae": 2.4557, "rmse": 4.5109, "mape": 0.0620},
-    {"h": 3,  "mae": 2.6289, "rmse": 5.0000, "mape": 0.0685},
-    {"h": 4,  "mae": 2.7602, "rmse": 5.4274, "mape": 0.0740},
-    {"h": 5,  "mae": 2.8654, "rmse": 5.7328, "mape": 0.0779},
-    {"h": 6,  "mae": 2.9532, "rmse": 5.9884, "mape": 0.0811},
-    {"h": 7,  "mae": 3.0480, "rmse": 6.2489, "mape": 0.0861},
-    {"h": 8,  "mae": 3.1269, "rmse": 6.4495, "mape": 0.0888},
-    {"h": 9,  "mae": 3.1812, "rmse": 6.6293, "mape": 0.0907},
-    {"h": 10, "mae": 3.2541, "rmse": 6.7967, "mape": 0.0938},
-    {"h": 11, "mae": 3.3300, "rmse": 6.9413, "mape": 0.0960},
-    {"h": 12, "mae": 3.3824, "rmse": 7.0964, "mape": 0.0972}
+    {"h": 1,  "mae": 2.1566, "rmse": 3.7499, "mape": 0.0512},
+    {"h": 2,  "mae": 2.4249, "rmse": 4.5022, "mape": 0.0599},
+    {"h": 3,  "mae": 2.6021, "rmse": 4.9996, "mape": 0.0666},
+    {"h": 4,  "mae": 2.7337, "rmse": 5.4287, "mape": 0.0720},
+    {"h": 5,  "mae": 2.8359, "rmse": 5.7382, "mape": 0.0762},
+    {"h": 6,  "mae": 2.9299, "rmse": 6.0011, "mape": 0.0802},
+    {"h": 7,  "mae": 3.0202, "rmse": 6.2657, "mape": 0.0840},
+    {"h": 8,  "mae": 3.0883, "rmse": 6.4593, "mape": 0.0868},
+    {"h": 9,  "mae": 3.1520, "rmse": 6.6308, "mape": 0.0896},
+    {"h": 10, "mae": 3.2190, "rmse": 6.8087, "mape": 0.0924},
+    {"h": 11, "mae": 3.2770, "rmse": 6.9552, "mape": 0.0948},
+    {"h": 12, "mae": 3.3462, "rmse": 7.0890, "mape": 0.0975}
   ],
   "training_trajectory": [
-    {"epoch": 12, "val_mae": 2.7442, "test_mae": 2.98, "test_rmse": 5.98, "test_mape": 8.11},
-    {"epoch": 13, "val_mae": 2.7050, "test_mae": 2.96, "test_rmse": 6.04, "test_mape": 8.35},
-    {"epoch": 14, "val_mae": 2.6958, "test_mae": 2.93, "test_rmse": 5.88, "test_mape": 8.08},
-    {"epoch": 15, "val_mae": 2.6925, "test_mae": 2.93, "test_rmse": 5.87, "test_mape": 8.09}
+    {"epoch": 15, "train_mae": 2.4771, "train_mape": 0.0692, "train_rmse": 5.3397, "val_mae": 2.6585, "val_rmse": 5.2250, "val_mape": 0.0723, "lr": 0.001000, "test_mae": 2.90, "test_rmse": 5.91, "test_mape": 7.91},
+    {"epoch": 16, "train_mae": 2.5666, "train_mape": 0.0719, "train_rmse": 5.4914, "val_mae": 2.7086, "val_rmse": 5.2774, "val_mape": 0.0720, "lr": 0.000997, "early_stop_counter": 1, "test_mae": 2.90, "test_rmse": 5.89, "test_mape": 7.92},
+    {"epoch": 17, "train_mae": 2.5608, "train_mape": 0.0720, "train_rmse": 5.4967, "val_mae": 2.7366, "val_rmse": 5.2445, "val_mape": 0.0743, "lr": 0.000989, "early_stop_counter": 2, "test_mae": 2.95, "test_rmse": 5.92, "test_mape": 7.83}
   ],
   "sota_comparison": {
-    "vs_titan":      {"gap": 0.05, "note": "TITAN MAE=2.88, Walpurgis MAE=2.93"},
-    "vs_staeformer": {"gap": 0.03, "note": "STAEFormer MAE=2.90, Walpurgis MAE=2.93"},
-    "vs_pdformer":   {"gap": -0.01, "note": "PDFormer MAE=2.94, BEATEN"},
-    "vs_d2stgnn":    {"gap": -0.11, "note": "D2STGNN MAE=3.04, BEATEN by 0.11"}
+    "vs_titan":      {"gap": 0.02, "note": "TITAN MAE=2.88, Walpurgis MAE=2.90, gap narrowed to 0.02"},
+    "vs_staeformer": {"gap": 0.00, "note": "STAEFormer MAE=2.90, Walpurgis MAE=2.90, TIED"},
+    "vs_pdformer":   {"gap": -0.04, "note": "PDFormer MAE=2.94, BEATEN by 0.04"},
+    "vs_d2stgnn":    {"gap": -0.14, "note": "D2STGNN MAE=3.04, BEATEN by 0.14"}
   }
 }

@@ -36,7 +36,7 @@
 | PDFormer | 2023 | 2.94 | 6.08 | 8.56% |
 | STEP | 2022 | 2.98 | — | — |
 | D2STGNN (upstream) | 2022 | 3.04 | 6.23 | 8.33% |
-| **Walpurgis (当前最佳)** | — | **2.90** | **5.91** | **7.91%** |
+| **Walpurgis (当前最佳)** | — | **2.90** | **5.89** | **7.92%** |
 | 目标 | — | **<2.85** | — | — |
 
 ### 服务器 (ags1)
@@ -254,7 +254,7 @@ cat experiments/results/summary.json
 
 ## Phase 3: 空间自注意力 + 服务器闭环 (M451-M600)
 
-### 第一位 Claude (M451-M475) ✅ 本轮主控 (当前)
+### 第一位 Claude (M451-M475) ✅ 已完成
 **角色**: 算法移植 (鲁迅拿法) + 仓库治理 + 派发基建
 - 从STAEformer移植: 空间自注意力 SpatialSelfAttention (节点维multi-head attention)
   改写~20%: 门控残差(init -3.0→0.047, CL ramp同哲学) + Pre-LN + 轻量FFN dim*2 + 时间分块 + 注意力熵诊断
@@ -265,13 +265,14 @@ cat experiments/results/summary.json
 - 派发修复: claude_hk_chat.sh org动态解析(/api/organizations) + CONV_ID续传(截断后发Continue)
 - 消融开关: configs 中 use_spatial_attn (Claude-4用)
 
-### 主控治理 (Claude-1 续, 治理轮, 不占算法里程碑) ✅ 当前
-**角色**: 派发链路验证 + 协同协议 + 数据完整性闸门 + 仓库治理
-- **派发链路实测通过**: cookie 有效; `/api/organizations` 返回 500 (claude.hk.cn 侧 nil-pointer) 但脚本回退**静态 org** 可用; 建对话 **HTTP 201**; 端到端 orientation dispatch 成功收到子Claude (sonnet-4.6 medium) 真实回复。
-- **根因归档**: 之前派发全失败 = `claude_hk_chat.sh` ORIGIN 提取用 `\S+` 把闭合单引号也吞进来 → `https://claude.hk.cn'` → CURLE_URL_MALFORMAT (curl 退出码 3, `set -e` 当场死)。已由 **faa31e4 (M475)** 修复 (`[^']+`); 本轮独立复现出**同一修复** → 直接触发上方《协同协议》。
-- **数据完整性发现**: `METR-LA_seed42.json` 的 `"source"` 为 `"attached by user"` 手工转录, 且其引用的 `walpurgis_METR-LA_20260609_110426/result.json` 未入库 → 列为闸门4要补的凭证。
-- **诚实 SOTA 现状**: Walpurgis 最佳 MAE=2.93 (真实日志), **未达** SOTA (TITAN 2.88 / STAEformer 2.90), 仅胜 PDFormer 2.94 及更老模型。Phase 3 空间注意力冲 <2.85。
-- **清理**: 删 `experiments/results/.gitkeep_results` (重复 gitkeep, 当前树唯一残留后缀)。
+### 主控治理 (Claude-1 续, 治理轮+大规模迁移) ✅ 当前
+**角色**: 派发链路验证 + 协同协议 + 数据完整性闸门 + 仓库治理 + 大规模迁移派发
+- **SOTA数据更新**: epoch-15真实日志 MAE=2.90, 已追平STAEFormer, 差TITAN仅0.02
+- **TeX填数**: SOTA表/per-horizon表/D1-D10表全部更新为2.90真实数据
+- **算法改进**: 多尺度EMA时序混合(从TITAN鲁迅拿法)注入inherent block GRU
+- **大规模迁移**: cugraph-gnn剩余367个commit分25批×15个, dispatch_migrate.py自动派发25个子Claude
+- **参考**: 研究了alphaproof-nexus-results突破模式(形式化证明, Erdős问题)
+- **诚实 SOTA 现状**: MAE=2.90, 已追平 STAEFormer (2.90), 差TITAN 0.02, Phase 3继续冲 <2.85
 
 ### 第二位 Claude (M476-M500) — 已派发
 **角色**: 服务器 METR-LA 200ep 完整实验 (空间自注意力首战)

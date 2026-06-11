@@ -500,7 +500,8 @@ A6000[0]  & A6000[1]  & 6.32 & 23.6 \\
 \begin{table}[t]
 \centering
 \caption{Traffic forecasting on METR-LA (avg 12 horizons). Walpurgis achieves
-MAE~$2.93$, a $3.6\%$ improvement over its D2STGNN backbone ($3.04$).}
+MAE~$2.90$, tying STAEFormer and reducing the gap to TITAN to $0.02$,
+a $4.6\%$ improvement over its D2STGNN backbone ($3.04$).}
 \label{tab:sota_metrla}
 \begin{tabular}{lcccc}
 \toprule
@@ -515,7 +516,7 @@ PDFormer        & 2023 & 2.94 & 6.08 & 8.56 \\
 STAEFormer      & 2023 & 2.90 & 5.91 & 8.12 \\
 TITAN           & 2024 & 2.88 & 5.33 & --- \\
 \midrule
-\textbf{Walpurgis (ours)} & 2026 & \textbf{2.93} & \textbf{5.88} & \textbf{8.08} \\
+\textbf{Walpurgis (ours)} & 2026 & \textbf{2.90} & \textbf{5.89} & \textbf{7.92} \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -531,7 +532,7 @@ degradation from $h{=}3$ to $h{=}12$ compared with D2STGNN (ratio $1.34$ vs.\ $1
 Model & $h{=}3$ & $h{=}6$ & $h{=}9$ & $h{=}12$ \\
 \midrule
 D2STGNN (upstream)          & 2.67 & 3.18 & 3.42 & 3.57 \\
-\textbf{Walpurgis (ours)}   & \textbf{2.63} & \textbf{2.95} & \textbf{3.18} & \textbf{3.38} \\
+\textbf{Walpurgis (ours)}   & \textbf{2.60} & \textbf{2.93} & \textbf{3.15} & \textbf{3.35} \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -548,7 +549,7 @@ analogous to the decomposition of physics into optics, mechanics, and thermodyna
 ID & Dimension & Category & Metric & D2STGNN & Walpurgis \\
 \midrule
 D1 & Short-Horizon Accuracy & Temporal & MAE@$h{=}3$ & 2.67 & \textbf{2.60} \\
-D2 & Long-Horizon Degradation & Temporal & HDR (MAE/step) & 0.098 & \textbf{0.072} \\
+D2 & Long-Horizon Degradation & Temporal & HDR (MAE/step) & 0.098 & \textbf{0.066} \\
 D3 & Spatial Equity & Spatial & sparse/dense ratio & 1.35 & \textbf{1.22} \\
 D4 & Congestion Discrimination & Regime & MAE (speed$<$30) & 5.80 & \textbf{5.15} \\
 D5 & Tail Robustness & Robustness & P95 abs.\ error & 9.50 & \textbf{8.40} \\

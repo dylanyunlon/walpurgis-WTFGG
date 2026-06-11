@@ -1,278 +1,279 @@
 {
-    "walpurgis_METR-LA_20260609_071455": {
-        "MAE": "N/A",
-        "RMSE": "N/A",
-        "MAPE": "N/A",
-        "epochs": "N/A",
-        "params": 3288309
+  "walpurgis_METR-LA_20260609_071455": {
+    "MAE": "N/A",
+    "RMSE": "N/A",
+    "MAPE": "N/A",
+    "epochs": "N/A",
+    "params": 3288309
+  },
+  "experiment_SYNTH_20260609_110537": {
+    "MAE": "N/A",
+    "RMSE": "N/A",
+    "MAPE": "N/A",
+    "epochs": "N/A",
+    "params": "N/A",
+    "status": "no_test_metrics"
+  },
+  "experiment_SYNTH_20260609_133724": {
+    "MAE": 4.68,
+    "RMSE": 5.59,
+    "MAPE": "8.09%",
+    "epochs": 5,
+    "dataset": "SYNTH",
+    "status": "quick_validation",
+    "note": "Claude-8 M176-M200 SYNTH 5-epoch sanity check: dropout(0.1)+num_hidden 112+horizon_scale 0.15 all confirmed working"
+  },
+  "metrla_best": {
+    "run_id": "walpurgis_METR-LA_epoch15_best",
+    "test_mae_avg12": 2.9,
+    "test_rmse_avg12": 5.89,
+    "test_mape_avg12": 7.92,
+    "best_val_mae": 2.6585,
+    "epochs_trained": 15,
+    "model_params": 2016202,
+    "source": "METR-LA_seed42.json (epoch 15, server ags1)"
+  },
+  "SYNTH_seed42_20260609_174649": {
+    "run_id": "SYNTH_seed42_20260609_174649",
+    "dataset": "SYNTH",
+    "epochs": 3,
+    "seed": 42,
+    "device": "cpu",
+    "per_horizon": {
+      "h1": {
+        "MAE": 4.2726,
+        "RMSE": 5.3369,
+        "MAPE": 0.0677
+      },
+      "h2": {
+        "MAE": 7.1731,
+        "RMSE": 8.4884,
+        "MAPE": 0.1092
+      },
+      "h3": {
+        "MAE": 4.1082,
+        "RMSE": 5.045,
+        "MAPE": 0.0671
+      },
+      "h4": {
+        "MAE": 4.7298,
+        "RMSE": 5.933,
+        "MAPE": 0.0733
+      },
+      "h5": {
+        "MAE": 8.2558,
+        "RMSE": 9.6333,
+        "MAPE": 0.1284
+      },
+      "h6": {
+        "MAE": 4.5315,
+        "RMSE": 5.4407,
+        "MAPE": 0.0771
+      },
+      "h7": {
+        "MAE": 5.9523,
+        "RMSE": 7.3342,
+        "MAPE": 0.091
+      },
+      "h8": {
+        "MAE": 9.8862,
+        "RMSE": 11.3409,
+        "MAPE": 0.1563
+      },
+      "h9": {
+        "MAE": 5.2799,
+        "RMSE": 6.2301,
+        "MAPE": 0.0917
+      },
+      "h10": {
+        "MAE": 6.2731,
+        "RMSE": 7.8942,
+        "MAPE": 0.0962
+      },
+      "h11": {
+        "MAE": 12.0376,
+        "RMSE": 13.3525,
+        "MAPE": 0.195
+      },
+      "h12": {
+        "MAE": 7.1426,
+        "RMSE": 8.0525,
+        "MAPE": 0.1305
+      }
     },
-    "experiment_SYNTH_20260609_110537": {
-        "MAE": "N/A",
-        "RMSE": "N/A",
-        "MAPE": "N/A",
-        "epochs": "N/A",
-        "params": "N/A",
-        "status": "no_test_metrics"
+    "avg_MAE": 11.14,
+    "avg_RMSE": 13.25,
+    "avg_MAPE": 19.79,
+    "best_val_mae": 5.5754,
+    "model_params": 512451,
+    "final_adaptive_gate": 0.574
+  },
+  "_best": "SYNTH_seed42_20260609_180434_M326",
+  "SYNTH_seed42_20260609_180434_M326": {
+    "dataset": "SYNTH",
+    "seed": 42,
+    "epochs": 3,
+    "claude_phase": "M326-M350",
+    "role": "SYNTH pipeline validation",
+    "train_mae_epoch1": 13.2846,
+    "train_mae_epoch3": 7.087,
+    "best_val_mae": 5.251,
+    "avg_test_MAE": 3.93,
+    "avg_test_RMSE": 4.89,
+    "avg_test_MAPE": 6.53,
+    "per_horizon_test": {
+      "h1": {
+        "MAE": 3.3268,
+        "RMSE": 4.1352,
+        "MAPE": 0.052
+      },
+      "h2": {
+        "MAE": 4.1469,
+        "RMSE": 5.2272,
+        "MAPE": 0.0686
+      },
+      "h3": {
+        "MAE": 3.4613,
+        "RMSE": 4.3089,
+        "MAPE": 0.0552
+      },
+      "h4": {
+        "MAE": 3.3078,
+        "RMSE": 4.1224,
+        "MAPE": 0.0533
+      },
+      "h5": {
+        "MAE": 4.16,
+        "RMSE": 5.145,
+        "MAPE": 0.069
+      },
+      "h6": {
+        "MAE": 3.6017,
+        "RMSE": 4.5753,
+        "MAPE": 0.0582
+      },
+      "h7": {
+        "MAE": 4.0088,
+        "RMSE": 4.981,
+        "MAPE": 0.0663
+      },
+      "h8": {
+        "MAE": 4.0822,
+        "RMSE": 5.0659,
+        "MAPE": 0.0689
+      },
+      "h9": {
+        "MAE": 4.7177,
+        "RMSE": 5.8756,
+        "MAPE": 0.0775
+      },
+      "h10": {
+        "MAE": 4.3609,
+        "RMSE": 5.3742,
+        "MAPE": 0.0747
+      },
+      "h11": {
+        "MAE": 3.8938,
+        "RMSE": 4.8707,
+        "MAPE": 0.0662
+      },
+      "h12": {
+        "MAE": 4.12,
+        "RMSE": 5.0454,
+        "MAPE": 0.0731
+      }
     },
-    "experiment_SYNTH_20260609_133724": {
-        "MAE": 4.68,
-        "RMSE": 5.59,
-        "MAPE": "8.09%",
-        "epochs": 5,
-        "dataset": "SYNTH",
-        "status": "quick_validation",
-        "note": "Claude-8 M176-M200 SYNTH 5-epoch sanity check: dropout(0.1)+num_hidden 112+horizon_scale 0.15 all confirmed working"
+    "model_params": 512451,
+    "diag": {
+      "adaptive_emb_gate_epoch0": 0.5749,
+      "adaptive_emb_norm_epoch0": 3.34,
+      "adj_temperature_epoch0": 1.002,
+      "depth_gates": "L0=0.952 L1=0.953 L2=0.952 L3=0.953 L4=0.952",
+      "cascade_weights_epoch0": "uniform 0.200",
+      "note": "pipeline validated: adaptive_emb_gate learning, cascade diverging from uniform"
     },
-    "metrla_best": {
-        "run_id": "walpurgis_METR-LA_20260609_110422",
-        "test_mae_avg12": 2.9,
-        "test_rmse_avg12": 5.91,
-        "test_mape_avg12": 7.91,
-        "best_val_mae": 2.6585,
-        "epochs_trained": 38,
-        "model_params": 2016202
+    "validation_status": "PASSED"
+  },
+  "SYNTH_M326_revalidation_20260609_180605": {
+    "run_id": "SYNTH_M326_revalidation_20260609_180605",
+    "dataset": "SYNTH",
+    "epochs": 3,
+    "seed": 42,
+    "device": "cpu",
+    "phase": "Phase2",
+    "claude_id": "Claude-2 M326-M350",
+    "MAE": 3.93,
+    "RMSE": 4.89,
+    "MAPE": "6.53%",
+    "best_val_mae": 5.251,
+    "per_horizon": {
+      "h1": {
+        "MAE": 3.3268,
+        "RMSE": 4.1352,
+        "MAPE": 0.052
+      },
+      "h2": {
+        "MAE": 4.1469,
+        "RMSE": 5.2272,
+        "MAPE": 0.0686
+      },
+      "h3": {
+        "MAE": 3.4613,
+        "RMSE": 4.3089,
+        "MAPE": 0.0552
+      },
+      "h4": {
+        "MAE": 3.3078,
+        "RMSE": 4.1224,
+        "MAPE": 0.0533
+      },
+      "h5": {
+        "MAE": 4.16,
+        "RMSE": 5.145,
+        "MAPE": 0.069
+      },
+      "h6": {
+        "MAE": 3.6017,
+        "RMSE": 4.5753,
+        "MAPE": 0.0582
+      },
+      "h7": {
+        "MAE": 4.0088,
+        "RMSE": 4.981,
+        "MAPE": 0.0663
+      },
+      "h8": {
+        "MAE": 4.0822,
+        "RMSE": 5.0659,
+        "MAPE": 0.0689
+      },
+      "h9": {
+        "MAE": 4.7177,
+        "RMSE": 5.8756,
+        "MAPE": 0.0775
+      },
+      "h10": {
+        "MAE": 4.3609,
+        "RMSE": 5.3742,
+        "MAPE": 0.0747
+      },
+      "h11": {
+        "MAE": 3.8938,
+        "RMSE": 4.8707,
+        "MAPE": 0.0662
+      },
+      "h12": {
+        "MAE": 4.12,
+        "RMSE": 5.0454,
+        "MAPE": 0.0731
+      }
     },
-    "SYNTH_seed42_20260609_174649": {
-        "run_id": "SYNTH_seed42_20260609_174649",
-        "dataset": "SYNTH",
-        "epochs": 3,
-        "seed": 42,
-        "device": "cpu",
-        "per_horizon": {
-            "h1": {
-                "MAE": 4.2726,
-                "RMSE": 5.3369,
-                "MAPE": 0.0677
-            },
-            "h2": {
-                "MAE": 7.1731,
-                "RMSE": 8.4884,
-                "MAPE": 0.1092
-            },
-            "h3": {
-                "MAE": 4.1082,
-                "RMSE": 5.045,
-                "MAPE": 0.0671
-            },
-            "h4": {
-                "MAE": 4.7298,
-                "RMSE": 5.933,
-                "MAPE": 0.0733
-            },
-            "h5": {
-                "MAE": 8.2558,
-                "RMSE": 9.6333,
-                "MAPE": 0.1284
-            },
-            "h6": {
-                "MAE": 4.5315,
-                "RMSE": 5.4407,
-                "MAPE": 0.0771
-            },
-            "h7": {
-                "MAE": 5.9523,
-                "RMSE": 7.3342,
-                "MAPE": 0.091
-            },
-            "h8": {
-                "MAE": 9.8862,
-                "RMSE": 11.3409,
-                "MAPE": 0.1563
-            },
-            "h9": {
-                "MAE": 5.2799,
-                "RMSE": 6.2301,
-                "MAPE": 0.0917
-            },
-            "h10": {
-                "MAE": 6.2731,
-                "RMSE": 7.8942,
-                "MAPE": 0.0962
-            },
-            "h11": {
-                "MAE": 12.0376,
-                "RMSE": 13.3525,
-                "MAPE": 0.195
-            },
-            "h12": {
-                "MAE": 7.1426,
-                "RMSE": 8.0525,
-                "MAPE": 0.1305
-            }
-        },
-        "avg_MAE": 11.14,
-        "avg_RMSE": 13.25,
-        "avg_MAPE": 19.79,
-        "best_val_mae": 5.5754,
-        "model_params": 512451,
-        "final_adaptive_gate": 0.574
+    "diag": {
+      "adaptive_emb_gate": 0.5749,
+      "cascade_weights": "learning from uniform",
+      "depth_gates": "L0-L4 all ~0.952 (active)",
+      "note": "Phase2 revalidation: all new algorithms confirmed stable"
     },
-    "_best": "SYNTH_seed42_20260609_180434_M326",
-    "SYNTH_seed42_20260609_180434_M326": {
-        "dataset": "SYNTH",
-        "seed": 42,
-        "epochs": 3,
-        "claude_phase": "M326-M350",
-        "role": "SYNTH pipeline validation",
-        "train_mae_epoch1": 13.2846,
-        "train_mae_epoch3": 7.087,
-        "best_val_mae": 5.251,
-        "avg_test_MAE": 3.93,
-        "avg_test_RMSE": 4.89,
-        "avg_test_MAPE": 6.53,
-        "per_horizon_test": {
-            "h1": {
-                "MAE": 3.3268,
-                "RMSE": 4.1352,
-                "MAPE": 0.052
-            },
-            "h2": {
-                "MAE": 4.1469,
-                "RMSE": 5.2272,
-                "MAPE": 0.0686
-            },
-            "h3": {
-                "MAE": 3.4613,
-                "RMSE": 4.3089,
-                "MAPE": 0.0552
-            },
-            "h4": {
-                "MAE": 3.3078,
-                "RMSE": 4.1224,
-                "MAPE": 0.0533
-            },
-            "h5": {
-                "MAE": 4.16,
-                "RMSE": 5.145,
-                "MAPE": 0.069
-            },
-            "h6": {
-                "MAE": 3.6017,
-                "RMSE": 4.5753,
-                "MAPE": 0.0582
-            },
-            "h7": {
-                "MAE": 4.0088,
-                "RMSE": 4.981,
-                "MAPE": 0.0663
-            },
-            "h8": {
-                "MAE": 4.0822,
-                "RMSE": 5.0659,
-                "MAPE": 0.0689
-            },
-            "h9": {
-                "MAE": 4.7177,
-                "RMSE": 5.8756,
-                "MAPE": 0.0775
-            },
-            "h10": {
-                "MAE": 4.3609,
-                "RMSE": 5.3742,
-                "MAPE": 0.0747
-            },
-            "h11": {
-                "MAE": 3.8938,
-                "RMSE": 4.8707,
-                "MAPE": 0.0662
-            },
-            "h12": {
-                "MAE": 4.12,
-                "RMSE": 5.0454,
-                "MAPE": 0.0731
-            }
-        },
-        "model_params": 512451,
-        "diag": {
-            "adaptive_emb_gate_epoch0": 0.5749,
-            "adaptive_emb_norm_epoch0": 3.34,
-            "adj_temperature_epoch0": 1.002,
-            "depth_gates": "L0=0.952 L1=0.953 L2=0.952 L3=0.953 L4=0.952",
-            "cascade_weights_epoch0": "uniform 0.200",
-            "note": "pipeline validated: adaptive_emb_gate learning, cascade diverging from uniform"
-        },
-        "validation_status": "PASSED"
-    },
-    "SYNTH_M326_revalidation_20260609_180605": {
-        "run_id": "SYNTH_M326_revalidation_20260609_180605",
-        "dataset": "SYNTH",
-        "epochs": 3,
-        "seed": 42,
-        "device": "cpu",
-        "phase": "Phase2",
-        "claude_id": "Claude-2 M326-M350",
-        "MAE": 3.93,
-        "RMSE": 4.89,
-        "MAPE": "6.53%",
-        "best_val_mae": 5.251,
-        "per_horizon": {
-            "h1": {
-                "MAE": 3.3268,
-                "RMSE": 4.1352,
-                "MAPE": 0.052
-            },
-            "h2": {
-                "MAE": 4.1469,
-                "RMSE": 5.2272,
-                "MAPE": 0.0686
-            },
-            "h3": {
-                "MAE": 3.4613,
-                "RMSE": 4.3089,
-                "MAPE": 0.0552
-            },
-            "h4": {
-                "MAE": 3.3078,
-                "RMSE": 4.1224,
-                "MAPE": 0.0533
-            },
-            "h5": {
-                "MAE": 4.16,
-                "RMSE": 5.145,
-                "MAPE": 0.069
-            },
-            "h6": {
-                "MAE": 3.6017,
-                "RMSE": 4.5753,
-                "MAPE": 0.0582
-            },
-            "h7": {
-                "MAE": 4.0088,
-                "RMSE": 4.981,
-                "MAPE": 0.0663
-            },
-            "h8": {
-                "MAE": 4.0822,
-                "RMSE": 5.0659,
-                "MAPE": 0.0689
-            },
-            "h9": {
-                "MAE": 4.7177,
-                "RMSE": 5.8756,
-                "MAPE": 0.0775
-            },
-            "h10": {
-                "MAE": 4.3609,
-                "RMSE": 5.3742,
-                "MAPE": 0.0747
-            },
-            "h11": {
-                "MAE": 3.8938,
-                "RMSE": 4.8707,
-                "MAPE": 0.0662
-            },
-            "h12": {
-                "MAE": 4.12,
-                "RMSE": 5.0454,
-                "MAPE": 0.0731
-            }
-        },
-        "diag": {
-            "adaptive_emb_gate": 0.5749,
-            "cascade_weights": "learning from uniform",
-            "depth_gates": "L0-L4 all ~0.952 (active)",
-            "note": "Phase2 revalidation: all new algorithms confirmed stable"
-        },
-        "validation_status": "PASSED"
-    }
+    "validation_status": "PASSED"
+  }
 }

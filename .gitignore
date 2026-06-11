@@ -51,3 +51,6 @@ submodel_*.txt
 .claude-hk-config/
 submodel_response_*.txt
 philemon_bench
+submodel_batch*_dispatch.log
+submodel_batch*_*.txt
+submodel_response_*.txt
