@@ -1,4 +1,13 @@
 
+## migrate 90db89a: use the correct wg communicator
+
+- **Upstream commit**: 90db89a (cugraph-gnn, NVIDIA, 2024-07-30)
+- **Commit message**: `use the correct wg communicator`
+- **Files changed**: `feature_store.py` (wg_comm: local_node → global), `graph_store.py` (edge dtype: int32 → int64)
+- **Walpurgis target**: `src/walpurgis/core/wg_comm_fix.py`
+- **Key classes**: `WgCommSelector` (通信子选择策略), `EdgeCountDtypeGuard` (int64 边数量守卫)
+- **WALPURGIS_DEBUG 断点**: 断点1 (WgCommSelector.select 入口), 断点2 (通信子决策完成), 断点3 (EdgeCountDtypeGuard dtype 决策)
+
 ## migrate 03292cf: Migrate cugraph gnn packages to cugraph-pyg
 
 - **Upstream commit**: 03292cf (cugraph-gnn, NVIDIA)
