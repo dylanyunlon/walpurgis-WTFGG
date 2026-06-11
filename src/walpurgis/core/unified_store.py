@@ -446,13 +446,23 @@ class DtypeNegotiator:
     断点 10: negotiate 全局协商结果
     """
 
-    # 上游 dtype 映射表（与 feature_store.py 完全一致）
+    # migrate 220563b: 补全上游 feature_store.py dtype 映射表
+    # 上游原始表 (feature_store.py) 含 int16(4)/float16(5)/int8(6)，
+    # Walpurgis DtypeNegotiator 先前只迁移了前5个，缺少窄整型与半精度。
+    # 220563b 进一步新增 bfloat16(7)，用于 fp16/bf16 embedding 训练。
+    # WALPURGIS_DEBUG=1 时 encode/decode 打印 dtype_id 便于排查跨 rank dtype 不一致。
     DTYPE_TO_ID = {
-        "torch.float32": 0,
-        "torch.float64": 1,
-        "torch.int32": 2,
-        "torch.int64": 3,
-        "torch.bool": 4,
+        "torch.float32":  0,
+        "torch.float64":  1,
+        "torch.int32":    2,
+        "torch.int64":    3,
+        "torch.bool":     4,
+        # migrate 220563b: int16/float16/int8 (上游 feature_store.py 已有，补回)
+        "torch.int16":    5,
+        "torch.float16":  6,
+        "torch.int8":     7,
+        # migrate 220563b: bfloat16 — fp16/bf16 embedding 训练必需
+        "torch.bfloat16": 8,
     }
     ID_TO_DTYPE_NAME = {v: k for k, v in DTYPE_TO_ID.items()}
 

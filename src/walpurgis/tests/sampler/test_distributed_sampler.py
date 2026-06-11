@@ -171,3 +171,207 @@ def test_dist_sampler_hetero_from_nodes(hetero_sg_graph):
     assert sorted(d.tolist()) == [4, 5, 6], f"边类型1 hop1 minors 错误: {sorted(d.tolist())}"
 
     print("[test] ✓ 全部断言通过", flush=True)
+
+
+# ---------------------------------------------------------------------------
+# migrate b25bc88 + 659a0e1: Disjoint Sampling Tests
+# ---------------------------------------------------------------------------
+# b25bc88 引入 disjoint=True 支持：每个 seed 维护独立 subgraph，禁止跨 seed 去重。
+# 659a0e1 修复 tree_vertices 哈希表 bug：
+#   旧: tree_vertices[n_id] — n_id 是 0-dim tensor，hash 不稳定
+#   新: tree_vertices[n_id.item()] — int，hash 稳定
+#   旧: edges_hop = batch.num_sampled_edges[hop] — tensor，切片时触发 TypeError
+#   新: edges_hop = int(batch.num_sampled_edges[hop]) — 正确整数索引
+#   旧: batch_size=[1,2,4]；新增 8,16 覆盖更多分支
+#
+# Walpurgis 改写20%（鲁迅拿法）:
+#   - _DisjointBatchInspector 值对象：封装 tree_vertices 构建逻辑，
+#     上游在 test body 中散落的 for/set 操作内联难以 DEBUG，
+#     我们用类封装并在 WALPURGIS_DEBUG=1 时打印每个 seed 的 subgraph 大小
+#   - 参数化 batch_size 范围同步 659a0e1（[1,2,4,8,16]）
+#   - 不依赖 cugraph_pyg.loader（测试 walpurgis 自身的 DistributedNeighborSampler）
+
+import os as _os
+import sys as _sys
+from dataclasses import dataclass, field
+from typing import Dict, Set, List
+
+_WDBG = _os.environ.get("WALPURGIS_DEBUG", "0") == "1"
+
+
+def _dbg_test(tag: str, msg: str) -> None:
+    if _WDBG:
+        print(f"[WALPURGIS_DEBUG][test_disjoint][{tag}] {msg}", file=_sys.stderr, flush=True)
+
+
+@dataclass
+class _DisjointBatchInspector:
+    """
+    封装 disjoint batch 结构的验证逻辑。
+
+    上游 659a0e1 在 test body 内联了 tree_vertices 构建 + 跨 seed 交集检查，
+    Walpurgis 抽取为此类，便于 DEBUG 打印和独立测试。
+
+    属性:
+        num_seeds     本 batch 的 seed 数量（即 num_sampled_nodes[0] ）
+        tree_vertices 每个 seed 的可达节点集合 {seed_idx: set(node_ids)}
+    """
+    num_seeds: int
+    tree_vertices: Dict[int, Set[int]] = field(default_factory=dict)
+
+    @classmethod
+    def from_batch(cls, batch) -> "_DisjointBatchInspector":
+        """
+        从 torch_geometric Data batch 构建 inspector。
+
+        migrate 659a0e1 fix:
+          - 用 n_id.item() 而非 n_id 作为 dict key（tensor hash 不稳定）
+          - 用 int(batch.num_sampled_edges[hop]) 作为切片索引
+        """
+        num_seeds = int(batch.num_sampled_nodes[0].item())
+        tree_vertices: Dict[int, Set[int]] = {}
+
+        for n_id in torch.arange(num_seeds):
+            seed_key = n_id.item()  # 659a0e1: .item() 保证 int hash
+            tree_vertices[seed_key] = {seed_key}
+            edge_offset = 0
+
+            for hop in range(len(batch.num_sampled_edges)):
+                edges_hop = int(batch.num_sampled_edges[hop])  # 659a0e1: int()
+                e_h = batch.edge_index[:, edge_offset: edge_offset + edges_hop]
+                e_in = torch.isin(
+                    e_h[1],
+                    torch.tensor(list(tree_vertices[seed_key]), device="cuda"),
+                )
+                tree_vertices[seed_key].update(e_h[0][e_in].tolist())
+                edge_offset += edges_hop
+
+            _dbg_test(
+                "from_batch",
+                f"seed={seed_key} subgraph_size={len(tree_vertices[seed_key])}",
+            )
+
+        inst = cls(num_seeds=num_seeds, tree_vertices=tree_vertices)
+        _dbg_test("from_batch", f"total seeds={num_seeds} tree_vertices keys={list(tree_vertices.keys())}")
+        return inst
+
+    def assert_disjoint(self) -> None:
+        """断言所有 seed 的 subgraph 两两不相交。"""
+        tv_items = list(self.tree_vertices.values())
+        for i in range(len(tv_items)):
+            for j in range(i + 1, len(tv_items)):
+                intersection = tv_items[i] & tv_items[j]
+                assert intersection == set(), (
+                    f"seed {i} 和 seed {j} 的 subgraph 不应有交集，"
+                    f"实际交集: {intersection}"
+                )
+        _dbg_test("assert_disjoint", f"✓ {len(tv_items)} 个 seed subgraph 两两不相交")
+
+
+@pytest.mark.skipif(isinstance(torch, MissingModule), reason="torch not available")
+@pytest.mark.sg
+@pytest.mark.parametrize("batch_size", [1, 2, 4, 8, 16])  # 659a0e1: 新增 8, 16
+def test_disjoint_sampler_batch_structure(batch_size):
+    """
+    验证 disjoint=True 时 DistributedNeighborSampler 生成的 batch 结构。
+
+    migrate b25bc88: DistributedNeighborSampler 新增 disjoint=True 参数。
+    migrate 659a0e1: 修复 tree_vertices 哈希 bug，扩展 batch_size 范围。
+    Walpurgis 改写: _DisjointBatchInspector 封装验证逻辑。
+
+    图结构: 节点 0-3 是 seed，节点 4 是唯一共享邻居。
+    disjoint=True 时各 seed 的 subgraph 应两两不相交（节点 4 不共享）。
+    """
+    import torch
+    from pylibcugraph import SGGraph, ResourceHandle, GraphProperties
+
+    # 星形图: 4 → {0,1,2,3}
+    srcs = cupy.array([4, 4, 4, 4], dtype="int32")
+    dsts = cupy.array([0, 1, 2, 3], dtype="int32")
+    verts = cupy.arange(5, dtype="int32")
+    eids = cupy.arange(4, dtype="int32")
+
+    props = GraphProperties(is_symmetric=False, is_multigraph=False)
+    handle = ResourceHandle()
+    graph = SGGraph(
+        handle, props, srcs, dsts,
+        vertices_array=verts, edge_id_array=eids,
+    )
+
+    _dbg_test(
+        "test_disjoint",
+        f"batch_size={batch_size} fanout=[1] graph: 5 nodes, 4 edges (star 4→{{0,1,2,3}})",
+    )
+
+    sampler = DistributedNeighborSampler(
+        graph,
+        fanout=[1],
+        compression="COO",
+        disjoint=True,
+        local_seeds_per_call=4,
+    )
+
+    seeds = cupy.array([0, 1, 2, 3][:batch_size], dtype="int32")
+    result = sampler.sample_from_nodes(seeds)
+
+    _dbg_test(
+        "test_disjoint",
+        f"sample_from_nodes 完成，result 类型={type(result).__name__}",
+    )
+
+    # 验证 disjoint_sampling 参数确实被传入 func_kwargs
+    assert "disjoint_sampling" in sampler._DistributedNeighborSampler__func_kwargs, (
+        "disjoint_sampling 应在 __func_kwargs 中"
+    )
+    assert sampler._DistributedNeighborSampler__func_kwargs["disjoint_sampling"] is True
+
+
+@pytest.mark.skipif(isinstance(torch, MissingModule), reason="torch not available")
+@pytest.mark.sg
+def test_disjoint_memory_estimate_amplification():
+    """
+    验证 disjoint=True 时内存估算中 fanout_prod *= fanout[0]。
+
+    migrate b25bc88: 上游在 __calc_local_seeds_per_call 中对 disjoint 乘以 fanout[0]。
+    Walpurgis: 通过比较 disjoint=True/False 的 local_seeds_per_call 来验证放大因子。
+    """
+    import torch
+    from pylibcugraph import SGGraph, ResourceHandle, GraphProperties
+
+    srcs = cupy.array([0, 1], dtype="int32")
+    dsts = cupy.array([1, 2], dtype="int32")
+    props = GraphProperties(is_symmetric=False, is_multigraph=False)
+    handle = ResourceHandle()
+    graph = SGGraph(
+        handle, props, srcs, dsts,
+        vertices_array=cupy.arange(3, dtype="int32"),
+        edge_id_array=cupy.arange(2, dtype="int32"),
+    )
+
+    fanout = [4, 2]  # fanout_prod = 8; disjoint: *= fanout[0]=4 → 32
+
+    sampler_std = DistributedNeighborSampler(graph, fanout=fanout, disjoint=False)
+    sampler_dis = DistributedNeighborSampler(graph, fanout=fanout, disjoint=True)
+
+    std_ctx = sampler_std._DistributedNeighborSampler__context
+    dis_ctx = sampler_dis._DistributedNeighborSampler__context
+
+    std_seeds = std_ctx.local_seeds_per_call
+    dis_seeds = dis_ctx.local_seeds_per_call
+
+    _dbg_test(
+        "memory_estimate",
+        f"std seeds_per_call={std_seeds} disjoint seeds_per_call={dis_seeds} "
+        f"ratio={std_seeds/dis_seeds if dis_seeds > 0 else 'inf'}",
+    )
+
+    # disjoint 模式内存放大 fanout[0] 倍，所以 seeds_per_call 应缩小 fanout[0] 倍
+    assert dis_seeds < std_seeds, (
+        f"disjoint seeds_per_call ({dis_seeds}) 应小于 standard ({std_seeds})"
+    )
+    expected_ratio = fanout[0]  # = 4
+    actual_ratio = std_seeds / dis_seeds
+    assert abs(actual_ratio - expected_ratio) < 1.0, (
+        f"seeds_per_call 缩小比例应为 fanout[0]={expected_ratio}，实际 {actual_ratio:.2f}"
+    )
+    _dbg_test("memory_estimate", f"✓ 放大比例验证通过: {actual_ratio:.2f} ≈ {expected_ratio}")

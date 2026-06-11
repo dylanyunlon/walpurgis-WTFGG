@@ -770,6 +770,8 @@ class DistributedNeighborSampler(BaseDistributedSampler):
         compression: str = "COO",
         compress_per_hop: bool = False,
         with_replacement: bool = False,
+        # migrate b25bc88: disjoint sampling — no cross-seed dedup, memory grows extra
+        disjoint: bool = False,
         biased: bool = False,
         heterogeneous: bool = False,
         vertex_type_offsets: Optional[TensorType] = None,
@@ -784,13 +786,15 @@ class DistributedNeighborSampler(BaseDistributedSampler):
             "compress_per_hop": compress_per_hop,
             "compression": compression,
             "with_replacement": with_replacement,
+            # migrate b25bc88: pass disjoint flag to pylibcugraph sampler
+            "disjoint_sampling": disjoint,
         }
 
         _dbg(
             "dns.init",
             f"fanout={fanout} compression={compression} "
-            f"biased={biased} heterogeneous={heterogeneous} "
-            f"num_edge_types={num_edge_types}",
+            f"biased={biased} disjoint={disjoint} "
+            f"heterogeneous={heterogeneous} num_edge_types={num_edge_types}",
         )
 
         # 选择底层 pylibcugraph 采样函数
@@ -825,8 +829,9 @@ class DistributedNeighborSampler(BaseDistributedSampler):
             )
 
         resolved_seeds_per_call = self.__calc_local_seeds_per_call(
-            local_seeds_per_call,
+            local_seeds_per_call=local_seeds_per_call,
             heterogeneous=heterogeneous,
+            disjoint=disjoint,
             num_edge_types=num_edge_types,
         )
 
@@ -848,21 +853,26 @@ class DistributedNeighborSampler(BaseDistributedSampler):
 
     def __calc_local_seeds_per_call(
         self,
+        *,
         local_seeds_per_call: Optional[int],
         heterogeneous: bool = False,
+        disjoint: bool = False,
         num_edge_types: int = 1,
     ) -> int:
+        # migrate b25bc88: disjoint=True 时 fanout_prod *= fanout[0]
+        # disjoint 模式每个 seed 保留独立 subgraph，无跨 seed 去重，
+        # 内存比标准模式多 fanout[0] 倍（第一跳邻居不共享）。
+        # 上游 b25bc88 将 ≤0 fanout 检查移到 heterogeneous 处理之后，
+        # 保证 heterogeneous 路径的 fanout 聚合先于 ≤0 检查执行。
         torch = import_optional("torch")
         fanout = self.__fanout
 
         if local_seeds_per_call is None:
-            if any(x <= 0 for x in fanout):
-                _dbg(
-                    "dns.calc_seeds",
-                    f"fanout 含 ≤0 值，使用默认值 {self.UNKNOWN_VERTICES_DEFAULT}",
-                )
-                return self.UNKNOWN_VERTICES_DEFAULT
-
+            # migrate b25bc88: heterogeneous fanout 聚合先于 ≤0 检查
+            # 上游旧逻辑: ≤0 检查在 hetero 聚合之前，导致 hetero 全 wildcard fanout
+            # (所有值 -1) 在聚合前就提前返回 UNKNOWN_VERTICES_DEFAULT，正确。
+            # 但修复后顺序改为: 先聚合 hetero fanout → 再检查 ≤0 → 再估算内存。
+            # 这样 hetero 路径下 ≤0 判断基于聚合后的 fanout，语义更准确。
             if heterogeneous:
                 if len(fanout) % num_edge_types != 0:
                     raise ValueError(
@@ -878,8 +888,27 @@ class DistributedNeighborSampler(BaseDistributedSampler):
                     f"异构 fanout 聚合后: {fanout} num_hops={num_hops}",
                 )
 
+            # ≤0 fanout: unknown wildcard → use safe default
+            if any(x <= 0 for x in fanout):
+                _dbg(
+                    "dns.calc_seeds",
+                    f"fanout 含 ≤0 值（wildcard），使用默认值 {self.UNKNOWN_VERTICES_DEFAULT}",
+                )
+                return self.UNKNOWN_VERTICES_DEFAULT
+
             total_memory = torch.cuda.get_device_properties(0).total_memory
             fanout_prod = reduce(lambda x, y: x * y, fanout)
+
+            # migrate b25bc88: disjoint 模式内存放大 fanout[0] 倍
+            # disjoint sampling 每个 seed 维护独立 subgraph，第一跳邻居不跨 seed 共享，
+            # 实际分配内存 ≈ 标准模式 × fanout[0]。
+            if disjoint:
+                fanout_prod *= fanout[0]
+                _dbg(
+                    "dns.calc_seeds",
+                    f"disjoint=True: fanout_prod *= fanout[0]={fanout[0]} → {fanout_prod}",
+                )
+
             result = int(
                 self.BASE_VERTICES_PER_BYTE * total_memory / fanout_prod
             )
@@ -887,7 +916,7 @@ class DistributedNeighborSampler(BaseDistributedSampler):
             _dbg(
                 "dns.calc_seeds",
                 f"GPU 内存估算 | total_memory={total_memory} "
-                f"fanout_prod={fanout_prod} "
+                f"fanout_prod={fanout_prod} disjoint={disjoint} "
                 f"→ local_seeds_per_call={result}",
             )
             return result
