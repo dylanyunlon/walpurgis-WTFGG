@@ -4833,3 +4833,11 @@ conda 环境中限制 DGL 为 x86_64。Walpurgis 无 conda 构建体系，SKIP�
 - **Commit message**: `Enable device code compression (#202)`
 - **Upstream diff** (1 file changed, 9 insertions): `cpp/CMakeLists.txt` 新增 `-Xfatbin=-compress-all` + NVCC 12.9 专属 `--compress-level=3` fatbin 压缩 flag
 - **迁移价值**: 无 — 纯 CMake C++ 编译器 flag 配置，Walpurgis 无 CMake/C++ 构建体系，WholeGraph .so 以预编译形式由 pip/conda 引入，不重新编译
+
+## migrate f46eb9e: [SKIP] remove conflicting files — 纯 CHANGELOG merge commit, 无迁移价值
+
+- **Upstream commit**: f46eb9e (cugraph-gnn, Alexandria Barghi, 2025-06-12)
+- **Commit message**: `remove conflicting files`
+- **Commit type**: MERGE (7b07cf0 ← 004d100), 1 file changed, 54 insertions
+- **变更内容**: 仅 CHANGELOG.md 新增 cugraph-gnn 25.06.00 版本发布日志（Breaking Changes/Bug Fixes/Documentation/New Features/Improvements 五节）
+- **跳过原因**: 纯 changelog merge commit，无任何 Python/C++/CUDA 源码、算法、API 或运行时代码变更，零迁移价值
