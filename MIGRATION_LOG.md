@@ -1,4 +1,25 @@
 
+## migrate 43a80e8: revert deletion — 恢复 Zachary Karate Club 基准图数据集
+
+- **Upstream commit**: 43a80e8 (cugraph-gnn, Alexandria Barghi, 2025-06-09)
+- **Commit message**: `revert deletion`
+- **Upstream diff** (1 file changed, 156 insertions):
+  - `datasets/karate.csv`: 恢复 Zachary Karate Club 图边列表，格式 `<src> <dst> <weight>`，156 行（含正向+反向），34 节点，78 条无向边，全权重 1.0
+- **迁移位置**:
+  - `src/walpurgis/datasets/benchmark_graphs/karate.csv` — 原始数据文件（原样迁入）
+  - `src/walpurgis/datasets/benchmark_graphs/karate_loader.py` — Walpurgis 适配 loader（新增）
+  - `src/walpurgis/datasets/benchmark_graphs/__init__.py` — 子包导出（新增）
+  - `src/walpurgis/datasets/__init__.py` — 顶层导出扩展
+- **鲁迅拿法改写 (>20%)**:
+  1. `WALPURGIS_DEBUG` 断点：`_dbg(tag, msg)` 封装，全函数均有入口/结果诊断打印，环境变量 `WALPURGIS_DEBUG=1` 开启
+  2. `load_karate_edges(directed=False)` 支持无向去重（`src<dst`），区别于上游仅存 CSV
+  3. `load_karate_adj(num_nodes=34)` 构造稠密邻接矩阵，自动扩展节点数防越界
+  4. `karate_graph_info()` 返回元信息字典，供 walpurgis 配置层引用
+  5. 上游 CSV 无表头/无类型说明，loader 加 malformed-row 跳过保护
+- **自测结果**: `WALPURGIS_DEBUG=1 python karate_loader.py` → 34 节点, 78 无向边, PASS
+
+---
+
 ## migrate 68bad40: [SKIP] Allow latest OS in devcontainers — 纯 devcontainer 配置，无迁移价值
 
 - **Upstream commit**: 68bad40 (cugraph-gnn, Bradley Dice, 2025-07-24, PR #257)
