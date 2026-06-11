@@ -34,6 +34,21 @@ from .sampling_csc_helpers import (
     _create_homogeneous_sparse_graphs_from_csc,
 )
 
+
+# sampler_utils: neg_sample (dd543dc fix) + filter_cugraph_pyg_store + output builders
+# 延迟 import 避免无 GPU 环境崩溃（sampler.py 内部也是延迟 import）
+try:
+    from .sampler_utils import (
+        neg_sample,
+        neg_cat,
+        filter_cugraph_pyg_store,
+        HopIndexer,
+        SamplerResultValidator,
+    )
+    _dbg_import("sampler_utils 加载成功: neg_sample / neg_cat / filter_cugraph_pyg_store")
+except ImportError as _e:
+    _dbg_import(f"sampler_utils 加载跳过 (无 GPU 依赖): {_e}")
+
 _dbg_import(
     f"<<< sampler 子包加载完毕 | "
     f"符号: BaseSampler={BaseSampler.__module__}, "
@@ -50,4 +65,9 @@ __all__ = [
     "create_homogeneous_sampled_graphs_from_dataframe_csc",
     "_process_sampled_df_csc",
     "_create_homogeneous_sparse_graphs_from_csc",
+    "neg_sample",
+    "neg_cat",
+    "filter_cugraph_pyg_store",
+    "HopIndexer",
+    "SamplerResultValidator",
 ]

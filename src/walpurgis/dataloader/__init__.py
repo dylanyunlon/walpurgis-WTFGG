@@ -18,3 +18,18 @@ from .hetero_link_pred_fixes import (
     convert_fanout,
     local_neg_count,
 )
+from .node_classification import (
+    NodeClassificationDataset,
+    NodeClassificationData,
+    PickleLoader,
+    DatasetSplitValidator,
+    create_node_classification_datasets,
+    create_node_claffication_datasets,  # compat alias (typo)
+    load_node_classification_datasets_from_pickle,
+)
+from .loader_deprecation import (
+    DaskNeighborLoader,
+    BulkSampleLoader,
+    CuGraphNeighborLoader,
+    loader_deprecation_registry,
+)
