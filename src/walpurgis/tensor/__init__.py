@@ -31,6 +31,7 @@ from walpurgis.tensor.dist_tensor import DistTensor, DistEmbedding
 from walpurgis.tensor.dist_matrix import DistMatrix
 from walpurgis.tensor.utils import is_empty, empty
 from walpurgis.tensor.sparse_graph import SparseGraph, compress_ids, decompress_ids
+from walpurgis.tensor.embedding_view import EmbeddingView
 
 _dbg_import(
     f"<<< tensor 子包加载完毕 | "
@@ -49,4 +50,5 @@ __all__ = [
     "SparseGraph",
     "compress_ids",
     "decompress_ids",
+    "EmbeddingView",
 ]

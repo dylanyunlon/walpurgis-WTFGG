@@ -103,11 +103,27 @@ def create_wg_dist_tensor(
         f"world_size={global_comm.world_size} rank={global_comm.rank}",
     )
 
-    # backend → wholememory_type 映射 (较上游多 chunked 提示)
+    # backend → wholememory_type 映射
+    # migrate df5bdc4: 新增 "hierarchy" backend，对应上游 embedding_memory_type="hierarchy"
+    # hierarchy 模式: 两级内存层次 (GPU HBM + CPU DRAM)，只支持 nccl 通信，不支持 cache/nvshmem。
     if backend == "nccl":
         wm_type = "distributed"
     elif backend == "vmm":
         wm_type = "continuous"
+    elif backend == "hierarchy":
+        # migrate df5bdc4: hierarchy embedding type — 强制 nccl 通信后端
+        # 上游检查: NVSHMEM 下不支持 hierarchy，cache_policy 下不支持 hierarchy。
+        # 此处在 Walpurgis 层做提前检查，给出更清晰的错误信息（上游用 raise AssertionError 裸报错）。
+        wm_type = "hierarchy"
+        if "cache_policy" in kwargs and kwargs["cache_policy"] is not None:
+            raise ValueError(
+                "[hierarchy backend] cache_policy 与 hierarchy 内存类型不兼容；"
+                "请去掉 cache_policy 或换用 'nccl'/'vmm' backend。"
+            )
+        _dbg(
+            "create_wg_dist_tensor",
+            "hierarchy backend: wm_type=hierarchy, 强制 nccl 通信 (不支持 nvshmem/cache)",
+        )
     elif backend == "nvshmem":
         raise NotImplementedError(
             "NVSHMEM backend 尚未在 Walpurgis 中实现。"
@@ -121,7 +137,7 @@ def create_wg_dist_tensor(
     else:
         raise ValueError(
             f"不支持的 backend: '{backend}'。"
-            f"可选: 'nccl' | 'vmm'。"
+            f"可选: 'nccl' | 'vmm' | 'hierarchy'。"
         )
 
     if "cache_policy" in kwargs:
@@ -196,16 +212,25 @@ def create_wg_dist_tensor_from_files(
 
     global_comm = wgth.get_global_communicator()
 
+    # migrate df5bdc4: 新增 hierarchy backend（从文件加载路径）
     if backend == "nccl":
         wm_type = "distributed"
     elif backend == "vmm":
         wm_type = "continuous"
+    elif backend == "hierarchy":
+        wm_type = "hierarchy"
+        if "cache_policy" in kwargs and kwargs["cache_policy"] is not None:
+            raise ValueError(
+                "[hierarchy backend] cache_policy 与 hierarchy 不兼容，"
+                "请去掉 cache_policy 或换用 'nccl'/'vmm'。"
+            )
+        _dbg("create_wg_dist_tensor_from_files", "hierarchy backend: wm_type=hierarchy")
     elif backend == "nvshmem":
         raise NotImplementedError(
             "NVSHMEM backend 尚未在 Walpurgis 中实现。"
         )
     else:
-        raise ValueError(f"不支持的 backend: '{backend}'。")
+        raise ValueError(f"不支持的 backend: '{backend}'。可选: 'nccl' | 'vmm' | 'hierarchy'。")
 
     if "cache_policy" in kwargs:
         if len(shape) != 2:

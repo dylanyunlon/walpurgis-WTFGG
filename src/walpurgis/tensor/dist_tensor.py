@@ -268,14 +268,23 @@ class DistTensor:
     # ── 访问接口 ──────────────────────────────────────────────────────────────
 
     def __setitem__(self, idx: "torch.Tensor", val: "torch.Tensor"):
-        """通过全局索引写入 embedding。所有进程必须同时调用。"""
+        """通过全局索引写入 embedding。所有进程必须同时调用。
+
+        migrate 2776772: 支持 1D wholememory tensor 的 scatter。
+        上游 pylibwholegraph scatter_op 内部始终以 2D 矩阵操作；对 1D 张量，
+        输入 val 需 unsqueeze(1) 变成 [N,1] 再传入，否则 dim 断言失败。
+        Walpurgis 改写: 在我们这一层统一处理维度转换，而不是让上游 assert 报错。
+        WALPURGIS_DEBUG=1 时打印 1D/2D 路径选择，便于排查多GPU scatter不对齐。
+        """
         assert self._tensor is not None, "请先创建 WholeGraph 张量。"
 
+        tensor_dim = self._tensor.dim()
         _dbg(
             "DistTensor",
             "__setitem__",
             f"idx.shape={list(idx.shape)} val.shape={list(val.shape)} "
-            f"idx_range=[{idx.min().item()}, {idx.max().item()}]",
+            f"idx_range=[{idx.min().item()}, {idx.max().item()}] "
+            f"tensor_dim={tensor_dim}",
         )
 
         idx = idx.cuda()
@@ -283,21 +292,52 @@ class DistTensor:
             val = val.to(self.dtype)
         if not val.is_cuda:
             val = val.pin_memory()
+
+        # --- 1D tensor scatter fix (migrate 2776772) ---
+        # pylibwholegraph scatter_op 内部把 wholememory_tensor unsqueeze 成 2D，
+        # 因此输入 val 也必须是 2D [N,1]。上游在 tensor.py 中 assert input_tensor.dim() == 2，
+        # 对 1D 张量 (val.dim()==1) 会直接 AssertionError。
+        # 解法: 1D wholememory tensor 时，在调用前 unsqueeze(1)。
+        if tensor_dim == 1:
+            _dbg("DistTensor", "__setitem__", "1D tensor: val.unsqueeze(1) 再 scatter")
+            val = val.unsqueeze(1)
+
         self._tensor.scatter(val, idx)
 
     def __getitem__(self, idx: "torch.Tensor") -> "torch.Tensor":
-        """通过全局索引读取 embedding。所有进程必须同时调用。"""
+        """通过全局索引读取 embedding。所有进程必须同时调用。
+
+        migrate 2776772: 支持 1D wholememory tensor 的 gather。
+        上游 pylibwholegraph gather 输出始终是 [N, embedding_dim] 的 2D 张量；
+        对 1D wholememory tensor，embedding_dim=1，输出为 [N,1]，需要 view(-1) 还原为 [N]。
+        Walpurgis 改写: 在我们这一层统一处理，不依赖上游 pylibwholegraph 是否已修复。
+        """
         assert self._tensor is not None, "请先创建 WholeGraph 张量。"
 
+        tensor_dim = self._tensor.dim()
         _dbg(
             "DistTensor",
             "__getitem__",
             f"idx.shape={list(idx.shape)} "
-            f"idx_range=[{idx.min().item()}, {idx.max().item()}]",
+            f"idx_range=[{idx.min().item()}, {idx.max().item()}] "
+            f"tensor_dim={tensor_dim}",
         )
 
         idx = idx.cuda()
         output_tensor = self._tensor.gather(idx)
+
+        # --- 1D tensor gather fix (migrate 2776772) ---
+        # pylibwholegraph gather 输出 [N, embedding_dim]；
+        # 若底层是 1D wholememory tensor，embedding_dim=1，用户期待 [N] 而非 [N,1]。
+        # view(-1) 将 [N,1] → [N]，与原生 torch 索引行为一致。
+        if tensor_dim == 1:
+            _dbg(
+                "DistTensor",
+                "__getitem__",
+                f"1D tensor: view(-1) 还原 [N,1]→[N], before={list(output_tensor.shape)}",
+            )
+            output_tensor = output_tensor.view(-1)
+
         _dbg(
             "DistTensor",
             "__getitem__",
