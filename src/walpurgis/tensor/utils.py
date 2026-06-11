@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # migrate 539d0ad: tensor/utils.py
+# migrate ac3c900 (partial): _sanitize_file_list — Python层文件路径规范化
 # 鲁迅拿法20%改写笔记:
 #   上游 utils.py 老老实实把 create_wg_dist_tensor / copy_host_global_tensor_to_local
 #   排成一列, 没有任何调试入口——出了问题只能靠 CUDA 报错猜。
@@ -9,7 +10,9 @@
 #     1. 每个公共函数在 WALPURGIS_DEBUG=1 时打印关键参数与执行结果;
 #     2. copy_host_global_tensor_to_local 加同步前后的断点确认 barrier 实际发生;
 #     3. has_nvlink_network 捕获 LOCAL_WORLD_SIZE 缺失的现实情况 (上游会 KeyError);
-#     4. is_empty / empty 加类型断言——上游对非 Tensor 输入默默返回错误结果。
+#     4. is_empty / empty 加类型断言——上游对非 Tensor 输入默默返回错误结果;
+#     5. ac3c900: _sanitize_file_list() — C层 PyUnicode_AsUTF8 → PyUnicode_AsUTF8String+strdup
+#        修复的 Python 层配套防御: 具现化 file_list + UTF-8 编码探针 + 类型规范化。
 
 import os
 import sys
@@ -180,6 +183,55 @@ def create_wg_dist_tensor(
 # ─── create_wg_dist_tensor_from_files ────────────────────────────────────────
 
 
+def _sanitize_file_list(file_list) -> List[str]:
+    """将文件路径列表统一规范化为 Python str 列表。
+
+    ac3c900 迁移: 上游 wholememory_binding.pyx 修复了 PyUnicode_AsUTF8 的悬空指针问题
+    (borrowed C string 在 GC 后失效), 改用 PyUnicode_AsUTF8String + strdup 获取稳定副本。
+    这个修复在 C 层已由 pylibwholegraph >= 26.04 覆盖, 但调用方应在 Python 层也确保:
+      1. file_list 是已具现化的 list (非 generator/iterator), 对象在调用期间不被 GC;
+      2. 每个路径元素是 str 而非 bytes / pathlib.Path, 避免 C 层隐式转换失败;
+      3. 路径可被 UTF-8 编码 (encode 探针验证), 与 strdup(PyBytes_AsString()) 一致。
+
+    鲁迅: 内存安全不只是 C 层的责任——Python 调用方若传入惰性迭代器,
+    C 扩展拿到的字符串地址指向的对象随时可能被回收。
+    具现化 list 是最廉价的防御。
+    """
+    # 具现化: 防止惰性迭代器在 C 层遍历期间被 GC
+    materialized: List[str] = list(file_list)
+
+    sanitized: List[str] = []
+    for i, fpath in enumerate(materialized):
+        if isinstance(fpath, bytes):
+            # bytes → str: 假设 UTF-8 编码
+            fpath = fpath.decode("utf-8")
+            _dbg("_sanitize_file_list", f"[{i}] bytes→str: {fpath!r}")
+        elif hasattr(fpath, "__fspath__"):
+            # pathlib.Path 或其他 os.fspath 兼容对象
+            fpath = os.fspath(fpath)
+            _dbg("_sanitize_file_list", f"[{i}] fspath→str: {fpath!r}")
+        elif not isinstance(fpath, str):
+            raise TypeError(
+                f"file_list[{i}] 必须是 str/bytes/PathLike, "
+                f"实际类型: {type(fpath).__name__!r}"
+            )
+        # UTF-8 编码探针: 确保字符串可被 C 层 PyUnicode_AsUTF8String 处理
+        try:
+            fpath.encode("utf-8")
+        except UnicodeEncodeError as exc:
+            raise ValueError(
+                f"file_list[{i}]={fpath!r} 包含无法 UTF-8 编码的字符: {exc}"
+            ) from exc
+        sanitized.append(fpath)
+
+    _dbg(
+        "_sanitize_file_list",
+        f"规范化完毕: {len(sanitized)} 条路径, "
+        f"首路径={sanitized[0]!r if sanitized else '(空)'}",
+    )
+    return sanitized
+
+
 def create_wg_dist_tensor_from_files(
     file_list: List[str],
     shape: list,
@@ -193,8 +245,13 @@ def create_wg_dist_tensor_from_files(
 
     鲁迅改写:
       - 上游用 assert 做校验, assert 在 -O 模式下被跳过 → 改用 raise;
-      - 打印每个文件是否实际存在 (WALPURGIS_DEBUG=1), 避免 CUDA 报错让人找不到原因。
+      - 打印每个文件是否实际存在 (WALPURGIS_DEBUG=1), 避免 CUDA 报错让人找不到原因;
+      - ac3c900 迁移: _sanitize_file_list() 具现化并规范化路径列表,
+        与 C 层 PyUnicode_AsUTF8String + strdup 修复配套。
     """
+    # ac3c900: 规范化路径列表 (防 C 层借用指针悬空)
+    file_list = _sanitize_file_list(file_list)
+
     _dbg(
         "create_wg_dist_tensor_from_files",
         f"file_count={len(file_list)} shape={shape} dtype={dtype} "
