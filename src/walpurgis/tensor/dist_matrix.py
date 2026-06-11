@@ -13,6 +13,18 @@
 #     4. local_coo 打印聚合后的 shape;
 #     5. 把 local_col/local_row 中重复的 arange 逻辑提取为 _local_range(),
 #        减少代码重复 (鲁迅最厌重复)。
+#
+# migrate adb4006 + feffb39: fix circular import
+#   上游 adb4006/feffb39 把 `from cugraph_dgl import CuGraphStorage` (包级别导入)
+#   改为 `from cugraph_dgl.cugraph_storage import CuGraphStorage` (直接导入模块文件),
+#   消除了 cugraph_dgl/__init__.py ↔ cugraph_dgl/convert.py 之间的循环依赖。
+#
+#   Walpurgis 同等修复:
+#   - `from walpurgis.tensor import DistTensor` 会触发 walpurgis/tensor/__init__.py,
+#     而 tensor/__init__.py 又导入 DistMatrix — 形成循环:
+#       tensor/__init__.py → dist_matrix.py → tensor/__init__.py (等待 DistMatrix)
+#   - 修复方式: 直接从模块文件导入，绕过 __init__.py 中间层。
+#   - 同时把 Graph 类型注解也改为模块级直接导入 (对应 feffb39 的 Graph 修复)。
 
 import os
 import sys
@@ -20,7 +32,8 @@ import time
 from typing import Optional, Union, Tuple, List, Literal
 
 from walpurgis.utils.imports import import_optional
-from walpurgis.tensor import DistTensor
+# migrate adb4006: 直接从模块文件导入，消除经由 tensor/__init__ 的循环依赖
+from walpurgis.tensor.dist_tensor import DistTensor
 
 torch = import_optional("torch")
 

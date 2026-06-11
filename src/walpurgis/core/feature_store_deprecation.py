@@ -454,6 +454,115 @@ except ImportError as _e:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# migrate 1e91ed7: Remove DaskGraphStore / CuGraphStore wrappers
+#
+# 上游 1e91ed7 (cugraph-gnn) 在 release 25.06 正式删除了 cugraph_pyg.data.__init__ 中
+# DaskGraphStore/CuGraphStore 的 wrapper 函数和 dask_graph_store 整个模块。
+#
+# Walpurgis 迁移语义:
+#   - DaskGraphStore 与 CuGraphStore 两个废弃 wrapper 从 DeprecationPolicy 中彻底移除。
+#   - 任何尝试通过 _POLICY 获取这两个名称的调用将得到 KeyError，
+#     错误信息引导用户迁移到 GraphStore / walpurgis.core.unified_store.UnifiedStore。
+#   - 与上游不同: walpurgis 用 _RemovedEntryGuard 替代直接缺失，
+#     提供比 KeyError 更友好的错误信息 + WALPURGIS_DEBUG 断点。
+#
+# 20% 改写 (鲁迅拿法):
+#   - _RemovedEntryGuard: callable stub，调用时抛 RuntimeError（比 KeyError 更语义准确）
+#     + WALPURGIS_DEBUG 断点打印调用堆栈摘要
+#   - DeprecationPolicy.mark_removed(): 注册「已彻底移除」条目，
+#     统一管理 removed vs deprecated 两类状态
+#   - 断点7: mark_removed 注册事件
+#   - 断点8: _RemovedEntryGuard.__call__ 触发（调用已删除API时打印堆栈）
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+class _RemovedEntryGuard:
+    """
+    已彻底移除的 API 占位符。
+
+    上游 1e91ed7 直接删除了 DaskGraphStore/CuGraphStore wrapper；
+    Walpurgis 保留一个可检测的对象，使得 `from walpurgis.core... import DaskGraphStore`
+    不会 ImportError（模块可正常加载），但实际调用时抛出带迁移指引的 RuntimeError。
+
+    断点8: 调用时打印调用堆栈摘要。
+    """
+
+    def __init__(self, removed_name: str, migration_hint: str):
+        self._name = removed_name
+        self._hint = migration_hint
+        self.__name__ = removed_name
+        self.__qualname__ = removed_name
+
+    def __call__(self, *args, **kwargs):
+        import traceback
+
+        # ── 断点8 ────────────────────────────────────────────────────────
+        _dbg(
+            f"_RemovedEntryGuard.__call__(): {self._name!r} 已彻底移除，"
+            f"调用者: {''.join(traceback.format_stack()[-4:-1]).strip()[:200]}"
+        )
+
+        raise RuntimeError(
+            f"{self._name} has been removed (upstream cugraph-gnn 1e91ed7, release 25.06).\n"
+            f"Migration: {self._hint}"
+        )
+
+    def __repr__(self):
+        return f"_RemovedEntryGuard(name={self._name!r})"
+
+
+def _add_mark_removed(policy_cls):
+    """
+    为 DeprecationPolicy 类动态添加 mark_removed() 方法。
+    避免修改类定义区（保持已有迁移条目的可读性）。
+
+    断点7: mark_removed 注册事件。
+    """
+
+    def mark_removed(self, name: str, migration_hint: str) -> "_RemovedEntryGuard":
+        """
+        注册「已彻底移除」条目。
+
+        与 register() 不同：mark_removed 的条目调用时抛 RuntimeError 而非 FutureWarning。
+        用于 upstream 已删除（非废弃中）的 API。
+        """
+        guard = _RemovedEntryGuard(name, migration_hint)
+        self._registry[name] = guard  # 复用同一 registry，统一 has() / 遍历
+
+        # ── 断点7 ────────────────────────────────────────────────────────
+        _dbg(
+            f"DeprecationPolicy.mark_removed(): "
+            f"name={name!r}, hint_prefix={migration_hint[:60]!r}..."
+        )
+
+        return guard
+
+    policy_cls.mark_removed = mark_removed
+
+
+_add_mark_removed(DeprecationPolicy)
+
+
+# 移除 DaskGraphStore 和 CuGraphStore (对应上游 1e91ed7 删除 dask_graph_store.py)
+DaskGraphStore = _POLICY.mark_removed(
+    "DaskGraphStore",
+    "Use walpurgis.core.unified_store.UnifiedStore (or cugraph_pyg.data.GraphStore) instead."
+    " The entire Dask-based distributed graph API was dropped in release 25.06.",
+)
+
+CuGraphStore = _POLICY.mark_removed(
+    "CuGraphStore",
+    "CuGraphStore was renamed to DaskGraphStore, which is now also removed."
+    " Use walpurgis.core.unified_store.UnifiedStore instead.",
+)
+
+_dbg(
+    f"1e91ed7 迁移完成: DaskGraphStore/CuGraphStore 已注册为 _RemovedEntryGuard, "
+    f"policy registry keys={list(_POLICY._registry.keys())}"
+)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # 便捷导出
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -463,5 +572,8 @@ __all__ = [
     "InstanceCheckGuard",
     "TensorDictFeatureStore",
     "WholeFeatureStore",
+    "DaskGraphStore",
+    "CuGraphStore",
+    "_RemovedEntryGuard",
     "_POLICY",
 ]
