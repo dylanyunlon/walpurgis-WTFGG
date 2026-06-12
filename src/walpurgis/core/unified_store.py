@@ -446,24 +446,39 @@ class DtypeNegotiator:
     断点 10: negotiate 全局协商结果
     """
 
-    # migrate 220563b: 补全上游 feature_store.py dtype 映射表
-    # 上游原始表 (feature_store.py) 含 int16(4)/float16(5)/int8(6)，
-    # Walpurgis DtypeNegotiator 先前只迁移了前5个，缺少窄整型与半精度。
-    # 220563b 进一步新增 bfloat16(7)，用于 fp16/bf16 embedding 训练。
-    # WALPURGIS_DEBUG=1 时 encode/decode 打印 dtype_id 便于排查跨 rank dtype 不一致。
+    # migrate 6d1a8de: 修正上游 feature_store.py dtype 映射表
+    #
+    # 上游 6d1a8de (2025-11-26, Alex Barghi):
+    #   [IMP] Support more dtypes in the cuGraph-PyG FeatureStore (#346)
+    #   - 新增 int16(4) / float16(5) / int8(6) — WholeGraph 原生支持
+    #   - 移除 torch.bool(原id=4) — WholeGraph 从未真正支持, 放入属于误植,
+    #     使用 torch.bool 时无论如何都会抛异常, 因此移除是非破坏性变更
+    #   - bfloat16 暂不包含 (WholeGraph 接口列出但实测不工作, 见 PR #346 描述)
+    #
+    # Walpurgis id 序列对齐 (6d1a8de → Walpurgis):
+    #   float32=0  float64=1  int32=2  int64=3   ← 不变
+    #   bool=4     → 移除 (id=4 让给 int16)
+    #   int16=4    float16=5  int8=6             ← 6d1a8de 新增
+    #   bfloat16=7 ← 220563b 已迁移, id 从原 8 调整为 7 (bool 腾出 id=4 后整体前移)
+    #
+    # 断点 9: encode/decode 打印 dtype_id, 便于排查跨 rank dtype 不一致
     DTYPE_TO_ID = {
         "torch.float32":  0,
         "torch.float64":  1,
         "torch.int32":    2,
         "torch.int64":    3,
-        "torch.bool":     4,
-        # migrate 220563b: int16/float16/int8 (上游 feature_store.py 已有，补回)
-        "torch.int16":    5,
-        "torch.float16":  6,
-        "torch.int8":     7,
+        # migrate 6d1a8de: torch.bool 移除 (原 id=4, WholeGraph 从未实际支持)
+        # 鲁迅: 「错误的开始」若不纠正, 日后的每一步都是在错上加错。
+        # 以前用 torch.bool 的调用本就会在 WholeGraph 层抛异常, 移除属于正名。
+        "torch.int16":    4,   # migrate 6d1a8de: WholeGraph 原生支持
+        "torch.float16":  5,   # migrate 6d1a8de: WholeGraph 原生支持 (半精度特征)
+        "torch.int8":     6,   # migrate 6d1a8de: WholeGraph 原生支持 (量化场景)
         # migrate 220563b: bfloat16 — fp16/bf16 embedding 训练必需
-        "torch.bfloat16": 8,
+        # id 由原 8 调整为 7 (bool 腾出 id=4 后整体前移一位)
+        "torch.bfloat16": 7,
     }
+    # 断点调试: bool 移除后的 encode 会给出明确 ValueError, 而非静默发送错误 id
+    # 若有存量代码依赖 bool dtype, WALPURGIS_DEBUG=1 时 encode() 会打印出错位置
     ID_TO_DTYPE_NAME = {v: k for k, v in DTYPE_TO_ID.items()}
 
     @staticmethod
