@@ -1,4 +1,35 @@
 
+## migrate 8a84101: Use CUDA 12.9 in Conda, Devcontainers, Spark, GHA, etc.
+
+- **Upstream commit**: 8a84101e0b00d264e26d70f36f0b3e99bc3372e3 (cugraph-gnn, jakirkham, 2025-06-30, PR #232)
+- **Commit message**: `Use CUDA 12.9 in Conda, Devcontainers, Spark, GHA, etc. (#232)`
+- **Upstream diff** (8 files changed, 19 insertions(+), 19 deletions(-)):
+  - `.devcontainer/cuda12.8-conda/devcontainer.json` → **重命名** `.devcontainer/cuda12.9-conda/devcontainer.json`：`CUDA` arg `12.8→12.9`，容器名 `12.8→12.9`，conda env 路径 `12.8-envs→12.9-envs`，initializeCommand mkdir 路径同步
+  - `.devcontainer/cuda12.8-pip/devcontainer.json` → **重命名** `.devcontainer/cuda12.9-pip/devcontainer.json`：`CUDA` arg、BASE 镜像 tag、容器名、cuda feature version、venv 路径全部 `12.8→12.9`
+  - `.github/workflows/pr.yaml`：`cuda: ["12.8"]` → `cuda: ["12.9"]`（build-in-devcontainer 矩阵参数）
+  - `conda/environments/all_cuda-128_arch-aarch64.yaml` → **重命名** `all_cuda-129_arch-aarch64.yaml`：`cuda-version=12.8→12.9`，env name 同步
+  - `conda/environments/all_cuda-128_arch-x86_64.yaml` → **重命名** `all_cuda-129_arch-x86_64.yaml`：同上
+  - `dependencies.yaml`：两处 `cuda: ["12.8"]` matrix 项 → `["12.9"]`（全局构建矩阵 + cugraph_pyg_dev 矩阵）
+  - `python/cugraph-pyg/conda/cugraph_pyg_dev_cuda-128_arch-aarch64.yaml` → **重命名** `cuda-129`：env name 同步
+  - `python/cugraph-pyg/conda/cugraph_pyg_dev_cuda-128_arch-x86_64.yaml` → **重命名** `cuda-129`：env name 同步
+
+- **迁移位置**: 无（本 commit 全部为构建基础设施配置，零运行时 Python/C++ 源码变更）
+
+- **SKIP 项（全部）**:
+  - `.devcontainer/cuda12.9-conda/devcontainer.json` — SKIP：开发容器配置，Walpurgis 无 devcontainer 体系
+  - `.devcontainer/cuda12.9-pip/devcontainer.json` — SKIP：同上
+  - `.github/workflows/pr.yaml` — SKIP：CI/GHA workflow，Walpurgis 无上游 CI 体系
+  - `conda/environments/all_cuda-129_arch-aarch64.yaml` — SKIP：RAPIDS conda 环境配置，非 Walpurgis 依赖管理方式
+  - `conda/environments/all_cuda-129_arch-x86_64.yaml` — SKIP：同上
+  - `dependencies.yaml` — SKIP：rapids-dep 全局构建矩阵，非 Walpurgis 项目文件
+  - `python/cugraph-pyg/conda/cugraph_pyg_dev_cuda-129_arch-aarch64.yaml` — SKIP：cugraph-pyg 专属 conda dev 环境，非 Walpurgis 组件
+  - `python/cugraph-pyg/conda/cugraph_pyg_dev_cuda-129_arch-x86_64.yaml` — SKIP：同上
+
+- **鲁迅拿法改写（≥20%）**: 本次无运行时代码迁移，故此项不适用。
+  说明：`cuda_build_config.py`（迁移自 b89f57d）已包含 CUDA 12.9 的 `--compress-level=3` 分支逻辑，其中 `is_cuda_129x = (probe.major == 12 and probe.minor == 9)` 条件已覆盖 12.9 探测。本 commit 所携带的"12.9 为当前版本"语义已在 `cuda_build_config.py` 的运行时探测中体现，无需额外文件变更。
+
+---
+
 ## migrate 2ba9979: Propagate Changes from cuGraph Distributed Sampler (metadata addition)
 
 - **Upstream commit**: 2ba9979 (cugraph-gnn, Alex Barghi, 2025-07-17, PR #245)
