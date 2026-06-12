@@ -695,12 +695,24 @@ if __name__ == "__main__":
             )
             _dbg("main", "train_loader created")
 
+            # [4dcf7eb] test_loader 不传 time_attr / edge_label_time，
+            # 因为测试阶段无需严格时序约束（避免数据泄露问题已由 train_loader 负责）。
+            # 惰性图构建（lazy graph creation）会使两个 loader 共享同一张图，
+            # 故每个 epoch 会抛出一次关于 time 属性未使用的 UserWarning——此为预期行为，
+            # 并非 bug；若需消除 warning 可在 test_loader 也传入 time_attr，
+            # 但会引入不必要的时序过滤开销。
+            # 鲁迅注：所谓"TODO"，不过是尚未抵达的远方；时序采样既已落地，TODO 遂成遗迹。
+            _dbg(
+                "main",
+                "test_loader init: no time_attr by design — "
+                "lazy graph reuse triggers expected UserWarning each epoch",
+            )
             test_loader = LinkNeighborLoader(
                 edge_label_index=(("user", "rates", "movie"), eli_test),
                 neg_sampling=dict(mode="binary", amount=1),
                 **kwargs,
             )
-            _dbg("main", "test_loader created")
+            _dbg("main", "test_loader created (shared graph with train_loader)")
 
             sparse_size = (num_nodes["user"], num_nodes["movie"])
             test_edge_label_index = EdgeIndex(
