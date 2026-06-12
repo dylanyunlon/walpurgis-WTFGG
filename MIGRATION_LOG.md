@@ -1,4 +1,56 @@
 
+## migrate 0ea4925: refactor — cugraph-DGL 大重构：Graph/view/features/typing/sampler/DaskDataLoader 首次引入
+
+- **Upstream commit**: 0ea49254b83928ca8f32283b0a87522cb61a86f9 (cugraph-gnn, Alexandria Barghi, 2024-08-02)
+- **Commit message**: `refactor`
+- **Upstream diff 摘要** (35 files changed, 3460 insertions, 380 deletions)：
+  - **新增核心文件**（全新引入）：
+    - `cugraph_dgl/graph.py` — `Graph` 类：cuGraph 后端延迟图对象，支持单/多 GPU、同/异构图、WholeGraph 分布式特征存储（910 行）
+    - `cugraph_dgl/view.py` — `HeteroNodeView / HeteroNodeDataView / HeteroEdgeView / HeteroEdgeDataView`（310 行）
+    - `cugraph_dgl/features.py` — `WholeFeatureStore`：WholeGraph wholememory 分布式特征存储后端（121 行）
+    - `cugraph_dgl/typing.py` — `TensorType / DGLSamplerOutput` 类型别名（40 行）
+    - `cugraph_dgl/dataloading/sampler.py` — `Sampler / SampleReader / HomogeneousSampleReader` 基类（193 行）
+    - `cugraph_dgl/dataloading/dask_dataloader.py` — `DaskDataLoader`（原 `DataLoader` Dask 路径重命名，321 行）
+  - **重构已有文件**：
+    - `dataloading/__init__.py` — `DataLoader` 改为 `FutureWarning` 包装，`DaskDataLoader` 作为正式名；新增 `Sampler` 导出
+    - `dataloading/dataloader.py` — 原 Dask `DataLoader` 拆出为新的鸭子类型 `DataLoader`（驱动 `NeighborSampler.sample()`）
+    - `dataloading/neighbor_sampler.py` — `NeighborSampler` 改继承 `Sampler`，新增 `sample()` 方法 + 多可选参数
+    - `convert.py` — 新增 `cugraph_dgl_graph_from_heterograph()`
+    - `__init__.py` — 导出 `Graph / cugraph_dgl_graph_from_heterograph`
+    - `nn/conv/base.py` — `SparseGraph` 新增 `.to(device)` 方法
+    - `utils/cugraph_conversion_utils.py` — 新增 `_cast_to_torch_tensor()`
+  - **测试文件**（新增）：`tests/dataloading/test_dataloader.py`、`test_dataloader_mg.py`、`test_graph.py`、`test_graph_mg.py`、`utils.py` 等（共 1100+ 行测试）
+  - **conda/meta.yaml**：新增 `tensordict >=0.1.2`、`pytorch >=2.0`、`cupy >=12.0.0` 依赖
+
+- **CI/merge → SKIP**：
+  - 所有新增/移动的测试文件 (`tests/dataloading/`, `tests/test_graph*.py`) — SKIP：Walpurgis 无 CI 测试体系
+  - `conda/recipes/cugraph-dgl/meta.yaml` — SKIP：conda 构建依赖，Walpurgis 用 pyproject.toml
+  - 测试辅助 `utils.py` (`python/cugraph-dgl/cugraph_dgl/tests/utils.py`) — SKIP：测试框架依赖
+
+- **迁移情况**：
+  - **已通过 f4ca484（merge commit）完整吸收的内容**（f4ca484 即合并了 0ea4925 所引入的特性分支）：
+    - `graph.py` → `src/walpurgis/graph/graph.py`（含鲁迅改写 + 全链路 DEBUG 断点）
+    - `view.py` → `src/walpurgis/graph/view.py`
+    - `features.py` → `src/walpurgis/graph/features.py`
+    - `typing.py` → `src/walpurgis/graph/typing.py`
+    - `dataloading/sampler.py` (`Sampler / SampleReader / HomogeneousSampleReader`) → `src/walpurgis/sampler/dgl_sampler.py`
+    - `dataloading/dask_dataloader.py` (`DaskDataLoader`) → `src/walpurgis/dataloader/dask_dataloader.py`
+    - `dataloading/dataloader.py` (新鸭子类型 `DataLoader`) → `src/walpurgis/dataloader/dgl_dataloader.py`
+    - `dataloading/neighbor_sampler.py` (`NeighborSampler.sample()`) → `src/walpurgis/sampler/dgl_neighbor_sampler.py`
+    - `convert.py` (`cugraph_dgl_graph_from_heterograph`) → `src/walpurgis/graph/convert.py`
+    - `utils/cugraph_conversion_utils.py` (`_cast_to_torch_tensor`) → 内联于 `src/walpurgis/graph/graph.py`
+  - **本次新迁移**（f4ca484 迁移时遗漏的边角内容）：
+    - `nn/conv/base.py` 新增的 `SparseGraph.to(device)` 方法 → **新增至** `src/walpurgis/tensor/sparse_graph.py`
+
+- **迁移位置（本次新增）**: `src/walpurgis/tensor/sparse_graph.py` — 追加 `SparseGraph.to()` 方法
+- **鲁迅拿法改写（≥20%，仅 .to() 方法）**：
+  1. `_maybe_move` 内联辅助 lambda — 将原版 10 处 `None if t is None else t.to(device)` 重复 None-guard 收敛为 1 个复用点，原版每个张量各写一遍，无抽象；
+  2. `_copy_perms` 注释段 — 显式标注 `_perm_coo2csc`（COO→CSC 排列）和 `_perm_csc2csr`（CSC→CSR 排列）的语义来源，原版无注释；
+  3. 全链路 `WALPURGIS_DEBUG=1` 断点——打印源设备、目标设备、各分量存在性（src/dst/csrc/cdst/vals），原版无任何诊断输出
+- **自测结果**: 4 项结构断言全部 [PASS]（SparseGraph.to() 方法存在、_maybe_move helper、perm tensor copy、DEBUG probe）
+
+---
+
 ## migrate 5771ace: [SKIP] Use PyTorch CUDA 13 builds in CUDA 13 jobs (#404) — CI wheel test 脚本中 PYTORCH_INDEX_URL 按 CUDA_MAJOR 分支，Walpurgis 无 CI wheel 体系
 
 ## migrate 489a5e6: [SKIP] remove pip.conf migration code in CI scripts, update CI-skipping rules (#399) — CI 脚本清理，Walpurgis 无 CI 体系

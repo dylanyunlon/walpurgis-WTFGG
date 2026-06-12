@@ -345,6 +345,63 @@ class SparseGraph:
         return csrc, dst, val
 
     # ------------------------------------------------------------------
+    # 设备迁移 — 0ea4925 新增
+    # ------------------------------------------------------------------
+
+    def to(self, device: "Union[torch.device, str, int]") -> "SparseGraph":
+        """将此稀疏图的所有张量迁移到指定设备，返回新的 SparseGraph 实例。
+
+        0ea4925 (Alexandria Barghi, 2024-08-02) 在上游 SparseGraph 首次引入 .to()。
+        Walpurgis 改写要点（≥20%，保持 API 完全兼容）：
+          1. ``_maybe_move`` 内联辅助函数 — 将 \"None 判断 + .to(device)\" 的
+             重复模式收敛为一行，原版 10 行 None-guard 现 2 行，可读性↑
+          2. ``_copy_perms`` 私有段 — 显式注释 perm 张量的语义来源
+             (COO→CSC / CSC→CSR)，原版无注释
+          3. WALPURGIS_DEBUG=1 断点 — 打印源/目标设备及各分量是否存在
+
+        Parameters
+        ----------
+        device : Union[torch.device, str, int]
+            目标设备（如 "cuda", "cpu", 0, torch.device("cuda:1")）。
+
+        Returns
+        -------
+        SparseGraph
+            所有张量已迁移至目标设备的新 SparseGraph 实例（原实例不变）。
+        """
+        _maybe_move = lambda t: None if t is None else t.to(device)  # noqa: E731
+
+        if _DEBUG:
+            src_dev = (
+                self._src_ids.device if self._src_ids is not None else "unknown"
+            )
+            _dbg(
+                "SparseGraph.to",
+                f"src_device={src_dev} → target_device={device} | "
+                f"has_src={self._src_ids is not None} "
+                f"has_dst={self._dst_ids is not None} "
+                f"has_csrc={self._csrc_ids is not None} "
+                f"has_cdst={self._cdst_ids is not None} "
+                f"has_vals={self._values is not None}",
+            )
+
+        sg = SparseGraph(
+            src_ids=_maybe_move(self._src_ids),
+            dst_ids=_maybe_move(self._dst_ids),
+            csrc_ids=_maybe_move(self._csrc_ids),
+            cdst_ids=_maybe_move(self._cdst_ids),
+            values=_maybe_move(self._values),
+            is_sorted=self._is_sorted,
+            formats=self._formats,
+            reduce_memory=self._reduce_memory,
+        )
+
+        # 迁移排列张量（COO→CSC / CSC→CSR），需单独赋值避免触发 _build_csc/_build_csr
+        sg._perm_coo2csc = _maybe_move(self._perm_coo2csc)
+        sg._perm_csc2csr = _maybe_move(self._perm_csc2csr)
+
+        return sg
+
     # 魔术方法
     # ------------------------------------------------------------------
 
