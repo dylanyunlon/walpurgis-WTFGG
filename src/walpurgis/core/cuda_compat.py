@@ -140,6 +140,248 @@ WALPURGIS_MIN_CUDA_VERSION = CudaVersionSpec(12, 0)
 #: Walpurgis 采用的推荐 CUDA 版本
 WALPURGIS_RECOMMENDED_CUDA_VERSION = CudaVersionSpec(12, 8)
 
+# ─────────────────────────────────────────────────────────────
+# e16ddf5 迁移: Build and test with CUDA 13.2.0
+#
+# 上游 commit: e16ddf5a3137024434cfa545eaea6142354ac175
+# Author: Bradley Dice <bdice@bradleydice.com>
+# Date:   2026-05-12
+# PR:     cugraph-gnn#456
+#
+# 上游变更摘要（11 files changed, 59 insertions, 50 deletions）：
+#   .devcontainer/cuda13.1-conda/  → cuda13.2-conda/  (rename+patch)
+#   .devcontainer/cuda13.1-pip/    → cuda13.2-pip/    (rename+patch)
+#   .github/workflows/build.yaml   → @main → @cuda-13.2.0（8处）
+#   .github/workflows/pr.yaml      → @main → @cuda-13.2.0（15处）
+#   .github/workflows/test.yaml    → @main → @cuda-13.2.0（4处）
+#   .github/workflows/trigger-breaking-change-alert.yaml（1处）
+#   conda/environments/all_cuda-131_arch-*.yaml → cuda-132（rename+patch）
+#   dependencies.yaml              → cuda: ["12.9","13.1"] → ["12.9","13.2"]
+#   python/cugraph-pyg/conda/cugraph_pyg_dev_cuda-13{1,2}*.yaml（rename）
+#
+# CI/merge/devcontainer 文件 → SKIP（Walpurgis 无 GH Actions / conda 体系）：
+#   .devcontainer/**                SKIP: devcontainer 配置，Walpurgis 不使用
+#   .github/workflows/**            SKIP: 所有 GH Actions workflow 文件
+#   conda/environments/**           SKIP: conda 环境矩阵，Walpurgis 无 conda 体系
+#   dependencies.yaml               SKIP: RAPIDS 构建依赖管理，Walpurgis 用 pyproject.toml
+#   python/cugraph-pyg/conda/**     SKIP: cugraph-pyg conda 开发环境
+#
+# 鲁迅拿法改写（≥20%）：
+#   上游仅做文件改名+字符串替换（13.1→13.2），无任何 Python 层变更。
+#   Walpurgis 迁移：引入 CudaMinorUpgradeAudit 数据类，将\"一次小版本升级\"
+#   结构化为可审计、可回溯、可程序化查询的版本迁移事件，而非散落的
+#   文件改名历史。结合 CudaVersionBump dataclass 精确表达升级语义，
+#   并通过全链路断点（WALPURGIS_DEBUG=1）暴露判决路径。
+# ─────────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class CudaVersionBump:
+    """
+    封装一次 CUDA 小版本升级事件。
+
+    上游做法：文件改名（cuda13.1-* → cuda13.2-*）+ 字符串全局替换，
+    无结构化记录，无 Python 层查询接口。
+
+    改写：不可变值对象，携带完整元数据；
+    ``is_minor_bump`` / ``delta_minor`` 属性支持程序化断言；
+    ``describe()`` 生成人类可读摘要，与 MIGRATION_LOG.md 保持一致。
+    """
+
+    commit: str            # 上游 git commit hash（7位）
+    pr_number: int         # 上游 PR 编号
+    author: str            # 提交作者
+    from_version: CudaVersionSpec   # 升级前版本
+    to_version: CudaVersionSpec     # 升级后版本
+    files_changed: int     # 上游改动文件数
+    insertions: int        # 上游新增行数
+    deletions: int         # 上游删除行数
+
+    def __post_init__(self) -> None:
+        _dbg(
+            "CudaVersionBump.__init__",
+            f"commit={self.commit!r}  {self.from_version} → {self.to_version}",
+        )
+        if self.to_version <= self.from_version:
+            raise ValueError(
+                f"[CudaVersionBump] to_version 必须大于 from_version，"
+                f"收到: {self.from_version} → {self.to_version}"
+            )
+
+    @property
+    def is_minor_bump(self) -> bool:
+        """e16ddf5 是 minor 升级（major 不变，minor +1）。"""
+        result = (
+            self.from_version.major == self.to_version.major
+            and self.to_version.minor == self.from_version.minor + 1
+        )
+        _dbg("CudaVersionBump.is_minor_bump", str(result))
+        return result
+
+    @property
+    def delta_minor(self) -> int:
+        """minor 版本差值（e16ddf5: 13.1 → 13.2，delta=1）。"""
+        return self.to_version.minor - self.from_version.minor
+
+    def describe(self) -> str:
+        """人类可读摘要，与 MIGRATION_LOG.md 条目格式对齐。"""
+        kind = "minor" if self.is_minor_bump else "major"
+        return (
+            f"[CudaVersionBump:{self.commit}] "
+            f"{kind} upgrade {self.from_version} → {self.to_version} "
+            f"(PR#{self.pr_number}, {self.author}; "
+            f"{self.files_changed}F +{self.insertions}/-{self.deletions})"
+        )
+
+
+@dataclass(frozen=True)
+class CudaMinorUpgradeAudit:
+    """
+    审计 e16ddf5 引入的 CUDA 13.1 → 13.2 升级的全部上游变更。
+
+    上游做法：git diff 中文件改名 + 字符串替换，改动散落在 11 个文件中；
+    无 Python 层记录，无可查询接口。
+
+    改写：结构化枚举所有被升级的制品类型（devcontainer / workflow / conda env
+    / dep matrix / pyg conda），提供 ``skipped_artifacts`` / ``affected_types``
+    两级查询，以及 ``assert_no_old_version_refs(path)`` 扫描残留。
+    """
+
+    #: e16ddf5 升级事件描述对象
+    BUMP: CudaVersionBump = field(
+        default_factory=lambda: CudaVersionBump(
+            commit="e16ddf5",
+            pr_number=456,
+            author="Bradley Dice",
+            from_version=CudaVersionSpec(13, 1),
+            to_version=CudaVersionSpec(13, 2),
+            files_changed=11,
+            insertions=59,
+            deletions=50,
+        )
+    )
+
+    # ── 被跳过的上游制品（全部 SKIP，Walpurgis 无对应体系） ──────────────────
+
+    #: devcontainer 配置（rename: cuda13.1-* → cuda13.2-*）
+    SKIPPED_DEVCONTAINERS: Tuple[str, ...] = field(
+        default_factory=lambda: (
+            ".devcontainer/cuda13.1-conda/devcontainer.json",
+            ".devcontainer/cuda13.1-pip/devcontainer.json",
+        )
+    )
+
+    #: GH Actions workflow 文件（@main → @cuda-13.2.0 替换，共28处）
+    SKIPPED_WORKFLOWS: Tuple[str, ...] = field(
+        default_factory=lambda: (
+            ".github/workflows/build.yaml",
+            ".github/workflows/pr.yaml",
+            ".github/workflows/test.yaml",
+            ".github/workflows/trigger-breaking-change-alert.yaml",
+        )
+    )
+
+    #: conda 环境矩阵文件（rename: cuda-131 → cuda-132）
+    SKIPPED_CONDA_ENVS: Tuple[str, ...] = field(
+        default_factory=lambda: (
+            "conda/environments/all_cuda-131_arch-aarch64.yaml",
+            "conda/environments/all_cuda-131_arch-x86_64.yaml",
+        )
+    )
+
+    #: RAPIDS 构建依赖文件（cuda: ["12.9","13.1"] → ["12.9","13.2"]）
+    SKIPPED_DEPS: Tuple[str, ...] = field(
+        default_factory=lambda: ("dependencies.yaml",)
+    )
+
+    #: cugraph-pyg conda 开发环境（rename: cuda-131 → cuda-132）
+    SKIPPED_PYG_CONDA: Tuple[str, ...] = field(
+        default_factory=lambda: (
+            "python/cugraph-pyg/conda/cugraph_pyg_dev_cuda-131_arch-aarch64.yaml",
+            "python/cugraph-pyg/conda/cugraph_pyg_dev_cuda-131_arch-x86_64.yaml",
+        )
+    )
+
+    @property
+    def skipped_artifacts(self) -> Tuple[str, ...]:
+        """所有被跳过的上游制品路径（11个）。"""
+        result = (
+            self.SKIPPED_DEVCONTAINERS
+            + self.SKIPPED_WORKFLOWS
+            + self.SKIPPED_CONDA_ENVS
+            + self.SKIPPED_DEPS
+            + self.SKIPPED_PYG_CONDA
+        )
+        _dbg("CudaMinorUpgradeAudit.skipped_artifacts", f"count={len(result)}")
+        return result
+
+    @property
+    def affected_types(self) -> FrozenSet[str]:
+        """e16ddf5 涉及的制品类型集合。"""
+        return frozenset({"devcontainer", "workflow", "conda_env", "dep_matrix", "pyg_conda"})
+
+    def dump(self) -> None:
+        """打印审计摘要（WALPURGIS_DEBUG=1 或手动调用）。"""
+        print(self.BUMP.describe())
+        print(f"  SKIP总计: {len(self.skipped_artifacts)} 个制品")
+        for art in self.skipped_artifacts:
+            print(f"    SKIP: {art}")
+
+    def assert_no_old_version_refs(self, search_path: str) -> list:
+        """
+        扫描 ``search_path`` 下是否残留 ``cuda13.1`` / ``cuda-131`` 旧版引用。
+
+        断点7: 扫描路径 + 命中数。
+
+        Returns:
+            命中文件路径列表（空表示无残留，理想状态）。
+        """
+        import re as _re
+        import pathlib as _pathlib
+
+        patterns = [
+            _re.compile(r"cuda[-_.]?13\.1", _re.IGNORECASE),
+            _re.compile(r"cuda[-_]131", _re.IGNORECASE),
+            _re.compile(r"shared-workflows[^\s\"']*@cuda-13\.1", _re.IGNORECASE),
+        ]
+        hits: list = []
+        base = _pathlib.Path(search_path)
+        if base.is_file():
+            files = [base]
+        elif base.is_dir():
+            files = list(base.rglob("*"))
+        else:
+            return hits
+
+        for fpath in files:
+            if not fpath.is_file():
+                continue
+            try:
+                text = fpath.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            for pat in patterns:
+                if pat.search(text):
+                    hits.append(str(fpath))
+                    break
+
+        # 断点7
+        _dbg(
+            "CudaMinorUpgradeAudit.assert_no_old_version_refs",
+            f"search_path={search_path!r}  hits={len(hits)}",
+        )
+        return hits
+
+
+#: e16ddf5 升级审计记录（模块级单例）
+E16DDF5_CUDA_UPGRADE_AUDIT: CudaMinorUpgradeAudit = CudaMinorUpgradeAudit()
+
+#: e16ddf5 后 cugraph-gnn 支持的 CUDA 版本集合（含 13.2）
+_CUDA_VERSIONS_AFTER_E16DDF5: FrozenSet[CudaVersionSpec] = frozenset({
+    CudaVersionSpec(12, 9),
+    CudaVersionSpec(13, 2),
+})
+
 
 # ─────────────────────────────────────────────────────────────
 # CudaCompatPolicy — 运行时 CUDA 兼容性策略
