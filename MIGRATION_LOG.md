@@ -1,4 +1,22 @@
 
+## migrate 289175f: resolve conflict（CHANGELOG.md merge commit）
+
+- **Upstream commit**: 289175f5b964321e2bc6fca2eb42deaf1aaa4d14（cugraph-gnn，Alexandria Barghi，2025-10-21）
+- **Commit message**: `resolve conflict`
+- **类型**: Merge commit（parents: f44bd38 + 6790905）
+- **Upstream diff 摘要**（1 file changed, 48 insertions(+)）：
+  - `CHANGELOG.md` — 新增 cugraph-gnn 25.10.00 版本发布记录：Breaking Changes × 2、Bug Fixes × 9、New Features × 2、Improvements × 19，全为上游版本历史文档，无任何 Python/C++ 功能代码
+
+- **三维审查**:
+  - 一维（是否迁移价值）：纯 CHANGELOG 文档变更，无代码逻辑，无 API，无算法，Walpurgis 维护自有变更日志，不继承上游发版记录
+  - 二维（迁移可行性）：即便强行迁移，目标路径 `src/walpurgis/` 下无对应 changelog 存放惯例；内容为 RAPIDS 生态专属 PR 链接，迁入无意义
+  - 三维（CI/merge 判定）：merge commit 本身即为 CI 合并操作；所有 48 行内容属于发版归档，非功能性变更
+
+- **结论**: **SKIP** — merge commit + 纯 CHANGELOG 文档，无迁移内容
+
+---
+
+
 ## migrate aa3373a: feat(noarch): build cugraph-pyg as a conda `noarch` package (#405)
 
 - **Upstream commit**: aa3373a22774616c7d75f17e59eac6e19b209a33 (cugraph-gnn, Gil Forsyth, 2026-02-10)
