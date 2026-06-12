@@ -1,4 +1,46 @@
 
+## migrate 60ba181: Use SPDX license identifiers in pyproject.toml, bump build dependency floors (#377)
+
+- **Upstream commit**: 60ba181ff5109048890255eccbe85cb431870547 (cugraph-gnn, James Lamb, 2025-12-31, PR #377)
+- **Commit message**: `Use SPDX license identifiers in pyproject.toml, bump build dependency floors (#377)`
+- **Upstream diff** (10 files changed, 22 insertions, 30 deletions):
+  - `conda/environments/all_cuda-129_arch-{aarch64,x86_64}.yaml` — scikit-build-core >=0.10.0→0.11.0, setuptools >=61.0.0→77.0.0
+  - `conda/environments/all_cuda-130_arch-{aarch64,x86_64}.yaml` — 同上
+  - `conda/recipes/cugraph-pyg/recipe.yaml` — setuptools >=61.0.0→77.0.0; `license.text`→`license`（SPDX 字符串）
+  - `conda/recipes/pylibwholegraph/recipe.yaml` — scikit-build-core >=0.10.0→0.11.0; `license.text`→`license`
+  - `dependencies.yaml` — scikit-build-core/scikit-build-core[pyproject] >=0.10.0→0.11.0; setuptools >=61.0.0→77.0.0
+  - `python/cugraph-pyg/pyproject.toml` — PEP 639: `license = { text = "Apache-2.0" }` → `license = "Apache-2.0"` + `license-files = ["LICENSE"]`; setuptools >=61.0.0→77.0.0; 移除 `[tool.setuptools]` 节
+  - `python/libwholegraph/pyproject.toml` — 同上 PEP 639; 移除 `License :: OSI Approved` 分类器; 移除 `[tool.setuptools.dynamic]` version 节
+  - `python/pylibwholegraph/pyproject.toml` — 同上 PEP 639; 移除 `License :: OSI Approved` 分类器; scikit-build-core >=0.10.0→0.11.0
+
+- **全部10文件 → SKIP**:
+  - `conda/environments/**` (×4) — SKIP：conda 环境矩阵，Walpurgis 无 conda 构建体系
+  - `conda/recipes/**` (×2) — SKIP：rattler-build conda recipe，Walpurgis 无 conda 打包流程
+  - `dependencies.yaml` — SKIP：RAPIDS 统一依赖管理文件，Walpurgis 用独立 pyproject.toml
+  - `python/cugraph-pyg/pyproject.toml` — SKIP：cugraph-pyg 子包独立构建配置，非 Walpurgis 包
+  - `python/libwholegraph/pyproject.toml` — SKIP：同上
+  - `python/pylibwholegraph/pyproject.toml` — SKIP：同上
+
+- **迁移位置**: `src/walpurgis/core/pep639_build_spec.py` — 新建
+
+- **鲁迅拿法改写（≥20%）**:
+  1. **`LicenseFormat` 枚举**：将上游两种 license 写法（旧 `dict` 式 / 新 SPDX 字符串式）显式化，`is_pep639_compliant()` 程序化判断合规，`detect()` 扫描文本自动识别——上游仅10行 TOML/YAML 字符串替换，无任何抽象层
+  2. **`BuildDepSpec` dataclass**：封装单个构建依赖名称、旧底线、新底线，`version_delta()` 计算 (major,minor,patch) 跳跃，`is_major_bump()` / `is_minor_bump()` 分类，`describe()` 生成变更描述——上游各文件硬编码版本字符串，无结构化表示
+  3. **`UPSTREAM_BUILD_DEP_CHANGES` 常量列表**：将上游 PR 引入的4条依赖变更程序化记录（scikit-build-core×2, setuptools×2），可迭代枚举和 diff
+  4. **`PyprojectBuildAudit` dataclass**：扫描 pyproject.toml 文本，`scan_license_field()` 检测旧式 `license = { text = ... }` 写法，`scan_build_requires()` 检测过低 setuptools 底线，`report()` 输出诊断报告——上游无任何审计工具（纯手工 grep+编辑）
+  5. **`validate_walpurgis_build_spec()` 守卫**：自动定位 Walpurgis pyproject.toml，交叉验证 `WALPURGIS_BUILD_SPEC`，不一致时 `ValueError` 早失败（带完整候选列表）
+  6. 全链路 `WALPURGIS_DEBUG=1` 断点（5处）：模块加载、构建依赖列表打印、license 扫描、build requires 扫描、守卫校验各阶段可观测
+
+- **Knuth 三维审查**:
+  1. **diff 对比源**: 上游变更的实质内容是两点：(a) PEP 639 要求 `license` 字段从 `{text=...}` dict 改为 SPDX 字符串，setuptools >=77 才原生支持 PEP 639；(b) scikit-build-core 0.11.0 修复了若干 `pyproject.toml` 解析边界情况（xref: rapidsai/build-planning#152）。版本底线升级本质上是对 PEP 639 的前置要求
+  2. **用户角度 bug**: 旧式 `license = { text = "Apache-2.0" }` 在 setuptools >=77 + PEP 639 strict 模式下会报 `DeprecationWarning` 并将来变为硬错误，导致 sdist/wheel 构建失败；`scan_license_field()` 在此前提早发现问题
+  3. **系统角度安全**: setuptools 61→77 跨越 16 个 major 版本，`is_major_bump()` 正确识别为 major bump（不同于 scikit-build-core 的 minor bump），`PyprojectBuildAudit` 区分两类升级的不同严重程度
+
+- **自测结果**: 11 项全部 [PASS]
+
+---
+
+
 ## migrate 529546a: Finish CUDA 12.9 migration and use branch-25.06 workflows (#208)
 
 - **Upstream commit**: 529546aab0243b98560ed046b604325989c0553f (cugraph-gnn, Bradley Dice, 2025-05-15)
