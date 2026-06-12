@@ -826,11 +826,19 @@ class HomogeneousSampleReader(SampleReader):
             edge_inverse = edge_inverse.view(2, -1)
             metadata = (input_index, edge_inverse, None, None)
 
+        # 3e5df7c: HomogeneousSampleReader COO path — edge_id 须在 CPU 上
+        # 上游同 CSC path（line ~752）统一加 .cpu()，避免 SamplerOutput
+        # 下游 filter_cugraph_pyg_store 做 tensor index 时 device mismatch。
+        # 「不在沉默中爆发，就在沉默中灭亡。」 —— 此处 GPU tensor 传入 CPU 索引路径即灭亡。
+        _dbg(
+            "HomogeneousSampleReader._decode_coo",
+            f"edge_id device={edge_id.device} → forcing .cpu() (3e5df7c)",
+        )
         return torch_geometric.sampler.SamplerOutput(
             node=renumber_map.cpu(),
             row=minors,
             col=majors,
-            edge=edge_id,
+            edge=edge_id.cpu(),  # 3e5df7c: 与 CSC path 对齐，统一 CPU
             batch=renumber_map[:num_seeds],
             num_sampled_nodes=num_sampled_nodes,
             num_sampled_edges=num_sampled_edges,
