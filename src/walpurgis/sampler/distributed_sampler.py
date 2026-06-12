@@ -577,8 +577,27 @@ class BaseDistributedSampler:
 
         # 处理不整除的 leftover 边
         leftover_seeds, lyi = torch.sort(leftover_seeds.flatten(), stable=True)
+        # a056923: 修复 leftover_time 的边界情况（空 tensor 时跳过 unique_consecutive）
         lz = torch.sort(lyi)[1]
-        leftover_seeds, lui = leftover_seeds.unique_consecutive(return_inverse=True)
+        if leftover_time is not None:
+            if leftover_seeds.numel() == 0:
+                assert leftover_time.numel() == 0, (
+                    "Leftover time should be empty if leftover seeds are empty"
+                )
+                leftover_seeds_unique_mask = torch.tensor(
+                    [], device="cuda", dtype=torch.bool
+                )
+            else:
+                leftover_seeds_unique_mask = torch.concat(
+                    [
+                        torch.tensor([True], device="cuda"),
+                        leftover_seeds[1:] != leftover_seeds[:-1],
+                    ]
+                )
+            leftover_seeds, lui = leftover_seeds.unique_consecutive(return_inverse=True)
+            leftover_time = leftover_time[leftover_seeds_unique_mask]
+        else:
+            leftover_seeds, lui = leftover_seeds.unique_consecutive(return_inverse=True)
         leftover_inv = lui[lz]
 
         if leftover_seeds.numel() > 0:

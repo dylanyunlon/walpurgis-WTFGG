@@ -388,6 +388,96 @@ class TemporalSamplerSession:
             self.etime_store.dump()
 
 
+# ─── a056923: WalpurgisNodeTimeStore — 对应 graph_store._get_ntime_func() ────
+# a056923 graph_store.py 新增:
+#   self.__time_attr: 重命名自 __etime_attr (edge time) → __time_attr (node time)
+#   _set_time_attr() → 重命名自 _set_etime_attr，语义扩展到 node time
+#   _get_ntime_func() → 返回 Callable[[node_type, node_id], Tensor]
+#
+# 改写: WalpurgisNodeTimeStore 封装 (feature_store, attr_name) 对，
+#       提供 make_ntime_func() 返回时序查询 lambda，
+#       与 WalpurgisEtimeStore（边时间）对称设计。
+
+class WalpurgisNodeTimeStore:
+    """
+    a056923: 对应 graph_store.py _get_ntime_func() 返回的 lambda。
+
+    graph_store.py 的 __time_attr 从 __etime_attr（边时间）重命名为
+    node/edge 通用 __time_attr，_get_ntime_func 按 (node_type, node_id) 查询。
+
+    改写: 封装为对象而非裸 lambda，支持 .dump() 断点调试。
+    上游是: return lambda node_type, node_id: feature_store[node_type, attr_name][node_id]
+    此类使 attr_name 和 feature_store 可检查。
+    """
+    def __init__(
+        self,
+        attr_name: str,
+        node_time_data: Dict[str, Any],   # {node_type: time_tensor}
+    ):
+        self.attr_name = attr_name
+        self._data = node_time_data
+
+        _dbg_temporal(
+            "WalpurgisNodeTimeStore.__init__",
+            f"attr_name='{attr_name}' node_types={list(node_time_data.keys())}"
+        )
+
+    def make_ntime_func(self):
+        """
+        a056923: 返回 node_time_func Callable[[node_type, node_id], Tensor]。
+        对应 graph_store.py _get_ntime_func() 的 lambda。
+        """
+        data = self._data
+        attr_name = self.attr_name
+
+        def _ntime_func(node_type: str, node_id: "torch.Tensor") -> "torch.Tensor":
+            _dbg_temporal(
+                "_ntime_func",
+                f"node_type={node_type} node_id.shape={tuple(node_id.shape)}"
+            )
+            if node_type not in data:
+                raise KeyError(
+                    f"[a056923 WalpurgisNodeTimeStore] node_type '{node_type}' "
+                    f"not in time store (attr='{attr_name}'). "
+                    f"Available: {list(data.keys())}"
+                )
+            return data[node_type][node_id]
+
+        return _ntime_func
+
+    def dump(self) -> None:
+        print(
+            f"[DEBUG a056923 WalpurgisNodeTimeStore.dump] "
+            f"attr_name='{self.attr_name}' "
+            f"node_types={list(self._data.keys())}",
+            file=sys.stderr
+        )
+
+
+def _set_time_attr_on_session(
+    session: "TemporalSamplerSession",
+    feature_store,
+    time_attr: str,
+) -> None:
+    """
+    a056923: 对应 graph_store._set_time_attr((feature_store, time_attr))。
+
+    上游 graph_store.py 将 _set_etime_attr 重命名为 _set_time_attr，
+    语义扩展: 既记录边时间（用于 pylibcugraph temporal sampler），
+    也支持 node_time_func 查询（用于 temporal negative sampling）。
+
+    Walpurgis: 无独立 graph_store，用此函数在 TemporalSamplerSession 上
+    等效记录 time_attr，WALPURGIS_DEBUG=1 时打印 old/new 对比。
+    """
+    old_attr = session.time_attr
+    _dbg_temporal(
+        "_set_time_attr_on_session",
+        f"old={old_attr!r} -> new={time_attr!r}"
+    )
+    session.time_attr = time_attr
+    session.is_temporal = (time_attr is not None)
+
+
 # ─── Convenience builder: 对应 NeighborLoader.__init__ 中 is_temporal 路径 ──
 def make_temporal_session_from_loader_args(
     time_attr: Optional[str],

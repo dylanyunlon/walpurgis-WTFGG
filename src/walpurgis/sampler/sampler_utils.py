@@ -50,7 +50,7 @@ Walpurgis 改写 20%（鲁迅拿法）:
 
 import os
 import sys
-from typing import Sequence, Dict, Tuple, Optional, Union
+from typing import Sequence, Dict, Tuple, Optional, Union, Callable, Any
 from math import ceil
 from dataclasses import dataclass, field
 
@@ -597,6 +597,51 @@ def filter_cugraph_pyg_store(
 # neg_sample — 核心修复: 删除错误的分布式 all_reduce
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _call_plc_negative_sampling(
+    graph_store,
+    num_neg: int,
+    vertices,
+    src_weight,
+    dst_weight,
+    remove_duplicates: bool = False,
+    remove_false_negatives: bool = False,
+    exact_number_of_samples: bool = False,
+) -> Tuple["torch.Tensor", "torch.Tensor"]:
+    """
+    a056923: 提取 pylibcugraph.negative_sampling 调用为独立辅助函数。
+
+    上游原来在 neg_sample() 内联调用两次（主路径 + temporal 重试循环），
+    提取后消除重复，temporal 路径的迭代逻辑更清晰。
+
+    Walpurgis 改写: 加 WALPURGIS_DEBUG=1 断点，追踪每次 plc 调用的参数。
+    """
+    _dbg(
+        "_call_plc_neg",
+        "calling pylibcugraph.negative_sampling",
+        num_neg=num_neg,
+        has_vertices=(vertices is not None),
+        has_src_weight=(src_weight is not None),
+        remove_dups=remove_duplicates,
+        exact=exact_number_of_samples,
+    )
+    result_dict = pylibcugraph.negative_sampling(
+        graph_store._resource_handle,
+        graph_store._graph,
+        num_neg,
+        vertices=None if vertices is None else cupy.asarray(vertices),
+        src_bias=None if src_weight is None else cupy.asarray(src_weight),
+        dst_bias=None if dst_weight is None else cupy.asarray(dst_weight),
+        remove_duplicates=remove_duplicates,
+        remove_false_negatives=remove_false_negatives,
+        exact_number_of_samples=exact_number_of_samples,
+        do_expensive_check=False,
+    )
+    src_neg = torch.as_tensor(result_dict["sources"], device="cuda")[:num_neg]
+    dst_neg = torch.as_tensor(result_dict["destinations"], device="cuda")[:num_neg]
+    _dbg("_call_plc_neg", "done", src_n=src_neg.numel(), dst_n=dst_neg.numel())
+    return src_neg, dst_neg
+
+
 def neg_sample(
     graph_store,
     seed_src: "torch.Tensor",
@@ -604,8 +649,8 @@ def neg_sample(
     input_type,
     batch_size: int,
     neg_sampling: "torch_geometric.sampler.NegativeSampling",
-    time: "torch.Tensor",
-    node_time: "torch.Tensor",
+    seed_time: Optional["torch.Tensor"] = None,
+    node_time_func: Optional[Any] = None,
 ) -> Tuple["torch.Tensor", "torch.Tensor"]:
     """
     为链路预测生成负样本。
@@ -615,6 +660,12 @@ def neg_sample(
     导致每 rank 生成 world_size 倍的负样本（正负比失衡，静默影响 AUC）。
     修复: 每 rank 独立使用本地 num_neg，不进行跨 rank 对齐。
 
+    a056923 新增: Temporal Negative Sampling 实现。
+    当 node_time_func 非 None 时，迭代过滤不满足时序约束的负样本（最多5轮），
+    确保 src/dst 节点时间戳 <= seed_time。参数名从 time/node_time 重命名为
+    seed_time/node_time_func，与 PyG Callable 签名对齐。
+    TODO: Add support for remove_duplicates, remove_false_negatives (#378)
+
     Parameters
     ----------
     graph_store : GraphStore
@@ -622,7 +673,8 @@ def neg_sample(
     input_type : 边类型（None 或 canonical tuple）
     batch_size : 批大小
     neg_sampling : PyG NegativeSampling 配置
-    time, node_time : 时序采样时间戳（当前仅 None 被支持）
+    seed_time : 种子节点时间戳（temporal 采样时使用，Optional）
+    node_time_func : Callable[[str, Tensor], Tensor]，按 (node_type, node_id) 查询节点时间
     """
     try:
         # PyG 2.5 兼容
@@ -649,37 +701,128 @@ def neg_sample(
         input_type=str(input_type),
     )
 
-    if node_time is None:
-        result_dict = pylibcugraph.negative_sampling(
-            graph_store._resource_handle,
-            graph_store._graph,
-            num_neg,  # 修复: 不再用 num_neg_global (all_reduce SUM 后的膨胀值)
-            vertices=(
-                None
-                if unweighted
-                else cupy.arange(src_weight.numel(), dtype="int64")
-            ),
-            src_bias=None if src_weight is None else cupy.asarray(src_weight),
-            dst_bias=None if dst_weight is None else cupy.asarray(dst_weight),
-            remove_duplicates=False,
-            remove_false_negatives=False,
-            exact_number_of_samples=True,
-            do_expensive_check=False,
-        )
-
-        src_neg = torch.as_tensor(result_dict["sources"], device="cuda")
-        dst_neg = torch.as_tensor(result_dict["destinations"], device="cuda")
-
-        # 校验数量 + fallback 填充（C API 边缘情况）
-        validator = SamplerResultValidator(num_neg=num_neg)
-        src_neg, dst_neg = validator.validate_and_pad(src_neg, dst_neg)
-
-        _dbg("neg_sample", "done", src_neg_shape=src_neg.shape, dst_neg_shape=dst_neg.shape)
-        return src_neg, dst_neg
-
-    raise NotImplementedError(
-        "Temporal negative sampling is currently unimplemented in Walpurgis/cuGraph-PyG"
+    # a056923: 提取到辅助函数，非时序路径使用 exact_number_of_samples=False（改为依赖 validate_and_pad）
+    vertices = (
+        None
+        if unweighted
+        else cupy.arange(src_weight.numel(), dtype="int64")
     )
+
+    src_neg, dst_neg = _call_plc_negative_sampling(
+        graph_store, num_neg, vertices, src_weight, dst_weight
+    )
+
+    # TODO: modify the C API so this condition is impossible
+    # a056923: 将 if numel < num_neg 的 fallback 统一到 validate_and_pad，保持 dd543dc 风格
+    validator = SamplerResultValidator(num_neg=num_neg)
+    src_neg, dst_neg = validator.validate_and_pad(src_neg, dst_neg)
+
+    # a056923: Temporal Negative Sampling 实现
+    # 当 node_time_func 不为 None 时，过滤不满足时序约束的负样本（最多重试5轮）
+    if node_time_func is not None:
+        import warnings as _warnings
+        if seed_time is None:
+            _warnings.warn(
+                "seed_time is None, temporal negative sampling will not be performed"
+            )
+        else:
+            num_neg_per_pos = int(ceil(neg_sampling.amount))
+            seed_time_exp = (
+                seed_time.view(1, -1).expand(num_neg_per_pos, -1).flatten().cuda()
+            )
+            _dbg("neg_sample", "temporal path",
+                 num_neg_per_pos=num_neg_per_pos,
+                 seed_time_n=seed_time_exp.numel())
+
+            # 对于同构图，input_type 为 None，取单一节点类型
+            if graph_store.is_homogeneous:
+                node_type = list(graph_store._vertex_offsets.keys())[0]
+                node_offset = graph_store._vertex_offsets[node_type]
+                src_node_type = dst_node_type = node_type
+                src_node_offset = dst_node_offset = node_offset
+            else:
+                src_node_type = input_type[0]
+                dst_node_type = input_type[2]
+                src_node_offset = graph_store._vertex_offsets[src_node_type]
+                dst_node_offset = graph_store._vertex_offsets[dst_node_type]
+
+            # 获取负样本节点的时间戳，过滤违反时序约束的样本
+            src_node_time = node_time_func(src_node_type, src_neg - src_node_offset)
+            dst_node_time = node_time_func(dst_node_type, dst_neg - dst_node_offset)
+
+            target_samples = src_neg.numel()
+            valid_mask = (src_node_time <= seed_time_exp) & (dst_node_time <= seed_time_exp)
+            src_neg = src_neg[valid_mask]
+            dst_neg = dst_neg[valid_mask]
+            remaining_time = seed_time_exp[~valid_mask]
+
+            # 匹配 PyG API：最多重试5次补充不足的负样本
+            for _retry in range(5):
+                diff = target_samples - src_neg.numel()
+                if diff <= 0:
+                    break
+                assert diff == remaining_time.numel(), (
+                    "Diff should be equal to shape of remaining seed_time."
+                )
+                src_neg_p, dst_neg_p = _call_plc_negative_sampling(
+                    graph_store, diff, vertices, src_weight, dst_weight
+                )
+                src_time_p = node_time_func(src_node_type, src_neg_p - src_node_offset)
+                dst_time_p = node_time_func(dst_node_type, dst_neg_p - dst_node_offset)
+
+                valid_p = (src_time_p <= remaining_time) & (dst_time_p <= remaining_time)
+                src_neg = torch.concat([src_neg, src_neg_p[valid_p]])
+                dst_neg = torch.concat([dst_neg, dst_neg_p[valid_p]])
+                remaining_time = remaining_time[~valid_p]
+                _dbg("neg_sample", f"temporal retry {_retry+1}",
+                     still_need=target_samples - src_neg.numel())
+
+            if src_neg.numel() == 0:
+                # 边缘情况：生成伪负边基础集，用最早节点填充
+                subsample_size = int(ceil(target_samples ** 0.5))
+                num_src_nodes = (
+                    graph_store._vertex_offsets.get(list(graph_store._vertex_offsets.keys())[-1], 1)
+                    - src_node_offset
+                )
+                num_dst_nodes = num_src_nodes  # safe fallback
+                src_neg = torch.randint(
+                    src_node_offset, src_node_offset + max(1, num_src_nodes),
+                    (subsample_size,), device="cuda", dtype=torch.int64
+                )
+                dst_neg = torch.randint(
+                    dst_node_offset, dst_node_offset + max(1, num_dst_nodes),
+                    (subsample_size,), device="cuda", dtype=torch.int64
+                )
+                diff = target_samples
+            else:
+                diff = target_samples - src_neg.numel()
+
+            if diff > 0:
+                # 用最早出现的节点填充剩余不足的位置（匹配 PyG API）
+                src_neg_p, dst_neg_p = _call_plc_negative_sampling(
+                    graph_store, diff, vertices, src_weight, dst_weight
+                )
+                src_time_p = node_time_func(src_node_type, src_neg_p - src_node_offset)
+                invalid_src = src_time_p > remaining_time
+                # 用 src_neg 中时间最早的节点替换违规位置
+                earliest_src = src_neg[
+                    node_time_func(src_node_type, src_neg - src_node_offset).argmin()
+                ]
+                src_neg_p[invalid_src] = earliest_src
+
+                dst_time_p = node_time_func(dst_node_type, dst_neg_p - dst_node_offset)
+                invalid_dst = dst_time_p > remaining_time
+                earliest_dst = dst_neg[
+                    node_time_func(dst_node_type, dst_neg - dst_node_offset).argmin()
+                ]
+                dst_neg_p[invalid_dst] = earliest_dst
+
+                src_neg = torch.concat([src_neg, src_neg_p])
+                dst_neg = torch.concat([dst_neg, dst_neg_p])
+
+    # 负样本的顶点 ID 已包含偏移量，可直接输入 pylibcugraph sampler
+    _dbg("neg_sample", "done", src_neg_shape=src_neg.shape, dst_neg_shape=dst_neg.shape)
+    return src_neg, dst_neg
 
 
 # ─────────────────────────────────────────────────────────────────────────────
