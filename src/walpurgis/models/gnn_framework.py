@@ -1,33 +1,46 @@
 # SPDX-FileCopyrightText: Copyright (c) 2019-2025, NVIDIA CORPORATION / Walpurgis Project.
 # SPDX-License-Identifier: Apache-2.0
 #
-# 迁移来源: cugraph-gnn commit d38b832
-# 原标题: remove dependency on cugraph-ops (#99)
+# 迁移来源: cugraph-gnn commit d38b832 + fb8296e
+# d38b832 原标题: remove dependency on cugraph-ops (#99)
+# fb8296e 原标题: Remove cuGraph-DGL (#210)
 # 迁移作者: dylanyunlon <dogechat@163.com>
 #
 # 「横眉冷对千夫指，俯首甘为孺子牛。」—— 鲁迅
+#
+# ── d38b832 变更 ────────────────────────────────────────────────────────────
 # d38b832 从 pylibwholegraph 中彻底移除了对 cugraph-ops 的依赖。
 # 具体删除：
 #   - gnn_model.py set_framework(): 删除 elif framework_name == "cugraph" 分支
-#     (CuGraphSAGEConv, CuGraphGATConv 两个 import)
 #   - gnn_model.py create_gnn_layers(): 删除 elif framework_name == "cugraph" 层构建
 #   - gnn_model.py create_sub_graph(): 删除 elif framework_name == "cugraph" 分支
-#     (add_csr_self_loop + max_num_neighbors+1)
 #   - gnn_model.py layer_forward(): 删除 elif framework_name == "cugraph" 前向传播
-#   - common_options.py add_common_model_options(): default 从 "cugraph" 改为 "wg"
-#     help 文本从 "pyg, wg, cugraph" 改为 "pyg, wg"
+#   - common_options.py: default 从 "cugraph" 改为 "wg"
+#
+# ── fb8296e 变更 ────────────────────────────────────────────────────────────
+# fb8296e (PR #210) 永久删除 cuGraph-DGL：
+#   - 删除 gnn_model.py set_framework() 中 elif framework_name == "dgl" 分支
+#     (import dgl + from dgl.nn.pytorch.conv import SAGEConv, GATConv)
+#   - 删除 create_sub_graph() 中 elif framework_name == "dgl" 分支
+#     (dgl.create_block CSC 格式子图构建)
+#   - 删除 layer_forward() 中 elif framework_name == "dgl" 分支
+#     (layer(sub_graph, (x_feat, x_target_feat)))
+#   - common_options.py help 从 "dgl, pyg, wg" 改为 "pyg, wg"
+#   - 整个 python/cugraph-dgl/ 包及所有 CI/conda/conda 基础设施
+#
+# CI/merge/docs 文件 → SKIP:
+#   .github/workflows/ — CI pipeline
+#   ci/build_*.sh / ci/test_*.sh — CI shell 脚本
+#   conda/recipes/cugraph-dgl/ — conda 构建配方
+#   dependencies.yaml — RAPIDS 依赖矩阵
+#   README.md / readme_pages/ — 文档
 #
 # Walpurgis 20% 改写要点:
-#   1. WalpurgisFrameworkRegistry — 替代 gnn_model.py 的 module-level `framework_name` 全局变量。
-#      全局可变变量在多进程训练中是隐患：两个 worker 进程各自 set_framework，互不可知。
-#      改为进程本地 Registry 对象，支持 DEBUG 时打印调用栈。
-#   2. GnnLayerFactory.create() — 替代 create_gnn_layers()，移除 cugraph 分支，
-#      加 WALPURGIS_DEBUG=1 打印每层 input/output dim + framework
-#   3. SubgraphAdapter.build() — 替代 create_sub_graph()，移除 cugraph 分支的
-#      add_csr_self_loop，加 DEBUG 打印 csr_row_ptr/max_num_neighbors
-#   4. LayerForwardDispatch.forward() — 替代 layer_forward()，移除 cugraph 路径，
-#      加 DEBUG 打印 framework + x_feat.shape
-#   5. VALID_FRAMEWORKS 常量 — d38b832 有效值为 ["pyg", "wg"]，删除 "cugraph"
+#   1. WalpurgisFrameworkRegistry — 替代 module-level 全局变量，进程本地安全
+#   2. GnnLayerFactory.create() — 移除 cugraph/dgl 分支，WALPURGIS_DEBUG 断点
+#   3. SubgraphAdapter.build() — 'dgl' 路径改为 RuntimeError + 迁移说明（fb8296e）
+#   4. LayerForwardDispatch.forward() — 'dgl' 路径改为 RuntimeError + 迁移说明（fb8296e）
+#   5. VALID_FRAMEWORKS 只含 ("pyg", "wg")，对应 fb8296e 后的状态
 
 import os
 import sys
@@ -359,6 +372,22 @@ class SubgraphAdapter:
                 "'cugraph' framework 已在 d38b832 中移除（删除 cugraph-ops 依赖）。\n"
                 "请改用 'wg' 或 'pyg'。"
             )
+        # NOTE (fb8296e): 'dgl' framework 已随 cuGraph-DGL 在 fb8296e 中永久删除。
+        # 上游 gnn_model.py 在 fb8296e 之前的 create_sub_graph 有此分支:
+        #   elif framework_name == "dgl":
+        #       if add_self_loop:
+        #           csr_row_ptr, csr_col_ind = add_csr_self_loop(csr_row_ptr, csr_col_ind)
+        #       block = dgl.create_block(("csc", (csr_row_ptr, csr_col_ind, ...)))
+        #       return block
+        # fb8296e 将整个 cuGraph-DGL 包永久移除，此路径随之消亡。
+        elif framework == "dgl":
+            raise RuntimeError(
+                "[Walpurgis:SubgraphAdapter] migrate fb8296e: "
+                "'dgl' framework 已在 fb8296e (Remove cuGraph-DGL) 中永久删除。\n"
+                "请迁移到 'wg' 或 'pyg' framework。\n"
+                "对应上游 PR #210: Removes cuGraph-DGL permanently and stops all CI "
+                "and package publishing related to DGL support."
+            )
         elif framework == "pyg":
             from torch_geometric.utils import to_torch_csr_tensor
             block = to_torch_csr_tensor(
@@ -367,15 +396,6 @@ class SubgraphAdapter:
                 num_dst_nodes=target_gid_1.size(0),
             )
             _dbg("SubgraphAdapter.build", f"pyg block type={type(block).__name__}")
-            return block
-        elif framework == "dgl":
-            import dgl
-            block = dgl.create_block(
-                (csr_col_ind, csr_row_ptr),
-                num_src_nodes=csr_col_ind.max().item() + 1,
-                num_dst_nodes=target_gid_1.size(0),
-            )
-            _dbg("SubgraphAdapter.build", f"dgl block type={type(block).__name__}")
             return block
         else:
             # "wg" 框架
@@ -428,6 +448,18 @@ class LayerForwardDispatch:
                 "'cugraph' framework 已在 d38b832 中移除（删除 cugraph-ops 依赖）。\n"
                 "原 API: layer(x_feat, csr_row_ptr, csr_col_ind, max_neighbors)\n"
                 "请改用 'wg' 框架：layer(sub_graph[0], sub_graph[1], x_feat, x_target_feat)"
+            )
+        # NOTE (fb8296e): 'dgl' framework 已随 cuGraph-DGL 在 fb8296e 中永久删除。
+        # 上游 gnn_model.py layer_forward() 旧代码:
+        #   elif framework_name == "dgl":
+        #       x_feat = layer(sub_graph, (x_feat, x_target_feat))
+        # fb8296e PR #210 永久移除 cuGraph-DGL，此路径随之消亡。
+        elif framework == "dgl":
+            raise RuntimeError(
+                "[Walpurgis:LayerForwardDispatch] migrate fb8296e: "
+                "'dgl' framework 已在 fb8296e (Remove cuGraph-DGL) 中永久删除。\n"
+                "原 API: layer(sub_graph, (x_feat, x_target_feat))\n"
+                "请迁移到 'wg'（推荐）或 'pyg' framework。"
             )
         elif framework == "pyg":
             x_feat = layer((x_feat, x_target_feat), sub_graph)

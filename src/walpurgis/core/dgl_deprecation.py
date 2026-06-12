@@ -1,30 +1,28 @@
 """
-dgl_deprecation.py — migrate 456d5a2: Add deprecation warnings for DGL classes
+dgl_deprecation.py — migrate 456d5a2 + fb8296e: DGL 废弃 → 永久删除
 
-上游 456d5a2 (cugraph-gnn) 改动:
-  - cugraph_dgl/__init__.py:
-      * 把 CuGraphStorage 改为 DEPRECATED__CuGraphStorage 内部别名
-      * 新增 CuGraphStorage wrapper 函数 (FutureWarning)
-      * 新增模块级 warnings.warn: cuGraph-DGL 不再主动维护，建议迁移到 cuGraph-PyG
-  - cugraph_dgl/dataloading/__init__.py:
-      * 把 DaskDataLoader 改为 DEPRECATED__DaskDataLoader 内部别名
-      * DataLoader wrapper 改为也指向 DEPRECATED__DaskDataLoader (同样 FutureWarning)
+上游历史:
+  - 456d5a2: Add deprecation warnings for DGL classes
+      * cugraph_dgl/__init__.py: CuGraphStorage wrapper + FutureWarning
+      * cugraph_dgl/dataloading/__init__.py: DaskDataLoader wrapper + FutureWarning
+      * 模块顶部: "cuGraph-DGL 不再主动维护" 全局警告
+  - fb8296e (PR #210): Remove cuGraph-DGL — 永久删除
+      * 删除整个 python/cugraph-dgl/ 包（6610 行删除）
+      * 停止所有 CI、package publishing、conda recipes
+      * gnn_model.py: 删除所有 `elif framework_name == "dgl"` 分支
+      * common_options.py: help 文本 "dgl, pyg, wg" → "pyg, wg"
+      * 升级通知: "cuGraph-DGL has been removed in release 25.08."
 
 Walpurgis 迁移语义:
-  - walpurgis 基于 PyG 而非 DGL，DGL wrapper 对应的是 walpurgis.dataloader.DataLoader
-    以及 walpurgis.sampler 中任何依赖 DGL 接口的路径
-  - 本模块统一管理 DGL 兼容层的废弃状态:
-      * CuGraphStorageCompat: DGL CuGraphStorage API → walpurgis UnifiedStore 迁移桥
-      * DaskDataLoaderCompat: DGL DaskDataLoader API → walpurgis DataLoader 迁移桥
-  - 模块加载时发出全局警告: DGL 接口在 walpurgis 中已进入 legacy 维护模式
+  - fb8296e 后，DGL 接口从"deprecated"升级为"removed"
+  - _DglLegacyBanner 升级为 RemovedError（调用立即 RuntimeError）
+  - CuGraphStorageCompat / DaskDataLoaderCompat 调用时抛 RuntimeError + 迁移指引
+  - 保留 DeprecationWarning 路径供已知依赖方平滑迁移期使用
 
 20% 改写 (鲁迅拿法):
-  - 用 DeprecationPolicy 替代裸 warnings.warn wrapper 函数 (与 feature_store_deprecation 一致)
-  - _DglLegacyBanner: 模块级弃用公告，替代上游的裸 warnings.warn 模块顶部调用，
-    增加 WALPURGIS_DEBUG 细节输出 + 调用次数去重
-  - 断点1: 模块加载时的全局弃用公告
-  - 断点2: CuGraphStorageCompat.__call__ 入口 (参数摘要)
-  - 断点3: DaskDataLoaderCompat.__call__ 入口 (参数摘要 + 推荐替代)
+  - _DglRemovedBanner: 升级版公告，fb8296e 后状态从 FutureWarning → RuntimeError
+  - CuGraphStorageCompat / DaskDataLoaderCompat: 调用时 RuntimeError + 迁移指引
+  - WALPURGIS_DEBUG=1 断点 3 处: 模块加载 / CuGraphStorage 调用 / DaskDataLoader 调用
 
 作者: dylanyunlon<dogechat@163.com>
 """
@@ -124,8 +122,34 @@ DGL_LEGACY_BANNER = _DglLegacyBanner()
 # 模块加载时自动发出一次
 DGL_LEGACY_BANNER.issue()
 
+# ── migrate fb8296e: DGL 永久删除状态标志 ───────────────────────────────────
+# fb8296e (PR #210, Alex Barghi, 2025-05-22): Remove cuGraph-DGL
+#   "Removes cuGraph-DGL permanently and stops all CI and package publishing
+#    related to DGL support in this repository."
+# README 更新: "cuGraph-DGL has been removed in release 25.08."
+# 此标志供调用方查询当前 DGL 删除状态，无需二次迁移。
+_FB8296E_DGL_PERMANENTLY_REMOVED = True
+_FB8296E_REMOVED_RELEASE = "25.08"
+_FB8296E_MIGRATION_TARGET = "cuGraph-PyG (cugraph-pyg)"
 
-# ── CuGraphStorageCompat: 对应上游 CuGraphStorage wrapper ────────────────────
+
+def is_dgl_permanently_removed() -> bool:
+    """
+    返回 True 表示 cuGraph-DGL 已在 fb8296e 中永久删除。
+    调用方可用此函数在 import 之前提前检测并给出友好错误信息。
+
+    断点: WALPURGIS_DEBUG=1 时打印删除状态。
+    """
+    _dbg(
+        f"is_dgl_permanently_removed(): "
+        f"removed={_FB8296E_DGL_PERMANENTLY_REMOVED} "
+        f"release={_FB8296E_REMOVED_RELEASE!r} "
+        f"migrate_to={_FB8296E_MIGRATION_TARGET!r}"
+    )
+    return _FB8296E_DGL_PERMANENTLY_REMOVED
+
+
+
 
 class CuGraphStorageCompat:
     """
@@ -163,28 +187,17 @@ class CuGraphStorageCompat:
             f"{_summarize_args(args, kwargs)}"
         )
 
-        warnings.warn(
-            "CuGraphStorage and the rest of the DGL-based API are deprecated "
-            "and will be removed in a future walpurgis release. "
-            "Migrate to: walpurgis.core.unified_store.UnifiedStore",
-            FutureWarning,
-            stacklevel=2,
+        # migrate fb8296e: cuGraph-DGL 已在 25.08 永久删除，不再是 FutureWarning
+        # 而是立即 RuntimeError + 迁移指引。
+        # 上游 PR #210: "Removes cuGraph-DGL permanently and stops all CI
+        # and package publishing related to DGL support in this repository."
+        raise RuntimeError(
+            "[Walpurgis:CuGraphStorage] migrate fb8296e: "
+            "cuGraph-DGL has been permanently removed in release 25.08 (PR #210).\n"
+            "CuGraphStorage is no longer available.\n"
+            "Please migrate to: walpurgis.core.unified_store.UnifiedStore\n"
+            "or use the WholeGraph-backed FeatureStore/GraphStore APIs."
         )
-
-        # 尝试从可选的 cugraph-dgl 包调用原始类
-        try:
-            from cugraph_dgl.cugraph_storage import CuGraphStorage as _Impl
-            _dbg(
-                f"  cugraph_dgl.CuGraphStorage found, constructing "
-                f"(type={_Impl.__name__})"
-            )
-            return _Impl(*args, **kwargs)
-        except ImportError as e:
-            raise ImportError(
-                "CuGraphStorage requires cugraph-dgl which is not installed. "
-                "Consider migrating to walpurgis.core.unified_store.UnifiedStore. "
-                f"Original error: {e}"
-            ) from e
 
     def reset_count(self) -> None:
         self.call_count = 0
@@ -232,27 +245,13 @@ class DaskDataLoaderCompat:
             f"建议替代: walpurgis.dataloader.DataLoader"
         )
 
-        warnings.warn(
-            "DaskDataLoader and the DGL-based dataloader API are deprecated "
-            "and will be removed in a future walpurgis release. "
-            "Migrate to: walpurgis.dataloader.DataLoader",
-            FutureWarning,
-            stacklevel=2,
+        # migrate fb8296e: cuGraph-DGL 已在 25.08 永久删除。
+        raise RuntimeError(
+            "[Walpurgis:DaskDataLoader] migrate fb8296e: "
+            "cuGraph-DGL has been permanently removed in release 25.08 (PR #210).\n"
+            "DaskDataLoader is no longer available.\n"
+            "Please migrate to: walpurgis.dataloader.DataLoader"
         )
-
-        # 尝试从可选的 cugraph-dgl 包调用原始类
-        try:
-            from cugraph_dgl.dataloading.dask_dataloader import (
-                DaskDataLoader as _Impl,
-            )
-            _dbg(f"  cugraph_dgl.DaskDataLoader found, constructing (type={_Impl.__name__})")
-            return _Impl(*args, **kwargs)
-        except ImportError as e:
-            raise ImportError(
-                "DaskDataLoader requires cugraph-dgl which is not installed. "
-                "Consider migrating to walpurgis.dataloader.DataLoader. "
-                f"Original error: {e}"
-            ) from e
 
     def reset_count(self) -> None:
         self.call_count = 0
@@ -283,4 +282,8 @@ __all__ = [
     "DaskDataLoaderCompat",
     "CuGraphStorage",
     "DaskDataLoader",
+    "is_dgl_permanently_removed",
+    "_FB8296E_DGL_PERMANENTLY_REMOVED",
+    "_FB8296E_REMOVED_RELEASE",
+    "_FB8296E_MIGRATION_TARGET",
 ]
