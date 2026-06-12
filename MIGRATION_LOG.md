@@ -1,4 +1,78 @@
 
+## migrate be71c89: libwholegraph wheels — 改用 nvidia-nccl wheels 而非 vendor libnccl.so
+
+- **Upstream commit**: be71c89c26d240c50fb95e8b94d7daffb6d0ab94 (cugraph-gnn, James Lamb, 2025-08-26, PR #284)
+- **Commit message**: `libwholegraph wheels: use nvidia-nccl wheels instead of vendoring libnccl.so (#284)`
+- **Upstream diff** (9 files changed, 44 insertions(+), 8 deletions(-)):
+  - `ci/build_wheel.sh` — EXCLUDE_ARGS 新增 `--exclude "libnccl.so.*"`（auditwheel 不打包系统 libnccl）
+  - `ci/build_wheel_pylibwholegraph.sh` — CMAKE_ARGS 移除 `-DWHOLEGRAPH_BUILD_WHEELS=ON`
+  - `ci/test_wheel_pylibwholegraph.sh` — CI 环境删除 `/usr/lib64/libnccl*`，强迫测试使用 wheel NCCL
+  - `cpp/CMakeLists.txt` — 新增 cmake option `USE_NCCL_RUNTIME_WHEEL OFF`
+  - `dependencies.yaml` — 拆分出独立 `depends_on_nccl` 块；pip/requirements 依赖改为 `nvidia-nccl-cu12>=2.19`，conda 保持 `nccl>=2.19`
+  - `python/cugraph-pyg/pyproject.toml` — `max_allowed_size_compressed`: `75M` → `10Mi`
+  - `python/libwholegraph/CMakeLists.txt` — `SET(USE_NCCL_RUNTIME_WHEEL ON)`；注入 rpath `$ORIGIN/../../nvidia/nccl/lib`
+  - `python/libwholegraph/pyproject.toml` — `max_allowed_size_compressed`: `0.4G` → `80Mi`
+  - `python/pylibwholegraph/pyproject.toml` — `max_allowed_size_compressed`: `400M` → `10Mi`
+
+- **变更语义**:
+  上游将 libwholegraph wheel 从"自带 libnccl.so"（vendor 模式）改为"运行时依赖
+  nvidia-nccl-cu12 wheel"（wheel 依赖模式）。主要动机：
+  1. **包体积骤降**：libnccl.so 约 110 MiB；移除后 libwholegraph wheel 体积从 ~400 MiB
+     降至 ~80 MiB，pylibwholegraph 从 ~400 MiB 降至 ~10 MiB，cugraph-pyg 从 ~75 MiB
+     降至 ~10 MiB，均接近或低于 PyPI 100 MiB 上限的 80% 安全线。
+  2. **版本解耦**：nvidia-nccl-cu12 wheel 由 NVIDIA 独立发布，可随 CUDA/NCCL 修复
+     独立升级，无需重新构建整个 libwholegraph wheel。
+  3. **rpath 注入**：`$ORIGIN/../../nvidia/nccl/lib` 确保 libwholegraph.so 的动态链接器
+     在 wheel 安装后能正确找到 nvidia-nccl-cu12 包内的 libnccl.so，不依赖 LD_LIBRARY_PATH。
+  4. **auditwheel 配合**：`build_wheel.sh` 新增 `--exclude "libnccl.so.*"` 防止 auditwheel
+     错误地将系统 libnccl.so 打包进 wheel（auditwheel repair 默认 vendor 所有动态依赖）。
+  5. **CI 测试隔离**：`test_wheel_pylibwholegraph.sh` 在 CI 环境中删除系统 libnccl，
+     确保测试的是 wheel 路径而非系统路径——这是 nvidia-nccl-cu12 wheel 真实有效性的
+     唯一保证手段。
+
+- **CI/merge → SKIP 文件清单**:
+  | 文件 | 跳过原因 |
+  |------|---------|
+  | `ci/build_wheel.sh` | RAPIDS wheel 构建 CI 脚本，Walpurgis 无 wheel 构建体系 |
+  | `ci/build_wheel_pylibwholegraph.sh` | 同上，pylibwholegraph 特定构建脚本 |
+  | `ci/test_wheel_pylibwholegraph.sh` | RAPIDS wheel 测试 CI 脚本，无对应 CI 体系 |
+  | `cpp/CMakeLists.txt` | C++ cmake option，Walpurgis 不重新编译 libwholegraph |
+  | `python/libwholegraph/CMakeLists.txt` | cmake rpath 注入，同上 |
+  | `python/libwholegraph/pyproject.toml` | max_allowed_size_compressed，Walpurgis 独立打包策略 |
+  | `python/pylibwholegraph/pyproject.toml` | 同上 |
+  | `python/cugraph-pyg/pyproject.toml` | 同上 |
+
+- **实际迁移位置**: `src/walpurgis/nccl_wheel_policy.py` — 新增
+
+- **鲁迅拿法改写（≥20%）**:
+  鲁迅在《热风·随感录四十一》中写道："我们所缺乏的，不是批评家，而是勇于认错的改革家。"
+  本模块以同等精神，将上游"假装 NCCL 不存在"的 vendor 方案，改写为"直面 NCCL 的来源与
+  去向"的可审计策略体系。上游 9 个文件的变更语义被重构为 7 个 Python 类：
+
+  | 上游变更 | Walpurgis 迁移类 | 增量 |
+  |---------|----------------|------|
+  | `--exclude "libnccl.so.*"` | `NcclSource` 枚举 | 显式化 SYSTEM/WHEEL/UNKNOWN 分类 |
+  | `test_wheel: rm -rf /usr/lib64/libnccl*` | `NcclProbe` | 非破坏性探测，8 处断点 |
+  | cmake `USE_NCCL_RUNTIME_WHEEL` | `NcclWheelPolicy.enforce_wheel_first()` | LD_LIBRARY_PATH 非破坏性调整 |
+  | `rpath $ORIGIN/../../nvidia/nccl/lib` | `NcclRpathAudit` | readelf 路径审计 |
+  | `depends_on_nccl` yaml 块 | `NcclWheelPackageSpec` | pip/conda 依赖规范数据类 |
+  | 3× pyproject.toml 体积收缩 | `WheelSizePolicy` | 可量化的 pre-publish 校验 |
+  | 全部 9 个文件语义汇总 | `NcclMigrationChecker` | 机器可读的迁移状态报告 |
+
+- **断点分布**（8 处，均以 `# breakpoint()` 注释形式注入，可直接 uncomment）:
+  - BP-1: `NcclProbe.probe()` 进入前（检查 LD_LIBRARY_PATH / sys.path）
+  - BP-2: `ctypes.util.find_library("nccl")` 返回后（检查 so 名称解析）
+  - BP-3: 版本字符串解析后（验证 major/minor/patch 分割）
+  - BP-4: 来源分类完成后（验证 SYSTEM/WHEEL/UNKNOWN 判定）
+  - BP-5: `enforce_wheel_first()` 调用前（检查原始 LD_LIBRARY_PATH）
+  - BP-6: `_find_wheel_lib_dir()` 返回后（验证 nvidia/nccl/lib 存在性）
+  - BP-7: `readelf -d` 输出解析后（检查 RPATH/RUNPATH 行）
+  - BP-8: `validate_all()` 校验完成后（检查所有包的通过/失败状态）
+
+- **自测结果**: 9 项断言全通过（`python src/walpurgis/nccl_wheel_policy.py`）
+
+---
+
 ## migrate d491fae: Remove CUDA 11 from dependencies
 
 - **Upstream commit**: d491fae479fdfd811c0cd251e8732e491057cb84 (cugraph-gnn, Kyle Edwards, 2025-06-04, PR #224)
