@@ -129,6 +129,16 @@ class DepPin:
 
 # ── 3. a01924a 引入的两个版本钉 ──────────────────────────────
 
+# ── e1b1894: skip CuPy 14.1.0 (#470) ────────────────────────────────────────
+# 上游 commit e1b1894b16dcf957646807b264dcc8c8a651d8ac (James Lamb, 2026-05-29)
+# 原因：cupy 14.1.0 与 torch 存在已知运行时冲突（RAPIDS build-planning#284），
+# RAPIDS 26.06 暂时排除 14.0.0 和 14.1.0，最低版本仍为 13.6.0。
+# 上游变更散落在：dependencies.yaml × 4 行、conda/environments × 4 yaml、
+#   pyproject.toml（cugraph-pyg）共 7 文件，全是字符串替换：
+#   cupy-cuda13x>=13.6.0  →  cupy-cuda13x>=13.6.0,!=14.0.0,!=14.1.0
+# Walpurgis 迁移：将此约束纳入 DepPin 框架，新增 skip_versions 字段，
+# 补充 CupyE1b1894SkipAudit 便于 CI 扫描 skip 约束是否仍存在。
+
 CYTHON_PIN = DepPin(
     package="cython",
     lower="3.0.0",
@@ -168,7 +178,170 @@ if _DBG:
 _ALL_PINS: list[DepPin] = [CYTHON_PIN, PYTEST_PIN]
 
 
+# ── e1b1894: CuPy skip-version 约束 ──────────────────────────
+# 上游 e1b1894 是"skip"语义（!=14.0.0,!=14.1.0），不是上界 pin；
+# DepPin 的 upper_excl 只表达"小于"语义，不足以表达排除特定版本。
+# 因此新增 CupySkipPin dataclass 专门建模 skip 约束，
+# 与 DepPin 共同组成 Walpurgis 依赖约束体系。
+
+
+@dataclass(frozen=True)
+class CupySkipPin:
+    """
+    建模 cupy!=X.Y.Z 这类"跳过特定版本"约束。
+
+    上游 e1b1894 只在 pyproject.toml / conda yaml 里写裸字符串，
+    没有任何 Python 层的约束理由、审计路径或运行时守卫。
+    CupySkipPin 将"跳过原因、受影响版本集、追踪 issue"结构化，
+    使约束在代码审计时可解释、可查询。
+    """
+
+    package: str                  # 包名（不含 cuda 后缀，如 "cupy"）
+    skip_versions: tuple[str, ...]  # 被跳过的版本集合（精确匹配）
+    min_version: str              # 最低有效版本（>=）
+    reason: PinReason             # 约束动机
+    upstream_commit: str          # 引入此约束的上游 commit sha
+    tracking_issue: str           # 说明 issue/PR
+    expected_fix_version: str | None = None  # 预计修复版本
+
+    def pip_spec(self) -> str:
+        """
+        生成 pip/pyproject.toml 格式的约束字符串。
+        例: cupy>=13.6.0,!=14.0.0,!=14.1.0
+        """
+        skip_parts = ",".join(f"!={v}" for v in self.skip_versions)
+        return f"{self.package}>={self.min_version},{skip_parts}"
+
+    def conda_spec(self) -> str:
+        """
+        生成 conda 格式的约束字符串。
+        conda 支持 !=，格式与 pip 相同。
+        """
+        return self.pip_spec()
+
+    def is_version_skipped(self, version: str) -> bool:
+        """
+        检查给定版本是否在 skip 集合中。
+        版本比较使用精确字符串匹配（符合 PEP 440 normalize 语义前提下）。
+        """
+        # 断点：skip 版本检查
+        if _DBG:
+            print(
+                f"[DEBUG e1b1894 dep_pin] CupySkipPin.is_version_skipped "
+                f"version={version!r} skip_set={self.skip_versions}"
+            )
+        # 对版本做简单规范化：去掉前导 v
+        v_norm = version.lstrip("v")
+        return v_norm in self.skip_versions
+
+    def dump(self) -> str:
+        return (
+            f"  package={self.package}\n"
+            f"  规格: {self.pip_spec()}\n"
+            f"  跳过版本: {', '.join(self.skip_versions)}\n"
+            f"  动机: {self.reason.value}\n"
+            f"  上游 commit: {self.upstream_commit}\n"
+            f"  issue: {self.tracking_issue}\n"
+            f"  预计修复版本: {self.expected_fix_version or '未知'}"
+        )
+
+
+# e1b1894 引入的 cupy skip 约束
+# 上游原文（pyproject.toml）: cupy-cuda13x>=13.6.0,!=14.0.0,!=14.1.0
+# Walpurgis 包名去掉 cuda 后缀，运行时检查时对 cupy / cupy-cuda12x / cupy-cuda13x 均适用
+CUPY_E1B1894_SKIP_PIN = CupySkipPin(
+    package="cupy",
+    skip_versions=("14.0.0", "14.1.0"),
+    min_version="13.6.0",
+    reason=PinReason.UPSTREAM_BUG,
+    upstream_commit="e1b1894b16dcf957646807b264dcc8c8a651d8ac",
+    tracking_issue=(
+        "cupy 14.1.0 与 torch 存在已知运行时冲突，见 rapidsai/build-planning#284 / "
+        "cugraph-gnn#468。RAPIDS 26.06 排除 14.0.0 和 14.1.0，最低版本保持 13.6.0。"
+    ),
+    expected_fix_version="cupy 14.2.x 或更高版本（待 RAPIDS 验证后解除）",
+)
+
+if _DBG:
+    print("[DEBUG e1b1894 dep_pin] CUPY_E1B1894_SKIP_PIN 注册:")
+    print(CUPY_E1B1894_SKIP_PIN.dump())
+
+
+@dataclass
+class CupyE1b1894SkipAudit:
+    """
+    审计 e1b1894 引入的 cupy skip 约束是否仍存在于 requirements 文本中。
+
+    上游通过 pyproject.toml / conda yaml 维护，没有 Python 层的自动审计。
+    CupyE1b1894SkipAudit 在 CI 中程序化地验证约束没有被意外删除。
+
+    与 PinAudit 不同的设计决策：
+      - PinAudit 扫描"上界（<X）"约束
+      - CupyE1b1894SkipAudit 扫描"跳过特定版本（!=X）"约束
+      - 两者模式不同，因此分开实现而非复用（上游约束语义不同）
+    """
+
+    # 匹配 !=14.0.0 或 !=14.1.0 的 regex（宽松匹配，适应 pip/conda 双格式）
+    SKIP_V14_0_PATTERN: str = field(
+        default=r"cupy[^#\n]*!=\s*14\.0\.0",
+        init=False,
+        repr=False,
+    )
+    SKIP_V14_1_PATTERN: str = field(
+        default=r"cupy[^#\n]*!=\s*14\.1\.0",
+        init=False,
+        repr=False,
+    )
+
+    def has_skip_14_0(self, requirements_text: str) -> bool:
+        """检查文本是否包含 cupy!=14.0.0 约束。"""
+        result = bool(re.search(self.SKIP_V14_0_PATTERN, requirements_text))
+        if _DBG:
+            print(
+                f"[DEBUG e1b1894 dep_pin] CupyE1b1894SkipAudit.has_skip_14_0={result}"
+            )
+        return result
+
+    def has_skip_14_1(self, requirements_text: str) -> bool:
+        """检查文本是否包含 cupy!=14.1.0 约束。"""
+        result = bool(re.search(self.SKIP_V14_1_PATTERN, requirements_text))
+        if _DBG:
+            print(
+                f"[DEBUG e1b1894 dep_pin] CupyE1b1894SkipAudit.has_skip_14_1={result}"
+            )
+        return result
+
+    def has_both_skips(self, requirements_text: str) -> bool:
+        """检查文本是否同时包含两个 skip 约束（完整的 e1b1894 迁移）。"""
+        return self.has_skip_14_0(requirements_text) and self.has_skip_14_1(
+            requirements_text
+        )
+
+    def assert_skips_present(self, path: str) -> None:
+        """
+        读取文件，断言两个 cupy skip 约束均存在。
+        上游无此机制，此方法是 Walpurgis 独有的 CI 守卫。
+        """
+        try:
+            text = open(path, encoding="utf-8").read()
+        except FileNotFoundError:
+            if _DBG:
+                print(f"[DEBUG e1b1894 dep_pin] 文件不存在（跳过审计）: {path}")
+            return
+        if not self.has_both_skips(text):
+            raise AssertionError(
+                f"[Walpurgis dep_pin] {path} 缺少 cupy!=14.0.0 / cupy!=14.1.0 约束！\n"
+                f"来自上游 e1b1894，请检查是否被意外删除。\n"
+                f"正确格式: {CUPY_E1B1894_SKIP_PIN.pip_spec()}"
+            )
+
+
+# e1b1894 审计器单例
+CUPY_E1B1894_AUDIT = CupyE1b1894SkipAudit()
+
+
 # ── 4. 运行时守卫策略 ────────────────────────────────────────
+
 
 
 @dataclass
@@ -386,14 +559,14 @@ class WalpurgisPinEnv:
 
 # ── 模块级自检 ───────────────────────────────────────────────
 
-
 def _self_test() -> None:
-    """6 项断言自测，对应上游 a01924a 的核心变更逻辑。"""
+    """9 项断言自测，对应 a01924a + e1b1894 的核心变更逻辑。"""
     audit = PinAudit()
+    cupy_audit = CupyE1b1894SkipAudit()
 
     # 断点 8：自测启动
     if _DBG:
-        print("[DEBUG a01924a dep_pin] _self_test 启动")
+        print("[DEBUG dep_pin] _self_test 启动（a01924a + e1b1894）")
 
     # 1) CYTHON_PIN 上界正确
     assert CYTHON_PIN.upper_excl == "3.2.0a0", "Cython 上界应为 3.2.0a0"
@@ -421,7 +594,30 @@ def _self_test() -> None:
     assert policy._parse_version_tuple("9.0.0a0") == (9, 0, 0)
     assert policy._parse_version_tuple("3.2.0a0") == (3, 2, 0)
 
-    print("[PASS] dep_pin a01924a 自测：6 项断言全部通过")
+    # 7) e1b1894: CUPY_E1B1894_SKIP_PIN pip_spec 格式正确
+    expected_cupy_spec = "cupy>=13.6.0,!=14.0.0,!=14.1.0"
+    assert CUPY_E1B1894_SKIP_PIN.pip_spec() == expected_cupy_spec, (
+        f"cupy pip_spec 应为 {expected_cupy_spec!r}，"
+        f"实际: {CUPY_E1B1894_SKIP_PIN.pip_spec()!r}"
+    )
+
+    # 8) e1b1894: is_version_skipped 检查
+    assert CUPY_E1B1894_SKIP_PIN.is_version_skipped("14.0.0"), "14.0.0 应被跳过"
+    assert CUPY_E1B1894_SKIP_PIN.is_version_skipped("14.1.0"), "14.1.0 应被跳过"
+    assert not CUPY_E1B1894_SKIP_PIN.is_version_skipped("13.6.0"), "13.6.0 不应被跳过"
+    assert not CUPY_E1B1894_SKIP_PIN.is_version_skipped("14.2.0"), "14.2.0 不应被跳过"
+
+    # 9) e1b1894: CupyE1b1894SkipAudit 审计模式
+    cupy_reqs_ok = "cupy-cuda13x>=13.6.0,!=14.0.0,!=14.1.0\n"
+    assert cupy_audit.has_skip_14_0(cupy_reqs_ok), "审计应识别 cupy!=14.0.0"
+    assert cupy_audit.has_skip_14_1(cupy_reqs_ok), "审计应识别 cupy!=14.1.0"
+    assert cupy_audit.has_both_skips(cupy_reqs_ok), "审计应识别两个 skip 约束"
+
+    cupy_reqs_missing = "cupy-cuda13x>=13.6.0\n"
+    assert not cupy_audit.has_skip_14_0(cupy_reqs_missing), "无 skip 约束不应通过审计"
+    assert not cupy_audit.has_skip_14_1(cupy_reqs_missing), "无 skip 约束不应通过审计"
+
+    print("[PASS] dep_pin a01924a+e1b1894 自测：9 项断言全部通过")
 
 
 # ── 模块级懒初始化：运行时版本检查 ──────────────────────────
