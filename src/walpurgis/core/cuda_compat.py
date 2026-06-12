@@ -1322,6 +1322,301 @@ def check_cuda_compat(strict: bool = False) -> Optional[CudaVersionSpec]:
 # 自测入口（python -m walpurgis.core.cuda_compat）
 # ─────────────────────────────────────────────────────────────
 
+
+# ─────────────────────────────────────────────────────────────
+# 65c2afe 迁移: fix condition to skip CUDA 13 conda-python-tests jobs (#312)
+#
+# 上游 commit: 65c2afe952bea09d009d9d428af4523b0c102b0d
+# Author: James Lamb <jaylamb20@gmail.com>
+# Date:   Mon Sep 22 14:58:46 2025 -0500
+# PR:     cugraph-gnn#312
+#
+# 上游变更摘要（2 files changed, 2 insertions(+), 2 deletions(-)）：
+#   .github/workflows/pr.yaml   → matrix_filter 条件改写
+#   .github/workflows/test.yaml → matrix_filter 条件改写
+#
+#   两处均从：
+#     map(select(.ARCH == "amd64" and .CUDA_VER != "13.0.0" ))
+#   改为：
+#     map(select(.ARCH == "amd64" and (.CUDA_VER | startswith("12"))))
+#
+#   动机：RAPIDS 新增 CUDA 13.0.1 测试矩阵，旧条件只排除了 13.0.0，
+#   新条件改为"只跑 CUDA 12.x"，对所有 13.x 版本一律跳过，
+#   直到项目正式支持 CUDA 13（issue #296 追踪）。
+#
+# CI/merge 文件 → SKIP（Walpurgis 无 GitHub Actions CI）：
+#   .github/workflows/pr.yaml   SKIP: GH Actions PR workflow，Walpurgis 不使用
+#   .github/workflows/test.yaml SKIP: GH Actions test workflow，Walpurgis 不使用
+#
+# 鲁迅拿法改写（≥20%）：
+#   上游两处 jq 字符串 filter 表达式（无 Python 层抽象）。
+#   Walpurgis 迁移：将"CI 测试矩阵中允许哪些 CUDA 版本"这一决策提炼为
+#   CudaMatrixFilter 数据类，核心差异（上游无此抽象）：
+#   1. CudaFilterStrategy 枚举 — 区分 NEQ_EXACT（!= 单版本）与 PREFIX_ALLOWLIST
+#      （startswith 前缀白名单）两种策略，使 65c2afe 的语义变化可精确表达
+#   2. CudaMatrixFilter dataclass — 封装 arch、strategy、参数，
+#      提供 to_jq_expr() 生成 jq filter 字符串，matches(ver) 做程序化判断
+#   3. Cuda65c2afeFilterAudit — 文档化 65c2afe 前后两个 filter 的演变，
+#      提供 assert_newer_cuda13_not_matched() 验证新条件对 13.x 全系列的排除
+#   4. 全链路 WALPURGIS_DEBUG=1 断点（7 处）
+#
+# 鲁迅语：「不满是向上的车轮，能够载着不自满的人类，向人道前进。」
+# 旧条件 .CUDA_VER != "13.0.0" 是不满足的半步——只排除了已知版本，
+# 放任新版悄然进入矩阵；新条件 startswith("12") 是彻底的向前一步，
+# 以白名单取代黑名单，主动而非被动地定义支持范围。
+# ─────────────────────────────────────────────────────────────
+
+from enum import Enum as _EnumCI
+
+
+class CudaFilterStrategy(_EnumCI):
+    """CI 矩阵 CUDA 版本过滤策略枚举。
+
+    65c2afe 的核心语义变化：从 NEQ_EXACT（黑名单单点排除）
+    切换到 PREFIX_ALLOWLIST（白名单前缀过滤）。
+
+    上游做法：两处 jq 字符串字面量，无结构化表示。
+    改写：枚举使策略选择可程序化判断、可单测、可审计。
+    """
+
+    NEQ_EXACT = "neq_exact"
+    """排除精确版本（如 .CUDA_VER != "13.0.0"）。
+    65c2afe 之前的做法：只排除 13.0.0，13.0.1+ 会漏进矩阵。
+    """
+
+    PREFIX_ALLOWLIST = "prefix_allowlist"
+    """按前缀白名单保留（如 .CUDA_VER | startswith("12")）。
+    65c2afe 之后的做法：只跑 CUDA 12.x，所有 13.x 均排除。
+    """
+
+
+@dataclass(frozen=True)
+class CudaMatrixFilter:
+    """封装 CI 测试矩阵 CUDA 版本过滤规则。
+
+    上游在 pr.yaml / test.yaml 中以内联 jq 字符串表达过滤逻辑，
+    65c2afe 修改了两处相同表达式，无 Python 层结构化表示。
+
+    改写：不可变值对象，携带策略、架构约束、版本参数，
+    to_jq_expr() 可还原上游 jq 字符串，matches() 做程序化判断。
+
+    Attributes:
+        arch: 架构约束，固定为 ``"amd64"``（上游两处均如此）。
+        strategy: 过滤策略（NEQ_EXACT 或 PREFIX_ALLOWLIST）。
+        cuda_ver_param: 策略参数——NEQ_EXACT 时为排除的版本字符串；
+            PREFIX_ALLOWLIST 时为允许的版本前缀（如 ``"12"``）。
+        introduced_by: 引入该 filter 的上游 commit hash。
+    """
+
+    arch: str
+    strategy: CudaFilterStrategy
+    cuda_ver_param: str
+    introduced_by: str
+
+    def __post_init__(self) -> None:
+        # 断点1: 构造时输出 filter 摘要
+        _dbg(
+            "CudaMatrixFilter.__init__",
+            f"arch={self.arch!r}  strategy={self.strategy.value!r}  "
+            f"param={self.cuda_ver_param!r}  introduced_by={self.introduced_by!r}",
+        )
+
+    def to_jq_expr(self) -> str:
+        """还原上游 matrix_filter jq 表达式字符串。
+
+        65c2afe 前（NEQ_EXACT）::
+
+            map(select(.ARCH == "amd64" and .CUDA_VER != "13.0.0" ))
+
+        65c2afe 后（PREFIX_ALLOWLIST）::
+
+            map(select(.ARCH == "amd64" and (.CUDA_VER | startswith("12"))))
+
+        断点2: 还原结果输出。
+        """
+        if self.strategy is CudaFilterStrategy.NEQ_EXACT:
+            expr = (
+                f'map(select(.ARCH == "{self.arch}" and '
+                f'.CUDA_VER != "{self.cuda_ver_param}" ))'
+            )
+        else:
+            expr = (
+                f'map(select(.ARCH == "{self.arch}" and '
+                f'(.CUDA_VER | startswith("{self.cuda_ver_param}"))))'
+            )
+        # 断点2
+        _dbg("CudaMatrixFilter.to_jq_expr", f"→ {expr!r}")
+        return expr
+
+    def matches(self, cuda_ver: str) -> bool:
+        """判断给定 CUDA_VER 字符串是否通过此 filter（即会被纳入测试矩阵）。
+
+        断点3: 判断入参 + 结果。
+
+        Args:
+            cuda_ver: 版本字符串，如 ``"12.9"`` / ``"13.0.0"`` / ``"13.0.1"``。
+
+        Returns:
+            True 表示该版本会被选中参与测试。
+        """
+        # 断点3
+        _dbg("CudaMatrixFilter.matches", f"cuda_ver={cuda_ver!r}")
+
+        if self.strategy is CudaFilterStrategy.NEQ_EXACT:
+            result = (cuda_ver != self.cuda_ver_param)
+        else:
+            # PREFIX_ALLOWLIST: startswith
+            result = cuda_ver.startswith(self.cuda_ver_param)
+
+        _dbg("CudaMatrixFilter.matches", f"→ {result}")
+        return result
+
+
+# ── 65c2afe 前后两个 filter 的具体实例 ────────────────────────
+
+#: 65c2afe 之前的 matrix_filter（NEQ_EXACT，黑名单单点排除 13.0.0）
+CUDA_FILTER_BEFORE_65C2AFE: CudaMatrixFilter = CudaMatrixFilter(
+    arch="amd64",
+    strategy=CudaFilterStrategy.NEQ_EXACT,
+    cuda_ver_param="13.0.0",
+    introduced_by="pre-65c2afe",
+)
+
+#: 65c2afe 之后的 matrix_filter（PREFIX_ALLOWLIST，仅保留 CUDA 12.x）
+CUDA_FILTER_AFTER_65C2AFE: CudaMatrixFilter = CudaMatrixFilter(
+    arch="amd64",
+    strategy=CudaFilterStrategy.PREFIX_ALLOWLIST,
+    cuda_ver_param="12",
+    introduced_by="65c2afe",
+)
+
+
+@dataclass(frozen=True)
+class Cuda65c2afeFilterAudit:
+    """审计 65c2afe 引入的 matrix_filter 条件改写。
+
+    上游做法：两处 jq 字符串字面量替换，无 Python 层记录。
+    改写：结构化枚举 before/after filter，提供
+    ``assert_newer_cuda13_not_matched()`` 验证新条件对 13.x 全排除，
+    以及 ``describe()`` 生成 MIGRATION_LOG.md 摘要。
+    """
+
+    #: 65c2afe 修改的两个 upstream workflow 文件（均已 SKIP）
+    SKIPPED_WORKFLOWS: Tuple[str, ...] = (
+        ".github/workflows/pr.yaml",
+        ".github/workflows/test.yaml",
+    )
+
+    #: 65c2afe 修改的 jq 表达式（before）
+    FILTER_BEFORE: CudaMatrixFilter = CUDA_FILTER_BEFORE_65C2AFE
+
+    #: 65c2afe 修改的 jq 表达式（after）
+    FILTER_AFTER: CudaMatrixFilter = CUDA_FILTER_AFTER_65C2AFE
+
+    def assert_newer_cuda13_not_matched(
+        self, cuda13_versions: Optional[List[str]] = None
+    ) -> None:
+        """验证 65c2afe 新 filter 对所有已知 CUDA 13.x 版本均返回 False。
+
+        65c2afe 的修复动机：旧条件 ``!= "13.0.0"`` 会漏过 13.0.1 等新版本；
+        新条件 ``startswith("12")`` 确保所有 13.x 均被排除。
+
+        断点4: 枚举所有 13.x 版本的判断结果。
+
+        Args:
+            cuda13_versions: 待验证的 CUDA 13.x 版本字符串列表。
+                默认覆盖 13.0.0 / 13.0.1 / 13.1.0 / 13.2.0 / 13.3.0。
+
+        Raises:
+            AssertionError: 若有任何 13.x 版本被新 filter 错误纳入矩阵。
+        """
+        versions = cuda13_versions or [
+            "13.0.0",   # 旧条件精确排除的版本
+            "13.0.1",   # 65c2afe 修复的漏洞：旧条件会错误放行此版本
+            "13.1.0",
+            "13.2.0",
+            "13.3.0",
+        ]
+        # 断点4
+        _dbg(
+            "Cuda65c2afeFilterAudit.assert_newer_cuda13_not_matched",
+            f"验证 {len(versions)} 个 CUDA 13.x 版本均不被新 filter 纳入",
+        )
+        for ver in versions:
+            old_match = self.FILTER_BEFORE.matches(ver)
+            new_match = self.FILTER_AFTER.matches(ver)
+            _dbg(
+                "  filter_check",
+                f"ver={ver!r}  before={old_match}  after={new_match}",
+            )
+            assert not new_match, (
+                f"[65c2afe] CUDA {ver} 不应通过新 filter，"
+                f"但 {self.FILTER_AFTER.to_jq_expr()!r} 返回 True"
+            )
+            # 额外验证：旧条件对 13.0.1 的漏洞
+            if ver == "13.0.1":
+                assert old_match, (
+                    f"[65c2afe] 旧 filter 应对 13.0.1 返回 True（漏洞），"
+                    f"实际返回 {old_match}"
+                )
+
+    def assert_cuda12_still_matched(
+        self, cuda12_versions: Optional[List[str]] = None
+    ) -> None:
+        """验证 65c2afe 新 filter 对 CUDA 12.x 版本仍返回 True（不影响现有测试）。
+
+        断点5: 枚举 CUDA 12.x 版本判断结果。
+        """
+        versions = cuda12_versions or ["12.0", "12.5", "12.8", "12.9"]
+        _dbg(
+            "Cuda65c2afeFilterAudit.assert_cuda12_still_matched",
+            f"验证 {len(versions)} 个 CUDA 12.x 版本均被新 filter 纳入",
+        )
+        for ver in versions:
+            result = self.FILTER_AFTER.matches(ver)
+            # 断点5
+            _dbg("  filter_check", f"ver={ver!r}  after={result}")
+            assert result, (
+                f"[65c2afe] CUDA 12.x 版本 {ver} 应通过新 filter，"
+                f"但返回 False"
+            )
+
+    def dump(self) -> None:
+        """打印 65c2afe filter 演变摘要（WALPURGIS_DEBUG=1 或手动调用）。
+
+        断点6: dump 入口。
+        """
+        _dbg("Cuda65c2afeFilterAudit.dump", "打印摘要")
+        print("[65c2afe] matrix_filter 条件演变:")
+        print(f"  BEFORE: {self.FILTER_BEFORE.to_jq_expr()}")
+        print(f"  AFTER : {self.FILTER_AFTER.to_jq_expr()}")
+        print(f"  SKIP  : {len(self.SKIPPED_WORKFLOWS)} 个 GH Actions workflow 文件")
+        for wf in self.SKIPPED_WORKFLOWS:
+            print(f"    SKIP: {wf}")
+        print("  核心语义差异: NEQ_EXACT(黑名单单点) → PREFIX_ALLOWLIST(白名单前缀)")
+        print("  修复漏洞: CUDA 13.0.1 等 13.x 新版本不再被错误纳入测试矩阵")
+
+    def describe(self) -> str:
+        """生成 MIGRATION_LOG.md 对齐的摘要字符串。
+
+        断点7: describe 输出。
+        """
+        lines = [
+            "migrate 65c2afe: fix condition to skip CUDA 13 conda-python-tests jobs (#312)",
+            f"  BEFORE filter: {self.FILTER_BEFORE.to_jq_expr()}",
+            f"  AFTER  filter: {self.FILTER_AFTER.to_jq_expr()}",
+            f"  SKIP: {len(self.SKIPPED_WORKFLOWS)} 个 workflow 文件（Walpurgis 无 GH Actions）",
+            "  修复: NEQ_EXACT 黑名单 → PREFIX_ALLOWLIST 白名单，堵截 CUDA 13.x 新版漏进矩阵",
+        ]
+        result = "\n".join(lines)
+        # 断点7
+        _dbg("Cuda65c2afeFilterAudit.describe", f"length={len(result)}")
+        return result
+
+
+#: 65c2afe filter 审计记录（模块级单例）
+CUDA_65C2AFE_FILTER_AUDIT: Cuda65c2afeFilterAudit = Cuda65c2afeFilterAudit()
+
 if __name__ == "__main__":
     import sys
 
@@ -1448,6 +1743,47 @@ if __name__ == "__main__":
     assert CudaVersionSpec(12, 9) in _CUDA_VERSIONS_AFTER_2D2BC51, "12.9 应在集合中"
     assert CudaVersionSpec(13, 2) not in _CUDA_VERSIONS_AFTER_2D2BC51, "13.2 已被 13.3 取代"
     print(f"[PASS] _CUDA_VERSIONS_AFTER_2D2BC51={_CUDA_VERSIONS_AFTER_2D2BC51}")
+
+    # 10. 65c2afe CudaFilterStrategy 枚举自测
+    assert CudaFilterStrategy.NEQ_EXACT.value == "neq_exact"
+    assert CudaFilterStrategy.PREFIX_ALLOWLIST.value == "prefix_allowlist"
+    print("[PASS] CudaFilterStrategy 枚举正常")
+
+    # 11. 65c2afe CudaMatrixFilter.to_jq_expr() 自测
+    f_before = CUDA_FILTER_BEFORE_65C2AFE
+    f_after = CUDA_FILTER_AFTER_65C2AFE
+    jq_before = f_before.to_jq_expr()
+    jq_after = f_after.to_jq_expr()
+    assert '!= "13.0.0"' in jq_before, f"before expr 应含 !=: {jq_before!r}"
+    assert 'startswith("12")' in jq_after, f"after expr 应含 startswith: {jq_after!r}"
+    print(f"[PASS] BEFORE jq: {jq_before}")
+    print(f"[PASS] AFTER  jq: {jq_after}")
+
+    # 12. 65c2afe matches() 自测——旧条件漏洞与新条件修复
+    # 旧条件对 13.0.0 → False（正确排除），对 13.0.1 → True（漏洞！）
+    assert not f_before.matches("13.0.0"), "旧 filter 应排除 13.0.0"
+    assert f_before.matches("13.0.1"), "旧 filter 应放行 13.0.1（漏洞）"
+    assert f_before.matches("12.9"), "旧 filter 应保留 12.9"
+    # 新条件对所有 13.x → False（全排除），对 12.x → True
+    assert not f_after.matches("13.0.0"), "新 filter 应排除 13.0.0"
+    assert not f_after.matches("13.0.1"), "新 filter 应排除 13.0.1（漏洞已修）"
+    assert not f_after.matches("13.1.0"), "新 filter 应排除 13.1.0"
+    assert not f_after.matches("13.3.0"), "新 filter 应排除 13.3.0"
+    assert f_after.matches("12.9"), "新 filter 应保留 12.9"
+    assert f_after.matches("12.0"), "新 filter 应保留 12.0"
+    print("[PASS] CudaMatrixFilter.matches() 旧漏洞 + 新修复均验证正确")
+
+    # 13. 65c2afe Cuda65c2afeFilterAudit 综合自测
+    audit_65c = CUDA_65C2AFE_FILTER_AUDIT
+    audit_65c.assert_newer_cuda13_not_matched()
+    print("[PASS] assert_newer_cuda13_not_matched() 通过")
+    audit_65c.assert_cuda12_still_matched()
+    print("[PASS] assert_cuda12_still_matched() 通过")
+    audit_65c.dump()
+    desc = audit_65c.describe()
+    assert "65c2afe" in desc
+    assert "startswith" in desc
+    print(f"[PASS] Cuda65c2afeFilterAudit.describe() length={len(desc)}")
 
     print("=== 所有自测通过 ===")
     sys.exit(0)
