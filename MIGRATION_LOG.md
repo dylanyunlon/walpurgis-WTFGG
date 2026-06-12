@@ -1,4 +1,32 @@
 
+## migrate fb1e5fe: Prepare release/26.02 (CI workflow branch pinning)
+
+- **Upstream commit**: fb1e5fe56d9c4e9d1441fe7bf1e82c0834f3be18 (cugraph-gnn, Jake Awe <jawe@nvidia.com>, 2026-01-16)
+- **Commit message**: `Prepare release/26.02`
+- **Upstream diff** (6 files changed, 33 insertions, 33 deletions):
+  所有变更均为 GitHub Actions workflow `uses:` 引用从 `@main` 改为 `@release/26.02`，
+  以及 `RAPIDS_BRANCH` 文件写入 `release/26.02`、cmake 格式化脚本 URL branch pin 的配套更新。
+
+- **CI/merge → SKIP** (全部 6 文件):
+  - `.github/workflows/build.yaml` — SKIP: GitHub Actions CI 配置，Walpurgis 无 RAPIDS CI 体系
+  - `.github/workflows/pr.yaml` — SKIP: GitHub Actions CI 配置，Walpurgis 无 RAPIDS CI 体系
+  - `.github/workflows/test.yaml` — SKIP: GitHub Actions CI 配置，Walpurgis 无 RAPIDS CI 体系
+  - `.github/workflows/trigger-breaking-change-alert.yaml` — SKIP: GitHub Actions CI 配置
+  - `RAPIDS_BRANCH` — SKIP: RAPIDS 专属分支文件，Walpurgis 无 RAPIDS 发布体系
+  - `cpp/scripts/run-cmake-format.sh` — SKIP: cmake 格式化脚本，Walpurgis 无 C++/cmake 构建
+
+- **迁移位置**: `src/walpurgis/core/branch_policy.py` — 新增
+- **鲁迅拿法改写（≥20%）**: 上游是纯 YAML 字符串 sed 替换，无任何 Python 对象模型。
+  改写为：`RapidsBranchKind` 枚举强类型替代裸字符串；`RapidsBranchRef` dataclass 校验
+  `release/YY.MM` 格式；`WorkflowPinPolicy` 收口上游 20 处分散 `@ref`；
+  `RapidsBranchFile` 封装 RAPIDS_BRANCH 文件读写语义（含幂等检测）；
+  `BranchPinAudit` 结构化审计记录替代纯 commit message；
+  `PinMigrationResult` 汇总结果；全链路 8 处 `WALPURGIS_DEBUG=1` 断点
+- **自测结果**: 6 项断言全通过（含断点验证）
+
+---
+
+
 ## migrate d491fae: Remove CUDA 11 from dependencies
 
 - **Upstream commit**: d491fae479fdfd811c0cd251e8732e491057cb84 (cugraph-gnn, Kyle Edwards, 2025-06-04, PR #224)
