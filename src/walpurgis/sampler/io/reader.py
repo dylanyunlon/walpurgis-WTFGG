@@ -2,12 +2,20 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # migrate 03292cf: Migrate cugraph gnn packages to cugraph-pyg
+# migrate 47e64e8: [BUG] Fix optional dependencies — 删除 DistSampleReader；cudf/torch 改为 import_optional
 # Walpurgis 迁移: BufferedSampleReader — 分布式采样缓冲迭代器
 #
 # 鲁迅曾言：「上等人做稳了奴隶，不必多想；下等人求做奴隶而不得，才须反抗。」
 # 原版的 BufferedSampleReader 连名字都不解释自己——本版加了全链路断点。
 #
-# 20% 改写要点：
+# 47e64e8 改写要点：
+#   - DistSampleReader 整个类删除（上游确认该类从 cugraph 迁移时误带入，
+#     依赖 cudf.read_parquet + torch.distributed，不属于 BufferedSampleReader 模块）
+#   - `torch = MissingModule("torch")` → `torch = import_optional("torch")`
+#   - 新增 `cudf = import_optional("cudf")`
+#   - BufferedSampleReader.__init__ 中删除 `global torch; torch = import_optional("torch")`
+#
+# 20% 改写要点（原有，保留）：
 #   - 新增 _WalpurgisReaderStats dataclass，追踪已消费 batch 数 / call 组数 / 空 call 数
 #   - __next__ 拆出 _advance_reader() 私有方法，责任更清晰
 #   - 全链路 WALPURGIS_DEBUG=1 断点 print：初始化 / 每次切换 call_group / 每次 StopIteration
@@ -18,9 +26,13 @@ import time as _time
 from dataclasses import dataclass, field
 from typing import Callable, Iterator, Tuple, Dict
 
-from cugraph.utilities.utils import import_optional, MissingModule
+from cugraph.utilities.utils import import_optional
 
-torch = MissingModule("torch")
+# 47e64e8: torch/cudf 均为可选依赖；DistSampleReader（依赖 cudf.read_parquet）
+# 已在上游 47e64e8 删除（该类是从 cugraph 迁移时误带入的）。
+# BufferedSampleReader 保留，去除顶层 MissingModule 占位，改为 import_optional。
+torch = import_optional("torch")
+cudf = import_optional("cudf")
 
 _DEBUG = _os.environ.get("WALPURGIS_DEBUG", "0").strip() == "1"
 
@@ -72,8 +84,6 @@ class BufferedSampleReader:
         *args,
         **kwargs,
     ):
-        global torch
-        torch = import_optional("torch")
 
         self.__sample_args = args
         self.__sample_kwargs = kwargs
