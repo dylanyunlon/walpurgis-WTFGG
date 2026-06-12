@@ -1,4 +1,37 @@
 
+## migrate 5771ace: [SKIP] Use PyTorch CUDA 13 builds in CUDA 13 jobs (#404) — CI wheel test 脚本中 PYTORCH_INDEX_URL 按 CUDA_MAJOR 分支，Walpurgis 无 CI wheel 体系
+
+## migrate 489a5e6: [SKIP] remove pip.conf migration code in CI scripts, update CI-skipping rules (#399) — CI 脚本清理，Walpurgis 无 CI 体系
+
+## migrate b578a28: [SKIP] restore conda-python-tests on CUDA 13 (#395) — conda 测试矩阵配置，Walpurgis 无 conda 体系
+
+## migrate 7e914aa: fix to difference in cpu and gpu precision in sample (#398)
+
+- **Upstream commit**: 7e914aa (cugraph-gnn, linhu-nv, 2026-02-02, PR #398)
+- **Commit message**: `fix to difference in cpu and gpu precision in sample (#398)`
+- **Upstream diff** (1 file changed, 3 insertions, 4 deletions):
+  - `cpp/tests/wholegraph_ops/graph_sampling_test_utils.cu`:
+    - `u *= pow(2, -one_bit)` → `u *= exp2f(-one_bit)` (fp64→fp32，消除 CPU/GPU 精度差)
+    - 注释行 `// float logk = (log1pf...` 恢复为有效代码 (原本已注释)
+    - 版权年份 2024 → 2026
+- **迁移位置**: `src/walpurgis/core/sampling_precision.py` — 新建
+- **鲁迅拿法改写（>=20%）**:
+  1. `PrecisionMode` enum: 将"修复前/后"两种路径显式化为 `CPU_FP64_LEGACY` / `CPU_FP32_FIXED`，上游只有一行 C++ 改动，无路径抽象
+  2. `WeightedSampleKeyFn` dataclass: 将 C++ 静态函数封装为可配置对象，支持精度模式切换，上游无对应 Python 层
+  3. `SamplingPrecisionGuard` dataclass: 精度路径守卫，`validate()` 程序化断言无 legacy fp64 路径，上游无任何守卫
+  4. `PrecisionDelta` dataclass: 量化两路径 key 差异，`describe()` 生成诊断报告，上游无量化工具
+  5. `host_gen_key_from_weight_py()`: C++ `host_gen_key_from_weight` 的完整 Python 等价实现，含全链路断点
+  6. 全链路 `WALPURGIS_DEBUG=1` 断点（4处）
+- **自测结果**: 16 项全部 [PASS]
+- **技术说明**: `2^-n` (整数n) 在 fp32 中精确表示，Python fp64 层两路径结果相同；上游精度差异仅在 CUDA 硬件 fp32 累积路径中体现。Python 模块的价值在于精度路径的显式声明、审计和守卫，而非复现硬件级浮点误差。
+
+## migrate 03c0cd7: [SKIP] tighten wheel size limits, expand CI-skipping logic, other small build changes (#396) — CI/wheel size 限制 + CI skip 规则扩展 + PEP 639 license metadata，Walpurgis 无 CI/wheel/pyproject 体系
+
+## migrate 5c7a7da: [SKIP] remove unused CI jobs, code, configuration for notebooks (#397) — 删除 13 个 CI/notebook 文件，Walpurgis 无对应体系
+
+## migrate 55cdbc7: [SKIP] Use verify-hardcoded-version pre-commit hook (#393) — .pre-commit-config.yaml 新增 verify-hardcoded-version hook，Walpurgis 不使用该预提交体系
+
+
 ## migrate d491fae: Remove CUDA 11 from dependencies
 
 - **Upstream commit**: d491fae479fdfd811c0cd251e8732e491057cb84 (cugraph-gnn, Kyle Edwards, 2025-06-04, PR #224)
