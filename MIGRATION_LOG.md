@@ -1,3 +1,41 @@
+## eba488c — Update build infra to support new branching strategy (#252)
+
+- **Upstream commit**: `eba488c` (cugraph-gnn, Robert Maynard <rmaynard@nvidia.com>, 2025-07-28)
+- **PR**: [rapidsai/cugraph-gnn#252](https://github.com/rapidsai/cugraph-gnn/pull/252)
+- **Commit message**: `Update build infra to support new branching strategy (#252)`
+  `rapids_config` 将使用 `RAPIDS_BRANCH` 文件内容确定分支；
+  核心变更：默认分支推导公式从 `branch-{version}` 改为 `release/{version}`，
+  并新增 `RAPIDS_BRANCH` 文件作为显式分支来源。
+
+- **Upstream diff 摘要** (3 files changed, 14 insertions(+), 3 deletions(−)):
+  | 文件 | 变更内容 |
+  |------|----------|
+  | `RAPIDS_BRANCH` | 新增，内容 `branch-25.10` |
+  | `cmake/RAPIDS.cmake` | 校验条件放宽（branch OR version），默认推导公式 branch-→release/ |
+  | `cmake/rapids_config.cmake` | 新增 `file(STRINGS)` 读取 `RAPIDS_BRANCH`，注入 `rapids-cmake-branch` |
+
+- **策略变更摘要**: 默认分支推导公式: 'branch-{version}' → 'release/{version}'；新增 RAPIDS_BRANCH 文件作为显式分支来源（EXPLICIT 模式优先于 DERIVED）；校验条件放宽: version 必须存在 → branch OR version 至少一个
+
+- **CI/merge → SKIP** (全部 3 文件):
+  - `RAPIDS_BRANCH` — SKIP: 纯文本构建配置文件，Walpurgis 无 CMake 构建体系
+  - `cmake/RAPIDS.cmake` — SKIP: CMake 构建基础设施，Walpurgis 无 C++/cmake 构建
+  - `cmake/rapids_config.cmake` — SKIP: CMake 构建基础设施，Walpurgis 无 C++/cmake 构建
+
+- **迁移位置**: `src/walpurgis/core/rapids_build_infra.py` — 新增
+
+- **鲁迅拿法改写（≥20%）**:
+  1. **`RapidsCmakeBranchMode` 枚举**: EXPLICIT/DERIVED 强类型替代上游隐式 if/else 条件——上游无此分类框架
+  2. **`RapidsCmakeBranchSpec` dataclass**: `from_branch_file()`/`from_version()` 两条具名工厂方法，与上游两种触发条件一一对应；`__post_init__` 校验 `branch-YY.MM`/`release/YY.MM` 格式
+  3. **`RapidsBranchFileReader`**: 封装 `file(STRINGS)` 读取语义，`read_or_raise()` 复现 cmake FATAL_ERROR；上游无 Python 层封装
+  4. **`RapidsCmakePolicy`**: `validate()`/`resolve_branch()`/`describe_resolution()` 三方法镜像上游 cmake 三段逻辑；明确记录 eba488c 的两处核心变更
+  5. **`RapidsBranchStrategyAudit`**: 结构化审计记录，`to_log_entry()` 产出 MIGRATION_LOG 段落；上游只有 commit message
+  6. **`BranchStrategyMigrationResult`**: 迁移结果汇总，`__str__` 人类可读摘要
+  7. **断点调试**: 全链路 8 处 `WALPURGIS_DEBUG=1` 断点
+
+- **自测结果**: 10 项全部 [PASS]
+
+---
+
 
 ## migrate 0ea4925: refactor — cugraph-DGL 大重构：Graph/view/features/typing/sampler/DaskDataLoader 首次引入
 
