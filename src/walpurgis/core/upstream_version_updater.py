@@ -463,3 +463,326 @@ def _smoke_test() -> None:
 
 if __name__ == "__main__":
     _smoke_test()
+
+
+# =============================================================================
+# migrate adce20b: Apply suggestion from @greptile-apps[bot]
+# =============================================================================
+# 上游 commit adce20b8c4c83893bcf7ffcd263ee536337a03c8
+# Author: Nate Rock <rockhowse@gmail.com>
+# Co-authored-by: greptile-apps[bot] <165735046+greptile-apps[bot]@users.noreply.github.com>
+# Date:   Wed Nov 12 08:30:59 2025 -0600
+#
+# 上游变更 (1 file changed, 1 deletion):
+#   ci/release/update-version.sh — 删除重复的 elif 分支（贴错代码导致两个相同的
+#   `elif [[ "${RUN_CONTEXT}" == "release" ]]; then` 连续出现）：
+#
+#   BEFORE (父 commit):
+#     elif [[ "${RUN_CONTEXT}" == "release" ]]; then   ← 重复行，由合并冲突/粘贴引入
+#     elif [[ "${RUN_CONTEXT}" == "release" ]]; then
+#       sed_runner "s|\bmain\b|release/...|g" ...
+#     fi
+#
+#   AFTER (adce20b):
+#     elif [[ "${RUN_CONTEXT}" == "release" ]]; then   ← 只保留一条
+#       sed_runner "s|\bmain\b|release/...|g" ...
+#     fi
+#
+# CI/merge → SKIP:
+#   ci/release/update-version.sh — SKIP：Walpurgis 无 RAPIDS CI release 体系
+#
+# 迁移位置: src/walpurgis/core/upstream_version_updater.py（本段追加）
+#
+# 鲁迅拿法改写（≥20%）：
+#   1. BranchDispatcher 类 — 将上游 bash if/elif/elif 链强类型化，防止重复分支
+#      静默失效；上游无此保护，重复 elif 直到 greptile bot 发现才知道
+#   2. DuplicateBranchError — 专用异常，在构造期即拒绝重复上下文注册；上游
+#      bash 中重复 elif 会导致第二条永远不执行，故障无声无息
+#   3. dispatch_documentation_sed() — 将 sed_runner 调用语义建模为纯 Python，
+#      携带 pattern/replacement/target_file 三元组；上游只有裸 bash 字符串
+#   4. WALPURGIS_DEBUG=1 断点 — 打印派发决策链（上下文→分支名→sed指令），
+#      上游无任何诊断输出
+# =============================================================================
+
+import os
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Callable, Dict, List, Optional, Tuple
+
+
+class DuplicateBranchError(ValueError):
+    """注册了重复的 elif 分支；adce20b 修复的正是这个隐性 bug 的 Python 等价物。
+
+    上游 bash 脚本中两条相同的 `elif [[ "${RUN_CONTEXT}" == "release" ]]; then`
+    导致第二条永远不可达，greptile-apps[bot] 提交建议删除。本类在 Python 层将
+    "重复分支"变为显式错误，而非静默忽略。
+    """
+    def __init__(self, context_key: str, existing_label: str) -> None:
+        super().__init__(
+            f"[adce20b] 重复的 elif 分支 '{context_key}' 已注册为 '{existing_label}'；"
+            f"上游 bash 中此问题导致第二条分支永远不可达（静默失效），"
+            f"BranchDispatcher 在构造期即拒绝。"
+        )
+        self.context_key = context_key
+        self.existing_label = existing_label
+
+
+@dataclass
+class SedInstruction:
+    """将 bash `sed_runner` 调用建模为 Python 数据——上游只有裸字符串。
+
+    Attributes:
+        pattern:      sed 正则模式（bash 侧为 's|...|...|g' 第一段）
+        replacement:  替换目标（可含 ${NEXT_SHORT_TAG} 等变量占位符）
+        target_file:  受影响文件路径（相对于仓库根）
+        flags:        额外 sed 标志（默认 'g' 全局替换）
+    """
+    pattern: str
+    replacement: str
+    target_file: str
+    flags: str = "g"
+
+    def as_sed_expr(self, next_short_tag: str = "XX.YY") -> str:
+        """展开变量占位符，返回可执行 sed 表达式字符串（仅用于诊断/日志）。"""
+        rep = self.replacement.replace("${NEXT_SHORT_TAG}", next_short_tag)
+        return f"s|{self.pattern}|{rep}|{self.flags}"
+
+    def __post_init__(self) -> None:
+        if not self.pattern:
+            raise ValueError("SedInstruction.pattern 不能为空")
+        if not self.target_file:
+            raise ValueError("SedInstruction.target_file 不能为空")
+
+
+class RunContext(str, Enum):
+    """RAPIDS update-version.sh 的两种运行上下文。
+
+    adce20b 修复的 elif 重复问题恰好发生在 main/release 分支判断处；
+    强枚举防止字符串拼写错误，同时使穷举检查成为可能。
+    """
+    MAIN = "main"
+    RELEASE = "release"
+
+
+@dataclass
+class BranchDispatcher:
+    """将 bash if/elif 链建模为可枚举、可验证的 Python 结构。
+
+    上游 ci/release/update-version.sh 中 adce20b 之前存在：
+        if   [[ "${RUN_CONTEXT}" == "main"    ]]; then ...
+        elif [[ "${RUN_CONTEXT}" == "release" ]]; then   # ← 第1条（正确）
+        elif [[ "${RUN_CONTEXT}" == "release" ]]; then   # ← 第2条（重复，adce20b删除）
+            sed_runner "s|\\bmain\\b|release/...|g" ...
+        fi
+
+    BranchDispatcher 在 register_branch() 时检测重复，adce20b 的修复
+    在 Python 层得到结构性保障而非依赖 code review / bot 建议。
+    """
+    _branches: Dict[RunContext, Tuple[str, List[SedInstruction]]] = field(
+        default_factory=dict, init=False
+    )
+
+    def register_branch(
+        self,
+        context: RunContext,
+        label: str,
+        instructions: List[SedInstruction],
+    ) -> "BranchDispatcher":
+        """注册一个 elif 分支。重复注册即抛 DuplicateBranchError（adce20b 所修复）。
+
+        Args:
+            context:      RunContext 枚举值（MAIN 或 RELEASE）
+            label:        人类可读标签，用于诊断输出
+            instructions: 该分支下的 sed 指令列表
+
+        Returns:
+            self（支持链式调用）
+
+        Raises:
+            DuplicateBranchError: 若 context 已被注册过（即上游重复 elif 的 Python 等价）
+        """
+        _debug = os.environ.get("WALPURGIS_DEBUG", "0") == "1"
+        if context in self._branches:
+            existing_label = self._branches[context][0]
+            if _debug:
+                print(
+                    f"[DEBUG adce20b] DuplicateBranchError: context={context.value!r} "
+                    f"already registered as {existing_label!r} — 即 bash 中重复的 elif"
+                )
+            raise DuplicateBranchError(context.value, existing_label)
+        self._branches[context] = (label, instructions)
+        if _debug:
+            print(
+                f"[DEBUG adce20b] register_branch: context={context.value!r} "
+                f"label={label!r} instructions_count={len(instructions)}"
+            )
+        return self
+
+    def dispatch(
+        self,
+        run_context_str: str,
+        next_short_tag: str,
+    ) -> List[SedInstruction]:
+        """按 run_context_str 派发，返回应执行的 sed 指令列表。
+
+        Args:
+            run_context_str: "main" 或 "release"（来自 CLI / 环境变量）
+            next_short_tag:  如 "26.04"（由 update-version.sh 计算）
+
+        Returns:
+            该上下文下应执行的 SedInstruction 列表（可为空）
+
+        Raises:
+            ValueError: 若 run_context_str 不在已注册的分支中
+        """
+        _debug = os.environ.get("WALPURGIS_DEBUG", "0") == "1"
+        try:
+            ctx = RunContext(run_context_str)
+        except ValueError:
+            valid = [c.value for c in self._branches]
+            raise ValueError(
+                f"[adce20b] 未知 run_context={run_context_str!r}，"
+                f"有效值：{valid}"
+            )
+        if ctx not in self._branches:
+            if _debug:
+                print(
+                    f"[DEBUG adce20b] dispatch: context={run_context_str!r} "
+                    f"→ no branch registered, returning []"
+                )
+            return []
+        label, instructions = self._branches[ctx]
+        if _debug:
+            print(
+                f"[DEBUG adce20b] dispatch: context={run_context_str!r} "
+                f"→ branch={label!r}, {len(instructions)} instruction(s)"
+            )
+            for instr in instructions:
+                print(
+                    f"[DEBUG adce20b]   sed: {instr.as_sed_expr(next_short_tag)} "
+                    f"→ {instr.target_file}"
+                )
+        return instructions
+
+    def registered_contexts(self) -> List[str]:
+        """返回已注册的所有上下文键（用于枚举验证）。"""
+        return [ctx.value for ctx in self._branches]
+
+
+# ---------------------------------------------------------------------------
+# adce20b 的具体迁移实例 — 上游 update-version.sh 文档链接分支
+# ---------------------------------------------------------------------------
+
+def _build_doc_link_dispatcher(next_short_tag: str = "26.04") -> BranchDispatcher:
+    """构建与 adce20b 后等价的文档链接 BranchDispatcher。
+
+    上游逻辑（adce20b 修复后）：
+        if   main:    echo "Keeping external documentation references on main branch"
+        elif release: sed_runner "s|\\bmain\\b|release/${NEXT_SHORT_TAG}|g" cpp/scripts/run-cmake-format.sh
+        fi
+
+    此函数将上述逻辑强类型化，并在 MAIN 分支注册一个空指令列表（"保持不变"），
+    在 RELEASE 分支注册实际 sed 指令。
+    """
+    _debug = os.environ.get("WALPURGIS_DEBUG", "0") == "1"
+    if _debug:
+        print(
+            f"[DEBUG adce20b] _build_doc_link_dispatcher: "
+            f"next_short_tag={next_short_tag!r}"
+        )
+    dispatcher = BranchDispatcher()
+    # main 分支：保持外部文档引用在 main，无 sed 操作
+    dispatcher.register_branch(
+        context=RunContext.MAIN,
+        label="keep-docs-on-main",
+        instructions=[],
+    )
+    # release 分支：将文档链接中的 'main' 替换为 'release/YY.MM'
+    dispatcher.register_branch(
+        context=RunContext.RELEASE,
+        label="redirect-docs-to-release",
+        instructions=[
+            SedInstruction(
+                pattern=r"\bmain\b",
+                replacement=f"release/{next_short_tag}",
+                target_file="cpp/scripts/run-cmake-format.sh",
+                flags="g",
+            )
+        ],
+    )
+    return dispatcher
+
+
+# adce20b 模块级单例（next_short_tag 用占位符，实际使用时重新构造）
+ADCE20B_DOC_DISPATCHER: BranchDispatcher = _build_doc_link_dispatcher("XX.YY")
+
+
+# ---------------------------------------------------------------------------
+# 自测
+# ---------------------------------------------------------------------------
+
+def _smoke_test_adce20b() -> None:
+    """adce20b 迁移自测 — 验证重复分支检测 + 正常派发两条路径。"""
+    import os as _os
+
+    # 测试1: main 上下文 → 空指令列表
+    d = _build_doc_link_dispatcher("26.04")
+    instrs = d.dispatch("main", "26.04")
+    assert instrs == [], f"test1: main 应返回空列表，实际={instrs}"
+    print("[PASS] test1: main 上下文 → 空指令（保持文档在 main）")
+
+    # 测试2: release 上下文 → 1条 sed 指令
+    instrs = d.dispatch("release", "26.04")
+    assert len(instrs) == 1, f"test2: release 应返回 1 条指令，实际={len(instrs)}"
+    assert instrs[0].target_file == "cpp/scripts/run-cmake-format.sh"
+    assert instrs[0].pattern == r"\bmain\b"
+    assert "26.04" in instrs[0].as_sed_expr("26.04")
+    print("[PASS] test2: release 上下文 → sed s|\\bmain\\b|release/26.04|g 正确")
+
+    # 测试3: 重复注册同一上下文 → DuplicateBranchError（adce20b 核心修复）
+    d2 = BranchDispatcher()
+    d2.register_branch(RunContext.RELEASE, "first-release", [])
+    raised = False
+    try:
+        d2.register_branch(RunContext.RELEASE, "duplicate-release", [])
+    except DuplicateBranchError as e:
+        raised = True
+        assert "release" in str(e)
+        assert "first-release" in str(e)
+    assert raised, "test3: 重复注册应抛出 DuplicateBranchError"
+    print("[PASS] test3: 重复 elif 分支 → DuplicateBranchError 即时拒绝")
+
+    # 测试4: 未知 run_context → ValueError
+    raised = False
+    try:
+        d.dispatch("staging", "26.04")
+    except ValueError as e:
+        raised = True
+        assert "staging" in str(e)
+    assert raised, "test4: 未知 context 应抛出 ValueError"
+    print("[PASS] test4: 未知 context → ValueError")
+
+    # 测试5: registered_contexts() 枚举正确
+    ctxs = d.registered_contexts()
+    assert set(ctxs) == {"main", "release"}, f"test5: 实际={ctxs}"
+    print("[PASS] test5: registered_contexts() = ['main', 'release']")
+
+    # 测试6: DEBUG 模式不抛异常（仅验证不崩溃）
+    _os.environ["WALPURGIS_DEBUG"] = "1"
+    try:
+        d3 = _build_doc_link_dispatcher("26.06")
+        d3.dispatch("release", "26.06")
+    finally:
+        del _os.environ["WALPURGIS_DEBUG"]
+    print("[PASS] test6: WALPURGIS_DEBUG=1 调试路径正常运行")
+
+    # 测试7: SedInstruction 空 pattern 应拒绝
+    raised = False
+    try:
+        SedInstruction(pattern="", replacement="x", target_file="foo.sh")
+    except ValueError:
+        raised = True
+    assert raised, "test7: SedInstruction 空 pattern 应拒绝"
+    print("[PASS] test7: SedInstruction 空 pattern → ValueError")
+
+    print("\n[ALL PASS] adce20b smoke test 全部通过（7/7）")
