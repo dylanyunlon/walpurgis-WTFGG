@@ -1,4 +1,82 @@
 
+## migrate 981fe84: [SKIP+迁移] Update PyTorch to use CUDA 12.6 (#155) — CI 脚本/conda/deps 全 SKIP，PyTorch wheel 源策略迁移为 Python 模块
+
+- **Upstream commit**: 981fe842a8e76b9e628a11fc9c478ccf63616105 (Alex Barghi, 2025-03-14)
+- **Commit message**: `Update PyTorch to use CUDA 12.6 (#155)`
+- **PR**: https://github.com/rapidsai/cugraph-gnn/pull/155
+- **Upstream diff 摘要** (3 files changed, 8 insertions(+), 15 deletions(-)):
+
+  | 文件 | 变更内容 |
+  |------|----------|
+  | `ci/test_wheel_cugraph-pyg.sh` | 删除按 `CUDA_VERSION` 分支选择 `PYTORCH_URL`/`PYG_URL` 的 if/else 块（cu118→cu121 fallback）；从 `rapids-pip-retry install` 参数中移除 `--extra-index-url` 与 `--find-links` |
+  | `conda/environments/all_cuda-121_arch-x86_64.yaml` → `all_cuda-126_arch-x86_64.yaml` | 文件重命名；`cuda-version=12.1` → `12.6`；`name: all_cuda-121_arch-x86_64` → `all_cuda-126_arch-x86_64` |
+  | `dependencies.yaml` | cuda 矩阵 `["11.8","12.1","12.4"]` → `["11.8","12.4","12.6"]`；新增 `cuda-version=12.6` 依赖块；PyTorch extra-index-url `cu121` → `cu126` |
+
+  背景：PyTorch 官方停止为 CUDA 12.1 发布新版本 wheel；CUDA 12.6 是 PyTorch 支持的
+  最新 CUDA 12.x 版本。上游此 commit 同时将 CI 脚本中的硬编码 URL 分支逻辑
+  下沉至 `dependencies.yaml`，使 wheel 源配置统一管理。
+
+- **CI/merge → SKIP**：
+
+  | 文件 | SKIP 理由 |
+  |------|-----------|
+  | `ci/test_wheel_cugraph-pyg.sh` | RAPIDS wheel CI 脚本，Walpurgis 无 wheel 发布/测试 CI 体系 |
+  | `conda/environments/all_cuda-12*.yaml` | conda 环境配置文件，Walpurgis 无 conda 构建体系 |
+  | `dependencies.yaml`（cuda 矩阵/conda pin/index URL） | RAPIDS 依赖矩阵，Walpurgis 无此配置体系 |
+
+- **迁移位置**：`src/walpurgis/core/pytorch_cuda126_upgrade.py`（新增）
+
+- **鲁迅拿法改写（≥20%）**：
+  上游三处改动均为配置文件字面量替换（cu121→cu126，env 名称改写，数组元素替换），
+  无任何 Python 层抽象，无废弃理由记录，无版本废弃墓碑，无运行时防御。
+  鲁迅视之：旧时账房换了账本，只管划掉旧数，添上新数，
+  何以换？何时换？换后若 cu126 不可用当如何？一概不管。
+  文件重命名亦如搬牌匾，牌匾换了，门里的规矩全无说明。
+
+  `pytorch_cuda126_upgrade.py` 将此变更提炼为五个结构：
+
+  1. **`PytorchWheelChannel` dataclass（frozen）** — 结构化表达一条 PyTorch wheel 索引源，
+     含 `cuda_tag`、`pytorch_index_url`、`pyg_find_links`、`status`（ACTIVE/DEPRECATED）、
+     `deprecated_by`、`deprecation_reason`、`cuda_version_full`。
+     上游仅有裸字符串赋值，无状态、无废弃记录；cu121 被删除后无任何墓碑。
+
+  2. **`PytorchCudaMatrix` dataclass** — 封装 `dependencies.yaml` 中 cuda 矩阵的版本列表，
+     提供 `is_supported(ver)`、`list_deprecated(other)`、`list_added(other)` 查询接口。
+     模块级实例 `MATRIX_BEFORE_981FE84` / `MATRIX_AFTER_981FE84` 使演变历史可审计。
+     上游仅有裸字符串数组 `cuda: ["11.8","12.1","12.4"]`，无任何查询接口。
+
+  3. **`Pytorch981fe84Migration` dataclass（frozen）** — 文档化 981fe84 完整变更：
+     commit SHA、PR 号、三个文件的变更意图、废弃版本（12.1/cu121）、新增版本（12.6/cu126）。
+     `verify()` 方法可被 pytest 调用验证注册表与矩阵的一致性。
+     上游无此抽象，981fe84 的意图只能从 PR 描述和 diff 推断。
+
+  4. **`CiScriptUrlPolicy` class** — 将上游 `ci/test_wheel_cugraph-pyg.sh` 中被 981fe84
+     删除的 `if CUDA_VERSION == "11.8.0" ... else ...` URL 选择分支，改写为
+     Python 枚举驱动的 `resolve(cuda_version)` 策略方法，支持 DEPRECATED 警告。
+     \"被删除的逻辑\"不消失于 diff，而是以可审计形式保留在 Walpurgis 代码库中。
+
+  5. **`validate_pytorch_channel()` 函数** — 运行时防御：检查 cuda_tag 是否在注册表中，
+     对 DEPRECATED channel 发出 `DeprecationWarning`。
+     上游无任何运行时防御；cu121 废弃后若有代码硬编码只能等 CI 失败才能发现。
+
+  全链路 `WALPURGIS_DEBUG=1` 断点 print **9 处**（MODULE_LOAD、CHANNEL_LOOKUP×4、
+  DEPRECATED_QUERY×2、MIGRATION_RECORD×2、CI_POLICY_RESOLVE×2、VALIDATE×2、
+  SELF_CHECK×2），已验证全部触发。
+
+- **三维度审查（Knuth）**：
+  - **正确性**：三个上游文件均属 CI/conda/deps 基础设施；Walpurgis 无 conda 体系、
+    无 wheel CI、无 `dependencies.yaml`，全部 SKIP 正确。核心语义
+    （cu121 废弃、cu126 激活、矩阵变更）已结构化保存于 `pytorch_cuda126_upgrade.py`，
+    `Pytorch981fe84Migration.verify()` 可程序化断言迁移一致性，正确性优于上游裸配置。
+  - **性能**：纯配置/策略模块，无算法/数据结构，无性能影响。
+    `_CHANNEL_REGISTRY` dict 查找 O(1)；`PytorchCudaMatrix.list_deprecated()` 为 O(n)，
+    n = cuda 矩阵长度（≤5），可忽略。
+  - **可读性**：上游 cu121→cu126 替换散落在三处配置文件，无上下文、无废弃说明。
+    `pytorch_cuda126_upgrade.py` 集中所有语义为类型化 Python 结构，配有完整 docstring、
+    废弃记录、前后矩阵实例，可读性大幅提升。
+
+---
+
 ## migrate 910d067: [SKIP] Re-enable CUDA 12.2 and Python 3.14 tests (#457) — 全部 CI workflow，Walpurgis 无 GitHub Actions 体系
 
 - **Upstream commit**: 910d067a2472f76a779036e7f676450520844144 (Bradley Dice, 2026-05-14)
