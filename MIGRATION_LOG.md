@@ -48,6 +48,32 @@
   2. `_copy_perms` 注释段 — 显式标注 `_perm_coo2csc`（COO→CSC 排列）和 `_perm_csc2csr`（CSC→CSR 排列）的语义来源，原版无注释；
   3. 全链路 `WALPURGIS_DEBUG=1` 断点——打印源设备、目标设备、各分量存在性（src/dst/csrc/cdst/vals），原版无任何诊断输出
 - **自测结果**: 4 项结构断言全部 [PASS]（SparseGraph.to() 方法存在、_maybe_move helper、perm tensor copy、DEBUG probe）
+## migrate 8074120: Deprecate Unbuffered Sampling in cuGraph-PyG (#151)
+
+- **Upstream commit**: 8074120bd99992aa033632871c039136bf49d26c (cugraph-gnn, alexbarghi-nv, 2025-03-03, PR #151)
+- **Commit message**: `Deprecate Unbuffered Sampling in cuGraph-PyG (#151)`
+- **Upstream diff** (4 files changed, 15 insertions, 195 deletions):
+  - `examples/cugraph_dist_sampling_mg.py` — **删除**（112行）
+  - `examples/cugraph_dist_sampling_sg.py` — **删除**（82行）
+  - `loader/link_neighbor_loader.py` — `if directory is not None:` 加 FutureWarning（+7行）
+  - `loader/neighbor_loader.py` — `directory` 参数加 `# Deprecated.` 注释；`if directory is not None:` 加 FutureWarning（+8行）
+
+- **CI/merge/examples → SKIP**:
+  - `examples/cugraph_dist_sampling_mg.py` — SKIP: 多 GPU unbuffered 采样示例文件，Walpurgis 无对应示例体系
+  - `examples/cugraph_dist_sampling_sg.py` — SKIP: 单 GPU unbuffered 采样示例文件，Walpurgis 无对应示例体系
+
+- **迁移位置**: `src/walpurgis/dataloader/unbuffered_sampling_deprecation.py` — 新建
+  将 NeighborLoader / LinkNeighborLoader 两处重复的 `directory` 废弃检查逻辑统一归到本模块，与 loader_deprecation.py 并列。
+
+- **鲁迅拿法改写（≥20%）**:
+  1. `UnbufferedSamplingMode` enum — 上游仅 `if directory is not None` 隐式布尔；Walpurgis 显式枚举 `BUFFERED`/`UNBUFFERED`，`from_directory()` 将判断语义化，`is_deprecated` 属性直接表达状态
+  2. `UnbufferedSamplingPolicy` dataclass — 上游硬编码 `"25.06"` 字符串两次；字段化 `removal_version`/`strict`，`emit()` 统一触发警告，`strict=True` 改为 raise（CI 测试模式），后续版本更新单点修改
+  3. `DirectoryArgAudit` dataclass — 上游零审计；按 loader 类名记录 `directory` 参数调用次数，`describe()` 生成可读报告，使废弃用量可量化，辅助评估安全删除时机
+  4. `UnbufferedSamplingGuard` 类 — 消除上游两文件重复代码，`check(directory, loader_name)` 统一路由：mode 推断 → audit 记录 → policy 发警告；`summary()` 打印完整审计汇总
+  5. 全局单例 `unbuffered_sampling_guard` — 供 dataloader/ 各 loader 直接 import 调用，替代两处独立 `if directory is not None: warnings.warn(...)` 片段
+  6. 全链路 `WALPURGIS_DEBUG=1` 断点（5处）：mode 推断、policy emit、audit record、guard check、summary 各阶段均有断点
+
+- **自测结果**: 10 项全部 [PASS]
 
 ---
 
