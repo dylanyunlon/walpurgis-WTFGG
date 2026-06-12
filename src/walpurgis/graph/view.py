@@ -351,3 +351,8 @@ class HeteroNodeView:
             dtype=self.__graph.idtype,
             device="cuda",
         )
+
+
+# b6163b1: 将 EmbeddingView 从 tensor 层 re-export 到 graph.view，
+# 与上游 cugraph_dgl/view.py 的 EmbeddingView 位置对应。
+from walpurgis.tensor.embedding_view import EmbeddingView  # noqa: F401

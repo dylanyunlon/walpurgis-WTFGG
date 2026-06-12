@@ -113,10 +113,7 @@ class NeighborSampler(Sampler):
             raise NotImplementedError(
                 "[Walpurgis:NeighborSampler] 边掩码（mask）当前不支持。"
             )
-        if prob:
-            raise NotImplementedError(
-                "[Walpurgis:NeighborSampler] 概率采样（prob）当前不支持。"
-            )
+        # b6163b1: 移除 prob 的 NotImplementedError，改由 BiasedNeighborSampler 支持
         if prefetch_edge_feats:
             warnings.warn("[Walpurgis:NeighborSampler] 'prefetch_edge_feats' 被忽略。")
         if prefetch_node_feats:
@@ -125,6 +122,9 @@ class NeighborSampler(Sampler):
             warnings.warn("[Walpurgis:NeighborSampler] 'prefetch_labels' 被忽略。")
         if fused:
             warnings.warn("[Walpurgis:NeighborSampler] 'fused' 被忽略。")
+
+        # b6163b1: 存储概率属性名，决定使用 Uniform 还是 Biased 采样器
+        self.__prob_attr = prob
 
         self.fanouts = fanouts_per_layer
         reverse_fanouts = list(fanouts_per_layer)
@@ -199,7 +199,7 @@ class NeighborSampler(Sampler):
         Iterator[DGLSamplerOutput]
             (input_nodes, output_nodes, blocks) 迭代器。
         """
-        from cugraph.gnn import UniformNeighborSampler, DistSampleWriter
+        from cugraph.gnn import UniformNeighborSampler, BiasedNeighborSampler, DistSampleWriter
 
         kwargs = dict(**self.__kwargs)
         directory, writer_kwargs, remaining_kwargs = self._build_sampler_kwargs(kwargs)
@@ -207,7 +207,8 @@ class NeighborSampler(Sampler):
         _dbg(
             "sample",
             f"is_homogeneous={g.is_homogeneous} "
-            f"batch_size={batch_size} edge_dir={self.edge_dir!r}",
+            f"batch_size={batch_size} edge_dir={self.edge_dir!r} "
+            f"prob_attr={self.__prob_attr!r}",
         )
 
         writer = DistSampleWriter(
@@ -216,8 +217,20 @@ class NeighborSampler(Sampler):
             format=writer_kwargs["format"],
         )
 
-        ds = UniformNeighborSampler(
-            g._graph(self.edge_dir),
+        # b6163b1: 根据 prob_attr 选择 UniformNeighborSampler 或 BiasedNeighborSampler
+        # 鲁迅改写：用 _sampling_class 变量命名决策，替代上游匿名三元表达式
+        _sampling_class = (
+            UniformNeighborSampler
+            if self.__prob_attr is None
+            else BiasedNeighborSampler
+        )
+        _dbg(
+            "sample",
+            f"采样器类={_sampling_class.__name__}",
+        )
+
+        ds = _sampling_class(
+            g._graph(self.edge_dir, prob_attr=self.__prob_attr),
             writer,
             compression="CSR",
             fanout=self._reversed_fanout_vals,
@@ -234,7 +247,8 @@ class NeighborSampler(Sampler):
                 "sample",
                 f"同构路径 indices.shape={tuple(indices_t.shape)}",
             )
-            ds.sample_from_nodes(indices_t, batch_size=batch_size)
+            # b6163b1: indices.long() 确保 int64，修复潜在类型不匹配
+            ds.sample_from_nodes(indices_t.long(), batch_size=batch_size)
             return HomogeneousSampleReader(
                 ds.get_reader(),
                 self.output_format,
