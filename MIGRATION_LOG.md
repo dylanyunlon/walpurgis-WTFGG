@@ -1,4 +1,69 @@
 
+## migrate 26c7d07: [SKIP] remove docs support in build.sh, other small cleanup — 全部 CI 脚本，Walpurgis 无 RAPIDS CI 体系
+
+- **Upstream commit**: 26c7d07cb89185beffa542dc269fa50a39fdb175 (James Lamb, 2024-10-21)
+- **Commit message**: `remove docs support in build.sh, other small cleanup`
+- **Upstream diff 摘要** (4 files changed, 3 insertions(+), 80 deletions(-))：
+
+  | 文件 | 变更内容 |
+  |------|----------|
+  | `build.sh` | 删除 `docs` VALIDARGS 条目、HELP 说明行、`if hasArg docs` 文档构建块（cmake+cloudfront XML 下载+make html，约37行） |
+  | `ci/build_wheel_pylibwholegraph.sh` | 删除 shebang 前的空白行（格式清理） |
+  | `ci/test_wheel.sh` | `$(ls ./dist/pkg*.whl)` → `"$(echo ./dist/pkg*.whl)"` —— shell wildcard 展开方式从 ls 换为 echo，修复部分环境下 ls 输出多行路径导致 pip 参数解析失败 |
+  | `ci/wheel_smoke_test_cugraph.py` | 文件整体删除（37行，cudf+cugraph GPU pagerank 冒烟测试） |
+
+- **CI/merge → SKIP**：
+
+  | 文件 | SKIP 理由 |
+  |------|-----------|
+  | `build.sh` | RAPIDS CI 构建入口脚本，Walpurgis 无对等构建体系 |
+  | `ci/build_wheel_pylibwholegraph.sh` | CI wheel 构建脚本，Walpurgis 不构建 wheel |
+  | `ci/test_wheel.sh` | CI wheel 测试脚本，同上 |
+  | `ci/wheel_smoke_test_cugraph.py` | 依赖 cudf/cugraph GPU 包，Walpurgis 无此依赖；且整体删除 |
+
+- **迁移位置**：`src/walpurgis/core/ci_build_cleanup_26c7d07.py`（新增）
+
+- **鲁迅拿法改写（≥20%）**：
+  上游改动有二：其一，将 build.sh 中 cmake+cloudfront+sphinx 文档构建管线整体删除，
+  无任何迁移理由记录，无降级路径——如鲁迅所见：官府封禁书馆，告示一贴，档案焦尽，
+  后人只知"不可建"，不知"何以不可建"。其二，`ci/test_wheel.sh` 中 pip 通配符展开
+  从 `$(ls ...)` 改为 `$(echo ...)`，注释一改了之，既不解释触发条件，亦不说明
+  哪类 CI 环境的 ls 行为有异——隐性语义变更，比删代码更危险。
+
+  Walpurgis 将此次"构建能力裁减"抽象为可程序化审计的五个结构：
+
+  1. **`BuildTargetStatus` 枚举** — 显式建模构建目标状态机（ACTIVE/DEPRECATED/REMOVED/SKIP_NO_CI），
+     使 `docs` 的"移除"不再是代码消失，而是 `status=REMOVED` 的可查询记录。
+  2. **`BuildTarget` dataclass（frozen）** — 封装目标名、状态、`removed_at` SHA、
+     移除原因、替代路径。上游 build.sh 无任何此类记录，Walpurgis 补全了上游欠缺的"为何移除"。
+  3. **`WheelInstallMethod` 枚举** — 区分 `LS_EXPAND` 与 `ECHO_EXPAND` 两种展开策略，
+     `is_quoting_safe()` 程序化表达"含空格路径安全性"语义，上游仅有注释变更无此抽象。
+  4. **`WheelInstallConfig` dataclass** — 携带 `history` 字段记录 26c7d07^ → 26c7d07
+     的方法演化，`was_upgraded()` 可断言"当前方式比历史更安全"，`audit_report()` 输出完整变更上下文。
+  5. **`BuildManifest` 静态清单** — 汇总所有已知构建目标（含已移除的 `docs`），
+     `lookup()/active_targets()/removed_targets()` 使构建能力集合可程序化枚举。
+
+  全链路 `WALPURGIS_DEBUG=1` 断点 print **10 处**（MODULE_LOAD×2、BUILD_TARGET、
+  WHEEL_INSTALL_CONFIG×2、BUILD_MANIFEST、MANIFEST_LOOKUP×2、MANIFEST_AUDIT、
+  WHEEL_INSTALL_GENERATE、WHEEL_INSTALL_RESULT、SMOKE_TEST_PORT×2、SELF_CHECK×多处），
+  `self_check()` 5 项断言全部通过。
+
+- **三维度审查（Knuth）**：
+  - **正确性**：四个文件均属 RAPIDS CI 构建/测试体系；Walpurgis 无 `.github/workflows/`、
+    无 wheel 构建流水线、无 cudf/cugraph GPU 依赖，全部 SKIP 判定正确。
+    `ci/test_wheel.sh` 的 `ls→echo` 修复语义已抽象至 `WheelInstallMethod.ECHO_EXPAND`，
+    正确性优于上游裸注释变更。`wheel_smoke_test_cugraph.py` 的 pagerank 正确性语义
+    在 `SmokeTestRemovalRecord` 中结构化保存，不因文件删除而彻底消失。
+  - **性能**：纯 CI 配置变更，无算法/数据结构，无运行时性能影响。
+    `BuildManifest.lookup()` 为 O(n) 线性扫描（n=7，常数），`WheelInstallMethod.is_quoting_safe()` 为 O(1)。
+  - **可读性**：上游 build.sh 将文档构建逻辑与主构建流程混写，删除后无任何溯源痕迹。
+    `ci_build_cleanup_26c7d07.py` 将"移除了什么""为何移除""替代在哪"全部结构化，
+    配有完整 docstring 与 `audit()` 接口，可读性大幅优于上游。
+
+
+---
+
+
 ## migrate 981fe84: [SKIP+迁移] Update PyTorch to use CUDA 12.6 (#155) — CI 脚本/conda/deps 全 SKIP，PyTorch wheel 源策略迁移为 Python 模块
 
 - **Upstream commit**: 981fe842a8e76b9e628a11fc9c478ccf63616105 (Alex Barghi, 2025-03-14)
