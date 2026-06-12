@@ -99,6 +99,36 @@ def _dbg(tag: str, msg: str) -> None:
         print(f"[DEBUG 940ab01 bitcoin_rf | {tag}] {msg}", file=sys.stderr, flush=True)
 
 
+
+# ──────────────────────────────────────────────────────────────────────────────
+# _DatasetDownloadGuard — a24978e 派生迁移（与 bitcoin_mnmg.py 对称）
+# ──────────────────────────────────────────────────────────────────────────────
+_CI_SKIP_MSG_RF = "a24978e: Bitcoin 数据集暂时不可用（SSL 问题，PR #230）。设置 WALPURGIS_SKIP_BITCOIN=1 可跳过。"
+_BITCOIN_PROBE_URL_RF = "https://data.pyg.org"
+
+
+class _DatasetDownloadGuard:
+    """bitcoin_rf.py 版本：与 bitcoin_mnmg.py 的 _DatasetDownloadGuard 对称。"""
+    def __init__(self, probe_url=_BITCOIN_PROBE_URL_RF, timeout=3.0):
+        self._probe_url, self._timeout = probe_url, timeout
+        _dbg("DatasetDownloadGuard", f"rf-probe probe_url={probe_url}")
+
+    def check_or_skip(self):
+        _dbg("DatasetDownloadGuard.check_or_skip", "rf 开始可用性检查")
+        if os.environ.get("WALPURGIS_SKIP_BITCOIN", "0").strip() == "1":
+            import warnings; warnings.warn(f"WALPURGIS_SKIP_BITCOIN=1 — rf 跳过。{_CI_SKIP_MSG_RF}", RuntimeWarning, stacklevel=2)
+            _dbg("DatasetDownloadGuard.check_or_skip", "决策=SKIP reason=env")
+            return False
+        try:
+            import urllib.request
+            urllib.request.urlopen(urllib.request.Request(self._probe_url, method="HEAD"), timeout=self._timeout)
+            _dbg("DatasetDownloadGuard.check_or_skip", f"{self._probe_url} 可达 ✓ 决策=OK")
+            return True
+        except Exception as exc:
+            import warnings; warnings.warn(f"Bitcoin 数据集不可达: {exc}\n{_CI_SKIP_MSG_RF}", RuntimeWarning, stacklevel=2)
+            _dbg("DatasetDownloadGuard.check_or_skip", f"决策=SKIP ssl_fail={exc}")
+            return False
+
 # ──────────────────────────────────────────────────────────────────────────────
 # BitcoinRfArgs — 强类型参数对象
 # ──────────────────────────────────────────────────────────────────────────────

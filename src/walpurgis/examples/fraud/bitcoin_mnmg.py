@@ -131,6 +131,79 @@ def _safe_rank() -> int:
         return -1
 
 
+
+# ──────────────────────────────────────────────────────────────────────────────
+# _DatasetDownloadGuard — a24978e 派生迁移：Bitcoin 数据集可达性防御
+# ──────────────────────────────────────────────────────────────────────────────
+_CI_SKIP_MSG = (
+    "a24978e: Elliptic Bitcoin 数据集暂时不可用（上游 SSL 问题，PR #230）。"
+    "设置 WALPURGIS_SKIP_BITCOIN=1 可跳过。"
+)
+_BITCOIN_PROBE_URL = "https://data.pyg.org"
+
+
+class _SkipReason:
+    OK = "ok"
+    ENV_SKIP = "env_WALPURGIS_SKIP_BITCOIN"
+    SSL_FAIL = "ssl_probe_failed"
+    IMPORT_FAIL = "import_unavailable"
+
+
+class _DatasetDownloadGuard:
+    """a24978e 派生迁移: 封装 Elliptic Bitcoin 数据集可达性防御。
+    上游在 CI 脚本中注释掉了 bitcoin example，此 Guard 类在 Python 层提供等价的跳过机制。
+    环境变量: WALPURGIS_SKIP_BITCOIN=1 强制跳过, WALPURGIS_DEBUG=1 打印诊断"""
+
+    def __init__(self, probe_url=_BITCOIN_PROBE_URL, timeout=3.0):
+        self._probe_url = probe_url
+        self._timeout = timeout
+        self._reason = _SkipReason.OK
+        _dbg("DatasetDownloadGuard", f"probe_url={probe_url} timeout={timeout}s "
+             f"WALPURGIS_SKIP_BITCOIN={os.environ.get('WALPURGIS_SKIP_BITCOIN', '0')}")
+
+    @staticmethod
+    def _ssl_probe(url, timeout):
+        try:
+            import urllib.request
+            urllib.request.urlopen(urllib.request.Request(url, method="HEAD"), timeout=timeout)
+            _dbg("DatasetDownloadGuard._ssl_probe", f"{url} 可达 ✓")
+            return True, ""
+        except Exception as exc:
+            err = f"{type(exc).__name__}: {exc}"
+            _dbg("DatasetDownloadGuard._ssl_probe", f"{url} 不可达 — {err}")
+            return False, err
+
+    def check_or_skip(self):
+        _dbg("DatasetDownloadGuard.check_or_skip", "开始可用性检查")
+        if os.environ.get("WALPURGIS_SKIP_BITCOIN", "0").strip() == "1":
+            self._reason = _SkipReason.ENV_SKIP
+            import warnings
+            warnings.warn(f"WALPURGIS_SKIP_BITCOIN=1 — 跳过 Bitcoin 示例。{_CI_SKIP_MSG}", RuntimeWarning, stacklevel=2)
+            _dbg("DatasetDownloadGuard.check_or_skip", f"决策=SKIP reason={self._reason}")
+            return False
+        ok, err_msg = self._ssl_probe(self._probe_url, self._timeout)
+        if not ok:
+            self._reason = _SkipReason.SSL_FAIL
+            import warnings
+            warnings.warn(f"Bitcoin 数据集托管不可达: {err_msg}\n{_CI_SKIP_MSG}", RuntimeWarning, stacklevel=2)
+            _dbg("DatasetDownloadGuard.check_or_skip", f"决策=SKIP reason={self._reason}")
+            return False
+        try:
+            import torch_geometric  # noqa: F401
+        except ImportError as e:
+            self._reason = _SkipReason.IMPORT_FAIL
+            import warnings
+            warnings.warn(f"torch_geometric 不可用: {e}", RuntimeWarning, stacklevel=2)
+            _dbg("DatasetDownloadGuard.check_or_skip", f"决策=SKIP reason={self._reason}")
+            return False
+        self._reason = _SkipReason.OK
+        _dbg("DatasetDownloadGuard.check_or_skip", f"决策=OK reason={self._reason}")
+        return True
+
+    @property
+    def skip_reason(self):
+        return self._reason
+
 # ──────────────────────────────────────────────────────────────────────────────
 # BitcoinMnmgArgs — 强类型参数对象
 # ──────────────────────────────────────────────────────────────────────────────
