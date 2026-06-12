@@ -1,5 +1,6 @@
 """
 unified_store.py — 07ce63f 迁移: 统一 WholeGraph FeatureStore 与 GraphStore
+             ↳ 78128d9 更新: NewGraphStore 正式重命名为 GraphStore; list bug fix 守卫
 
 migrate 07ce63f: [FEA] Support Unified WholeGraph FeatureStore and GraphStore
 
@@ -641,8 +642,10 @@ class FeatureStoreFactory:
                 _dbg(f"  wgth.initialize.init 异常（可能已初始化）: {e}")
                 warnings.warn(f"WholeGraph already initialized, continuing. ({e})")
 
-            from cugraph_pyg.data.graph_store import NewGraphStore
-            store = NewGraphStore(*args, **kwargs)
+            # 78128d9: NewGraphStore → 正式重命名为 GraphStore
+            # list bug fix: 若 edge_index 为 list，_put_edge_index 内部已有 torch.stack 守卫
+            from cugraph_pyg.data.graph_store import GraphStore as _NewGraphStore
+            store = _NewGraphStore(*args, **kwargs)
 
         else:
             # 路径 C：is_multi_gpu=False，废弃警告 + 旧路径
