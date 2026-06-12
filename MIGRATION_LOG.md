@@ -1,4 +1,57 @@
 
+## migrate 910d067: [SKIP] Re-enable CUDA 12.2 and Python 3.14 tests (#457) — 全部 CI workflow，Walpurgis 无 GitHub Actions 体系
+
+- **Upstream commit**: 910d067a2472f76a779036e7f676450520844144 (Bradley Dice, 2026-05-14)
+- **Commit message**: `Re-enable CUDA 12.2 and Python 3.14 tests (#457)`
+- **PR**: https://github.com/rapidsai/cugraph-gnn/pull/457
+- **Approvers**: Alex Barghi, jakirkham
+- **Upstream diff 摘要** (3 files changed, 4 insertions(+), 14 deletions(-))：
+
+  本 commit 并行撤销两条"临时 CI 排除"：
+
+  | 文件 | 变更内容 |
+  |------|----------|
+  | `.github/workflows/build.yaml` | build-wheel `matrix_filter` 删除 `map(select(.PY_VER != "3.14"))` — 恢复 Python 3.14 wheel 构建 |
+  | `.github/workflows/pr.yaml` | (1) `conda-python-tests` matrix_filter：`CUDA >= 12.9` 临时限制 → 全矩阵（仅排 arm64+12.2.2）；(2) `test-wheel-pylibwholegraph`、`test-wheel-cugraph-pyg` 删除整行 `matrix_filter`（移除 CUDA 12.9 限制）；(3) `build-wheel-cugraph-pyg` 同 build.yaml，删除 PY_VER 3.14 过滤 |
+  | `.github/workflows/test.yaml` | `test_python` matrix_filter：同 pr.yaml，`CUDA >= 12.9` → 全矩阵；`test_wheel_pylibwholegraph`、`test_wheel_cugraph-pyg` 删除 `matrix_filter` 整行（两处） |
+
+  背景：
+  - Python 3.14 排除由 PR #433 引入（关联 Cython double-self bug / py3.14 ABI，见 58f376f 迁移）
+  - CUDA 12.2 排除由 PR #454 引入（关联 cugraph PR #5499 的 CUDA 12.2 runtime bug）
+  - 本 commit (#457) 在 cugraph#5499 修复后恢复两者；arm64 + CUDA 12.2.2 因无 pytorch-gpu 包仍保持排除
+
+- **CI/merge → SKIP**：
+
+  | 文件 | SKIP 理由 |
+  |------|-----------|
+  | `.github/workflows/build.yaml` | GitHub Actions 主构建 workflow，Walpurgis 无 GitHub Actions CI |
+  | `.github/workflows/pr.yaml` | GitHub Actions PR CI workflow，同上 |
+  | `.github/workflows/test.yaml` | GitHub Actions test workflow，同上 |
+
+- **迁移位置**：`src/walpurgis/core/cuda122_py314_ci_restore.py`（新增）
+
+- **鲁迅拿法改写（≥20%）**：
+  上游改动为直接修改三个 YAML 文件内的裸 jq 字符串，无任何注释说明"为何当初排除""依赖哪个上游 fix""恢复的先决条件"。
+  鲁迅视之：改则改矣，何以改？改后可再倒退乎？无记录，无守卫，无策略。如同旧时官府，只管贴告示，不管立法。
+
+  Walpurgis 将此"CI 矩阵过滤器状态变更"抽象为五个可程序化审计的结构：
+
+  1. **`CiExclusionReason` dataclass（frozen）** — 结构化记录"临时排除"完整上下文（引入 PR、排除原因、恢复 PR、恢复先决条件、日期）。上游仅有 YAML 注释 "Temporarily skip..."，无任何程序化表达。
+  2. **`MatrixFilterRule` dataclass** — 封装 jq matrix_filter 规则语义（架构约束、CUDA 版本下限、Python 版本排除列表）。提供 `is_restrictive()` 判断是否为限制性规则，`to_jq_fragment()` 生成近似 jq 片段供审计。
+  3. **`CiMatrixRestoreEvent` dataclass** — 描述一次"恢复全矩阵"事件（commit SHA、恢复的排除记录、受影响 workflows、恢复前后规则、净效果）。提供 `summarize()` 打印完整事件摘要。
+  4. **`CudaArch12x2CompatTable` 静态查询表** — 集中维护 CUDA 12.2.x 在各 arch 下的兼容性（上游注释在三个 YAML 各写一遍，Walpurgis 合并为单一可查询表）。
+  5. **`validate_jq_fragment()` 校验函数** — 轻量级 jq 片段括号平衡 + 关键字合法性检查（上游 jq 字符串无任何校验，写错只能在 CI 里发现）。
+
+  全链路 `WALPURGIS_DEBUG=1` 断点 print **8 处**（MODULE_LOAD × 2、EXCLUSION_RECORDS、RESTORE_EVENT、JQ_FRAGMENT × 2、JQ_VALIDATE × 2、SELF_CHECK × 2、IS_RESTRICTIVE × 2、COMPAT_QUERY），验证全部触发。
+
+- **三维度审查（Knuth）**：
+  - **正确性**：三个 workflow 文件均属 GitHub Actions CI 配置；Walpurgis 项目无 `.github/workflows/` 目录，无 GitHub Actions CI 体系，无任何迁移价值。核心语义（恢复 CUDA 12.2 + Python 3.14 CI 覆盖）已抽象为 `cuda122_py314_ci_restore.py` 中的策略模块，结构化保存"为何恢复""依赖哪个上游 fix"等元信息，正确性优于上游裸 YAML。
+  - **性能**：纯 CI 配置变更，无算法/数据结构，无性能影响。`CudaArch12x2CompatTable` 查询为 O(1) dict 查找。
+  - **可读性**：上游 jq 字符串散落在三个 YAML，无上下文。`cuda122_py314_ci_restore.py` 将所有语义集中为类型化 Python 结构，配有完整 docstring 和排除记录，可读性大幅提升。
+
+
+---
+
 ## migrate 65c2afe: fix condition to skip CUDA 13 conda-python-tests jobs (#312)
 
 - **Upstream commit**: 65c2afe952bea09d009d9d428af4523b0c102b0d (cugraph-gnn, James Lamb, 2025-09-22)
