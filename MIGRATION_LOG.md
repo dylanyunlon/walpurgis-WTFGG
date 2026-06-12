@@ -1,4 +1,45 @@
 
+## migrate 91a5c74: [SKIP] fix merge conflicts — 依赖版本 pin merge commit，全部 CI/conda 体系，Walpurgis 无对应体系
+
+- **Upstream commit**: 91a5c74f3e2d147fb641b4b58d8be56e4c25b8d4 (Alexandria Barghi, 2025-11-25)
+- **Commit type**: Merge commit（parents: a406f985, a01924ae）
+- **Commit message**: `fix merge conflicts`
+- **Upstream diff 摘要** (12 files changed, 18 insertions(+), 18 deletions(-))：
+
+  本 commit 是将 a01924a（cython/pytest 版本 pin）合并进 a406f98（conda strict channel priority）时的冲突解决结果。
+  所有变更文件及变更内容：
+
+  | 文件 | 变更内容 |
+  |------|----------|
+  | `conda/environments/all_cuda-129_arch-{aarch64,x86_64}.yaml` × 2 | `cython>=3.0.0` → `>=3.0.0,<3.2.0a0`；`pytest`（无上限）→ `pytest<9.0.0a0` |
+  | `conda/environments/all_cuda-130_arch-{aarch64,x86_64}.yaml` × 2 | 同上 |
+  | `conda/recipes/pylibwholegraph/recipe.yaml` | `cython>=3.0.0` → `>=3.0.0,<3.2.0a0` |
+  | `dependencies.yaml` | 同上（cython + pytest 双 pin） |
+  | `python/cugraph-pyg/conda/cugraph_pyg_dev_cuda-{129,130}_arch-{aarch64,x86_64}.yaml` × 4 | `pytest` → `pytest<9.0.0a0` |
+  | `python/cugraph-pyg/pyproject.toml` | `pytest` → `pytest<9.0.0a0` |
+  | `python/pylibwholegraph/pyproject.toml` | `cython>=3.0.0` → `>=3.0.0,<3.2.0a0`；`pytest` → `pytest<9.0.0a0` |
+
+- **SKIP 判定**：
+
+  1. **本 commit 是纯 merge + conflict resolution**：两个 parent 各自的业务变更（conda strict priority / cython+pytest pin）均已在各自 commit 中独立处理。
+  2. **cython/pytest pin 语义与 a01924a 完全重叠**：`dep_pin.py`（`migrate a01924a`）已将 `CYTHON_PIN`（`>=3.0.0,<3.2.0a0`）、`PYTEST_PIN`（`<9.0.0a0`）迁移并结构化为 `DepPin` dataclass + `PinPolicy` 运行时守卫 + `PinAudit` CI 审计器，91a5c74 合并的版本约束数字与 a01924a 完全一致，无新增约束语义。
+  3. **全部变更文件属于 CI/conda 体系**：
+     - `conda/environments/*.yaml` — Walpurgis 无 conda 环境矩阵
+     - `conda/recipes/pylibwholegraph/` — RAPIDS conda recipe，Walpurgis 不编译 pylibwholegraph
+     - `dependencies.yaml` — RAPIDS 构建依赖管理，Walpurgis 用 pyproject.toml
+     - `python/cugraph-pyg/conda/*.yaml` — conda 开发环境，同上
+     - `python/cugraph-pyg/pyproject.toml` — 上游包构建配置，非 Walpurgis 源码
+     - `python/pylibwholegraph/pyproject.toml` — 同上
+
+- **迁移位置**：无（全部 SKIP）。版本约束语义已在 `src/walpurgis/core/dep_pin.py`（migrate a01924a）覆盖。
+
+- **三维度审查（Knuth）**：
+  - **正确性**：merge conflict resolution 的版本数字与两 parent 一致，无净新增约束。
+  - **性能**：纯字符串替换，无算法/数据结构变更，无性能影响。
+  - **可读性**：全部为 yaml/toml 裸字符串；dep_pin.py 已将同等语义提炼为结构化 Python 抽象，可读性改善已完成。
+
+---
+
 ## migrate 289175f: resolve conflict（CHANGELOG.md merge commit）
 
 - **Upstream commit**: 289175f5b964321e2bc6fca2eb42deaf1aaa4d14（cugraph-gnn，Alexandria Barghi，2025-10-21）
@@ -13,7 +54,6 @@
   - 三维（CI/merge 判定）：merge commit 本身即为 CI 合并操作；所有 48 行内容属于发版归档，非功能性变更
 
 - **结论**: **SKIP** — merge commit + 纯 CHANGELOG 文档，无迁移内容
-
 ---
 
 
