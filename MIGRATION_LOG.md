@@ -1,3 +1,60 @@
+## migrate ac3c900: refactor: build wheels and conda packages using Python limited API (#407)
+
+- **Upstream commit**: ac3c900826a256acc5a86866e8f5fe022f80d72c (cugraph-gnn, Gil Forsyth, 2026-02-17)
+- **Commit message**: `refactor: build wheels and conda packages using Python limited API (#407)`
+- **PR**: https://github.com/rapidsai/cugraph-gnn/pull/407
+
+- **Context**: 将 pylibwholegraph 迁移至 Python Stable ABI（Limited API）。核心 Cython 层改写将三处 `PyUnicode_AsUTF8()` 替换为 `PyUnicode_AsUTF8String() + PyBytes_AsString()`，并用 `strdup` 管理 filelist `char**` 的每个元素所有权（配套 `finally: free(filenames[i])`）；同时在 conda recipe 引入 `version_independent: true`（noarch-like stable ABI build），在 GHA 矩阵过滤器添加 `group_by({CUDA_VER, ARCH}) | map(min_by(.PY_VER))` 以仅对最低 Python 版本构建 abi3 wheel。
+
+- **Upstream diff** (14 files changed, 100 insertions(+), 36 deletions(−)):
+  | 文件 | 变更内容 |
+  |------|----------|
+  | `.github/workflows/build.yaml` | matrix_filter 限最低 PY_VER；publish-wheel-search-key 加 _abi3 后缀 |
+  | `.github/workflows/pr.yaml` | matrix_filter 限最低 PY_VER |
+  | `build.sh` | PYTHON_ARGS_FOR_INSTALL 改数组；pydevelop 用 +=；RAPIDS_PY_API 注入 skbuild.wheel.py-api |
+  | `ci/build_python.sh` | 移除 --test skip；追加 RAPIDS_PACKAGE_NAME --stable --cuda |
+  | `ci/build_python_noarch.sh` | PYTHON_CHANNEL 改用 rapids-package-name --stable --cuda |
+  | `ci/build_wheel.sh` | 解析 --stable 标志；RAPIDS_PY_API 注入 wheel.py-api config-settings |
+  | `ci/build_wheel_cugraph-pyg.sh` | 去掉 package-type positional arg |
+  | `ci/build_wheel_libwholegraph.sh` | 去掉 package-type positional arg |
+  | `ci/build_wheel_pylibwholegraph.sh` | RAPIDS_PY_API 计算；传 --stable；追加 RAPIDS_PACKAGE_NAME |
+  | `ci/test_python.sh` | PYTHON_CHANNEL 改用 rapids-package-name --stable --cuda |
+  | `ci/test_wheel_cugraph-pyg.sh` | PYLIBWHOLEGRAPH_WHEELHOUSE 改用 rapids-package-name stable wheel |
+  | `ci/test_wheel_pylibwholegraph.sh` | 同上 |
+  | `conda/recipes/pylibwholegraph/recipe.yaml` | version_independent: true；build string 加 abi3；python-abi3 依赖；tests 节 |
+  | `python/pylibwholegraph/pylibwholegraph/binding/wholememory_binding.pyx` | PyUnicode_AsUTF8 → AsUTF8String+AsString；strdup filelist；strdup free loop |
+
+- **CI/merge → SKIP**（13 个上游文件）:
+  - `.github/workflows/build.yaml` — RAPIDS GHA CI 矩阵，Walpurgis 无 GHA 体系
+  - `.github/workflows/pr.yaml` — RAPIDS GHA PR 工作流，Walpurgis 无 GHA 体系
+  - `build.sh` — RAPIDS conda 本地 build 入口，Walpurgis 无 conda build
+  - `ci/build_python.sh` — RAPIDS rattler-build conda，Walpurgis 无 conda build 体系
+  - `ci/build_python_noarch.sh` — RAPIDS conda noarch pipeline，Walpurgis 无对应
+  - `ci/build_wheel.sh` — RAPIDS wheel build helper，Walpurgis 无 RAPIDS wheel 体系
+  - `ci/build_wheel_cugraph-pyg.sh` — RAPIDS wheel 入口，无 Walpurgis 对应
+  - `ci/build_wheel_libwholegraph.sh` — RAPIDS wheel 入口，无 Walpurgis 对应
+  - `ci/build_wheel_pylibwholegraph.sh` — RAPIDS wheel + stable ABI 逻辑，无 Walpurgis 对应
+  - `ci/test_python.sh` — RAPIDS conda 测试脚本，Walpurgis 无 conda 测试体系
+  - `ci/test_wheel_cugraph-pyg.sh` — RAPIDS wheel 测试，无 Walpurgis 对应
+  - `ci/test_wheel_pylibwholegraph.sh` — RAPIDS wheel 测试，无 Walpurgis 对应
+  - `conda/recipes/pylibwholegraph/recipe.yaml` — RAPIDS conda recipe，Walpurgis 用 pyproject.toml
+
+- **迁移位置**: `src/walpurgis/core/wholememory/limited_api_compat.py` — 新建
+
+- **鲁迅拿法改写（≥20%）**:
+  1. **`Py_ABI` 枚举**: 显式区分 `LEGACY_UTF8`（`PyUnicode_AsUTF8`，非 stable ABI）与 `STABLE_UTF8STRING`（PEP 623 Limited API 安全路径），附 `is_stable_abi()` / `cython_api_name()` / `ownership_note()` 方法——上游无此枚举
+  2. **`StringToCStr` dataclass**: 封装单个 `str→bytes` 的所有权语义，`acquire()` 对应 `PyUnicode_AsUTF8String`，`as_c_string()` 对应 `PyBytes_AsString`，`is_acquired` 属性可测——上游是裸 Cython 局部变量
+  3. **`FilelistCStrArray` dataclass**: 对应 `filelist char**` 的 malloc/strdup/free 全生命周期，实现 `__enter__/__exit__` context manager 协议，保证异常路径也释放——上游用 try/finally，无 CM 协议
+  4. **`OptimizerStateKey` dataclass**: 封装 `get_optimizer_state` 的 `state_name` bytes 转换，持久化 `PyUnicode_AsUTF8String` 产物，`c_key()` 返回 bytes——上游是行内一次性 local
+  5. **`validate_file_store_arg()` 独立函数**: 对应 `store_wholememory_handle_to_file` 的 `file_name` 参数转换，带 TypeError/ValueError 前置校验——上游为行内 local
+  6. **`LimitedApiPolicy` dataclass**: 集中记录三个 call site 的 ABI 路径选择，`validate_all()` 确保全部为 stable ABI，`describe()` 输出可读摘要——上游无策略层
+  7. **`WALPURGIS_POLICY` 模块级单例**: 显式声明迁移后策略状态——上游无
+  8. 全链路 `WALPURGIS_DEBUG=1` 断点 print（7 处）
+
+- **自测结果**: 12 项全部 [PASS]
+
+---
+
 
 ## migrate aa3373a: feat(noarch): build cugraph-pyg as a conda `noarch` package (#405)
 
