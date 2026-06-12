@@ -2,11 +2,20 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # migrate 03292cf: Migrate cugraph gnn packages to cugraph-pyg
+# migrate 47e64e8: [BUG] Fix optional dependencies — cudf/torch 改为 import_optional
 # Walpurgis 迁移: 分布式邻居采样器
 #
 # 「从来如此，便对么？」——鲁迅《狂人日记》
 # 原版把采样逻辑、资源管理、call_group 切分全搅在一起，
 # 本版把它们分开：BaseDistributedSampler 管状态，DistributedNeighborSampler 管算法。
+#
+# 47e64e8 改写要点（保持上游 API 完全兼容）：
+#   - `import cudf` 顶层硬 import 删除，改为 `cudf = import_optional("cudf")`
+#   - `torch = MissingModule("torch")` 改为 `torch = import_optional("torch")`
+#   - 删除 get_start_batch_offset / __sample_from_nodes_func /
+#     __get_call_groups / sample_from_nodes / __sample_from_edges_func
+#     内部冗余的 `torch = import_optional("torch")`（5 处）
+#   - TensorType 中 cudf.Series → "cudf.Series"（字符串前向引用，避免运行时绑定）
 #
 # 20% 改写要点（保持上游 API 完全兼容）：
 #   1. _SamplerContext dataclass — 封装 handle / graph / seeds_per_call，
@@ -34,17 +43,18 @@ from typing import Union, List, Dict, Tuple, Iterator, Optional
 import pylibcugraph
 import numpy as np
 import cupy
-import cudf
-
-from cugraph.utilities.utils import import_optional, MissingModule
+from cugraph.utilities.utils import import_optional
 from cugraph.gnn.comms import cugraph_comms_get_raft_handle
 
 from walpurgis.sampler.sampler_utils import verify_metadata
 from walpurgis.sampler.io import BufferedSampleReader
 
-torch = MissingModule("torch")
+# 47e64e8: torch/cudf 均为可选依赖，用 import_optional 代替顶层 import
+# 避免环境缺少 torch/cudf 时模块级 ImportError
+torch = import_optional("torch")
+cudf = import_optional("cudf")
 
-TensorType = Union["torch.Tensor", cupy.ndarray, cudf.Series]
+TensorType = Union["torch.Tensor", cupy.ndarray, "cudf.Series"]
 
 _DEBUG = _os.environ.get("WALPURGIS_DEBUG", "0").strip() == "1"
 
@@ -215,7 +225,7 @@ class BaseDistributedSampler:
         Tuple[int, bool]
             起始 batch offset（int）及各 rank 输入量是否相等（bool）。
         """
-        torch = import_optional("torch")
+
         input_size_is_equal = True
 
         if self.is_multi_gpu:
@@ -280,7 +290,7 @@ class BaseDistributedSampler:
         assume_equal_input_size: bool,
         metadata: Optional[Dict[str, Union[str, Tuple[str, str, str]]]] = None,
     ) -> Union[None, Iterator[Tuple[Dict[str, "torch.Tensor"], int, int]]]:
-        torch = import_optional("torch")
+
         current_seeds, current_ix = current_seeds_and_ix
 
         _dbg(
@@ -357,7 +367,6 @@ class BaseDistributedSampler:
         调用方再用 len(groups)==2 判断，容易出错。
         本版将 label 路径内联处理，返回统一的 3 元组（label 为 None 时返回空张量列表）。
         """
-        torch = import_optional("torch")
 
         seeds_call_groups = torch.split(seeds, seeds_per_call, dim=-1)
         index_call_groups = torch.split(input_id, seeds_per_call, dim=-1)
@@ -437,7 +446,6 @@ class BaseDistributedSampler:
             仅异构图使用；同构图传 None。
             migrate 2ba9979: 调用前通过 verify_metadata 校验，再透传至 sample_batches。
         """
-        torch = import_optional("torch")
 
         verify_metadata(metadata)
 
@@ -513,7 +521,7 @@ class BaseDistributedSampler:
         assume_equal_input_size: bool,
         metadata: Optional[Dict[str, Union[str, Tuple[str, str, str]]]] = None,
     ) -> Union[None, Iterator[Tuple[Dict[str, "torch.Tensor"], int, int]]]:
-        torch = import_optional("torch")
+
         current_seeds, current_ix, current_label = current_seeds_and_ix
         num_seed_edges = current_ix.numel()
 
