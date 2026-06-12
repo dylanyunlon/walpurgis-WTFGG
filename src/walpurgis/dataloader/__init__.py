@@ -40,3 +40,15 @@ from .loader_deprecation import (
     CuGraphNeighborLoader,
     loader_deprecation_registry,
 )
+# f57ed88 迁移新增: LinkLoader (边批次采样基类) 和 LinkNeighborLoader (GraphSAGE 风格边采样)
+from .link_loader import (
+    LinkLoader,
+    NegSamplingSpec,
+    EdgeSamplerSpec,
+)
+from .link_neighbor_loader import (
+    LinkNeighborLoader,
+    CompressionMode,
+    SubgraphGuard,
+    SamplerBuildSpec,
+)
