@@ -384,6 +384,310 @@ _CUDA_VERSIONS_AFTER_E16DDF5: FrozenSet[CudaVersionSpec] = frozenset({
 
 
 # ─────────────────────────────────────────────────────────────
+# 2d2bc51 迁移: Build and test with CUDA 13.3.0
+#
+# 上游 commit: 2d2bc51a0d1336ee16343994cd98606116b39c1f
+# Author: Bradley Dice <bdice@bradleydice.com>
+# Date:   2026-06-11
+# PR:     cugraph#5553
+#
+# 上游变更摘要（9 files changed, 61 insertions, 52 deletions）：
+#   .devcontainer/cuda13.2-conda/devcontainer.json  → cuda13.3-conda/（rename+patch）
+#   .devcontainer/cuda13.2-pip/devcontainer.json    → cuda13.3-pip/  （rename+patch）
+#   .github/workflows/build.yaml                    → @cuda-13.2.0 → @cuda-13.3.0（8处）
+#   .github/workflows/pr.yaml                       → @cuda-13.2.0 → @cuda-13.3.0（15处）
+#   .github/workflows/test.yaml                     → @cuda-13.2.0 → @cuda-13.3.0（4处）
+#   .github/workflows/trigger-breaking-change-alert.yaml（1处）
+#   conda/environments/all_cuda-132_arch-aarch64.yaml → cuda-133（rename+patch）
+#   conda/environments/all_cuda-132_arch-x86_64.yaml  → cuda-133（rename+patch）
+#   dependencies.yaml                               → cuda: ["12.9","13.2"] → ["12.9","13.3"]
+#                                                     + 新增 cuda-version=13.3 / cuda-toolkit==13.3.* 条目
+#
+# CI/merge/devcontainer 文件 → SKIP（Walpurgis 无 GH Actions / conda 体系）：
+#   .devcontainer/**                SKIP: devcontainer 配置，Walpurgis 不使用
+#   .github/workflows/**            SKIP: 所有 GH Actions workflow 文件
+#   conda/environments/**           SKIP: conda 环境矩阵，Walpurgis 无 conda 体系
+#   dependencies.yaml               SKIP: RAPIDS 构建依赖管理，Walpurgis 用 pyproject.toml
+#
+# 鲁迅拿法改写（≥20%）：
+#   上游仅做文件改名+字符串替换（13.2→13.3），无任何 Python 层变更；
+#   dependencies.yaml 新增两条 cuda-version=13.3 / cuda-toolkit==13.3.* 矩阵规则（共10行）。
+#   Walpurgis 迁移：新增 Cuda2d2bc51UpgradeAudit 数据类，将 13.2→13.3 升级
+#   精确建模为可审计记录，并扩展 _CUDA_VERSIONS_AFTER_2D2BC51 版本集合。
+#   重点差异（上游无对应 Python 概念）：
+#   1. MatrixDepsRule dataclass：将 dependencies.yaml 新增的 cuda-version/cuda-toolkit
+#      规则对象化，支持 format_conda_pin() / is_compatible_with(spec) 查询
+#   2. Cuda2d2bc51UpgradeAudit.new_dep_rules：枚举 2d2bc51 新增的全部矩阵规则
+#   3. assert_no_old_version_refs(path)：扫描 cuda13.2/cuda-132 旧版残留
+#   4. describe()：生成 MIGRATION_LOG.md 对齐摘要
+# ─────────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class MatrixDepsRule:
+    """
+    封装 dependencies.yaml 中一条 CUDA 版本矩阵规则。
+
+    上游做法：在 YAML 中直接写 ``cuda-version=13.3`` 和
+    ``cuda-toolkit==13.3.*`` 字符串，无 Python 层结构化表示。
+
+    改写：不可变值对象，提供 ``format_conda_pin()``（生成 conda 约束字符串）
+    和 ``is_compatible_with(spec)``（判断给定版本是否匹配该规则）两个接口，
+    使 2d2bc51 新增的依赖决策可程序化查询。
+
+    Attributes:
+        package_name: conda 包名（如 ``cuda-version``、``cuda-toolkit``）。
+        version_constraint: 版本约束字符串（如 ``=13.3``、``==13.3.*``）。
+        rule_type: 规则类型（``"exact"`` / ``"prefix"``）。
+        introduced_by: 引入该规则的上游 commit hash。
+        cuda_major: 约束针对的 CUDA major 版本。
+        cuda_minor: 约束针对的 CUDA minor 版本。
+    """
+
+    package_name: str
+    version_constraint: str
+    rule_type: str          # "exact" | "prefix"
+    introduced_by: str      # upstream commit hash
+    cuda_major: int
+    cuda_minor: int
+
+    def __post_init__(self) -> None:
+        _dbg(
+            "MatrixDepsRule.__init__",
+            f"pkg={self.package_name!r}  constraint={self.version_constraint!r}  "
+            f"type={self.rule_type!r}  cuda={self.cuda_major}.{self.cuda_minor}",
+        )
+        allowed_types = {"exact", "prefix"}
+        if self.rule_type not in allowed_types:
+            raise ValueError(
+                f"[MatrixDepsRule] rule_type 必须是 {allowed_types}，"
+                f"收到: {self.rule_type!r}"
+            )
+
+    def format_conda_pin(self) -> str:
+        """生成 conda 约束字符串（如 ``cuda-version=13.3``）。
+
+        断点1: MatrixDepsRule.format_conda_pin 调用路径。
+        """
+        result = f"{self.package_name}{self.version_constraint}"
+        _dbg("MatrixDepsRule.format_conda_pin", f"→ {result!r}")
+        return result
+
+    def is_compatible_with(self, spec: "CudaVersionSpec") -> bool:
+        """判断给定 CudaVersionSpec 是否匹配该规则的 CUDA 版本。
+
+        断点2: 兼容性检查入参 + 判决结果。
+        """
+        result = (
+            spec.major == self.cuda_major
+            and spec.minor == self.cuda_minor
+        )
+        _dbg(
+            "MatrixDepsRule.is_compatible_with",
+            f"spec={spec}  rule_cuda={self.cuda_major}.{self.cuda_minor}  → {result}",
+        )
+        return result
+
+
+@dataclass(frozen=True)
+class Cuda2d2bc51UpgradeAudit:
+    """
+    审计 2d2bc51 引入的 CUDA 13.2 → 13.3 升级的全部上游变更。
+
+    上游做法：文件改名（cuda13.2-* → cuda13.3-*）+ 字符串替换，
+    外加 dependencies.yaml 新增两条 cuda-version=13.3/cuda-toolkit==13.3.* 规则；
+    全部改动散落在 9 个文件中，无 Python 层记录，无可查询接口。
+
+    改写：
+    1. BUMP 精确描述升级事件（13.2 → 13.3, PR#5553）
+    2. new_dep_rules 枚举 2d2bc51 在 dependencies.yaml 新增的矩阵规则
+    3. skipped_artifacts 枚举所有被跳过的 CI/devcontainer 制品
+    4. assert_no_old_version_refs(path) 扫描 cuda13.2/cuda-132 旧版残留
+    5. describe() 生成 MIGRATION_LOG.md 对齐摘要
+    """
+
+    #: 2d2bc51 升级事件描述对象（13.2 → 13.3）
+    BUMP: CudaVersionBump = field(
+        default_factory=lambda: CudaVersionBump(
+            commit="2d2bc51",
+            pr_number=5553,
+            author="Bradley Dice",
+            from_version=CudaVersionSpec(13, 2),
+            to_version=CudaVersionSpec(13, 3),
+            files_changed=9,
+            insertions=61,
+            deletions=52,
+        )
+    )
+
+    # ── 被跳过的上游制品（全部 SKIP，Walpurgis 无对应体系） ──────────────────
+
+    #: devcontainer 配置（rename: cuda13.2-* → cuda13.3-*）
+    SKIPPED_DEVCONTAINERS: Tuple[str, ...] = field(
+        default_factory=lambda: (
+            ".devcontainer/cuda13.2-conda/devcontainer.json",
+            ".devcontainer/cuda13.2-pip/devcontainer.json",
+        )
+    )
+
+    #: GH Actions workflow 文件（@cuda-13.2.0 → @cuda-13.3.0 替换，共28处）
+    SKIPPED_WORKFLOWS: Tuple[str, ...] = field(
+        default_factory=lambda: (
+            ".github/workflows/build.yaml",
+            ".github/workflows/pr.yaml",
+            ".github/workflows/test.yaml",
+            ".github/workflows/trigger-breaking-change-alert.yaml",
+        )
+    )
+
+    #: conda 环境矩阵文件（rename: cuda-132 → cuda-133）
+    SKIPPED_CONDA_ENVS: Tuple[str, ...] = field(
+        default_factory=lambda: (
+            "conda/environments/all_cuda-132_arch-aarch64.yaml",
+            "conda/environments/all_cuda-132_arch-x86_64.yaml",
+        )
+    )
+
+    #: RAPIDS 构建依赖文件（cuda: ["12.9","13.2"] → ["12.9","13.3"]）
+    SKIPPED_DEPS: Tuple[str, ...] = field(
+        default_factory=lambda: ("dependencies.yaml",)
+    )
+
+    @property
+    def new_dep_rules(self) -> Tuple["MatrixDepsRule", ...]:
+        """2d2bc51 在 dependencies.yaml 中新增的 CUDA 13.3 矩阵规则（2条）。
+
+        上游在 conda 构建矩阵中新增：
+          - cuda-version=13.3  （精确版本约束）
+          - cuda-toolkit==13.3.*  （前缀版本约束，通过 conda wheels 安装）
+
+        断点3: new_dep_rules 枚举。
+        """
+        rules = (
+            MatrixDepsRule(
+                package_name="cuda-version",
+                version_constraint="=13.3",
+                rule_type="exact",
+                introduced_by="2d2bc51",
+                cuda_major=13,
+                cuda_minor=3,
+            ),
+            MatrixDepsRule(
+                package_name="cuda-toolkit",
+                version_constraint="==13.3.*",
+                rule_type="prefix",
+                introduced_by="2d2bc51",
+                cuda_major=13,
+                cuda_minor=3,
+            ),
+        )
+        _dbg("Cuda2d2bc51UpgradeAudit.new_dep_rules", f"count={len(rules)}")
+        return rules
+
+    @property
+    def skipped_artifacts(self) -> Tuple[str, ...]:
+        """所有被跳过的上游制品路径（9个）。
+
+        断点4: skipped_artifacts 枚举。
+        """
+        result = (
+            self.SKIPPED_DEVCONTAINERS
+            + self.SKIPPED_WORKFLOWS
+            + self.SKIPPED_CONDA_ENVS
+            + self.SKIPPED_DEPS
+        )
+        _dbg("Cuda2d2bc51UpgradeAudit.skipped_artifacts", f"count={len(result)}")
+        return result
+
+    @property
+    def affected_types(self) -> FrozenSet[str]:
+        """2d2bc51 涉及的制品类型集合。"""
+        return frozenset({"devcontainer", "workflow", "conda_env", "dep_matrix"})
+
+    def dump(self) -> None:
+        """打印审计摘要（WALPURGIS_DEBUG=1 或手动调用）。
+
+        断点5: dump 入口。
+        """
+        _dbg("Cuda2d2bc51UpgradeAudit.dump", "打印摘要")
+        print(self.BUMP.describe())
+        print(f"  新增 dep 规则: {len(self.new_dep_rules)} 条")
+        for rule in self.new_dep_rules:
+            print(f"    NEW: {rule.format_conda_pin()}")
+        print(f"  SKIP总计: {len(self.skipped_artifacts)} 个制品")
+        for art in self.skipped_artifacts:
+            print(f"    SKIP: {art}")
+
+    def describe(self) -> str:
+        """生成 MIGRATION_LOG.md 对齐摘要。
+
+        断点6: describe 输出。
+        """
+        lines = [
+            f"migrate 2d2bc51: Build and test with CUDA 13.3.0",
+            f"  BUMP: {self.BUMP.describe()}",
+            f"  新增 dep 规则: {[r.format_conda_pin() for r in self.new_dep_rules]}",
+            f"  SKIP: {len(self.skipped_artifacts)} 个 CI/devcontainer 制品",
+        ]
+        result = "\n".join(lines)
+        _dbg("Cuda2d2bc51UpgradeAudit.describe", f"length={len(result)}")
+        return result
+
+    def assert_no_old_version_refs(self, search_path: str) -> list:
+        """扫描 ``search_path`` 下是否残留 ``cuda13.2`` / ``cuda-132`` 旧版引用。
+
+        断点7: 扫描路径 + 命中数。
+
+        Returns:
+            命中文件路径列表（空表示无残留，理想状态）。
+        """
+        import re as _re
+        import pathlib as _pathlib
+
+        patterns = [
+            _re.compile(r"cuda[-_.]?13\.2", _re.IGNORECASE),
+            _re.compile(r"cuda[-_]132", _re.IGNORECASE),
+            _re.compile(r"shared-workflows[^\s\"']*@cuda-13\.2", _re.IGNORECASE),
+        ]
+        hits: list = []
+        base = _pathlib.Path(search_path)
+        if base.is_file():
+            files = [base]
+        elif base.is_dir():
+            files = list(base.rglob("*"))
+        else:
+            return hits
+
+        for fpath in files:
+            if not fpath.is_file():
+                continue
+            try:
+                text = fpath.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            for pat in patterns:
+                if pat.search(text):
+                    hits.append(str(fpath))
+                    break
+
+        _dbg(
+            "Cuda2d2bc51UpgradeAudit.assert_no_old_version_refs",
+            f"search_path={search_path!r}  hits={len(hits)}",
+        )
+        return hits
+
+
+#: 2d2bc51 升级审计记录（模块级单例）
+CUDA_2D2BC51_UPGRADE_AUDIT: Cuda2d2bc51UpgradeAudit = Cuda2d2bc51UpgradeAudit()
+
+#: 2d2bc51 后 cugraph-gnn 支持的 CUDA 版本集合（13.2 → 13.3，含 12.9）
+_CUDA_VERSIONS_AFTER_2D2BC51: FrozenSet[CudaVersionSpec] = frozenset({
+    CudaVersionSpec(12, 9),
+    CudaVersionSpec(13, 3),
+})
+
+
+# ─────────────────────────────────────────────────────────────
 # CudaCompatPolicy — 运行时 CUDA 兼容性策略
 #
 # 上游无 Python 层 CUDA 版本校验，由 conda 环境构建期隐式过滤。
@@ -1083,6 +1387,67 @@ if __name__ == "__main__":
     assert get_pytorch_policy(CudaVersionSpec(12, 9)) is PYTORCH_CUDA12_POLICY
     assert get_pytorch_policy(CudaVersionSpec(13, 0)) is PYTORCH_CUDA13_POLICY
     print("[PASS] get_pytorch_policy 路由正确")
+
+    # 8. 2d2bc51 MatrixDepsRule 自测
+    rule_exact = MatrixDepsRule(
+        package_name="cuda-version",
+        version_constraint="=13.3",
+        rule_type="exact",
+        introduced_by="2d2bc51",
+        cuda_major=13,
+        cuda_minor=3,
+    )
+    assert rule_exact.format_conda_pin() == "cuda-version=13.3", rule_exact.format_conda_pin()
+    assert rule_exact.is_compatible_with(CudaVersionSpec(13, 3)), "13.3 应匹配"
+    assert not rule_exact.is_compatible_with(CudaVersionSpec(13, 2)), "13.2 不应匹配"
+    assert not rule_exact.is_compatible_with(CudaVersionSpec(12, 9)), "12.9 不应匹配"
+    print(f"[PASS] MatrixDepsRule exact: pin={rule_exact.format_conda_pin()!r}")
+
+    rule_prefix = MatrixDepsRule(
+        package_name="cuda-toolkit",
+        version_constraint="==13.3.*",
+        rule_type="prefix",
+        introduced_by="2d2bc51",
+        cuda_major=13,
+        cuda_minor=3,
+    )
+    assert rule_prefix.format_conda_pin() == "cuda-toolkit==13.3.*", rule_prefix.format_conda_pin()
+    assert rule_prefix.is_compatible_with(CudaVersionSpec(13, 3)), "13.3 toolkit 应匹配"
+    print(f"[PASS] MatrixDepsRule prefix: pin={rule_prefix.format_conda_pin()!r}")
+
+    try:
+        MatrixDepsRule("pkg", "=1.0", "invalid_type", "x", 13, 3)
+        assert False, "应抛 ValueError"
+    except ValueError:
+        print("[PASS] MatrixDepsRule rule_type 守卫正常")
+
+    # 9. 2d2bc51 Cuda2d2bc51UpgradeAudit 自测
+    audit_2d2 = CUDA_2D2BC51_UPGRADE_AUDIT
+    assert audit_2d2.BUMP.commit == "2d2bc51", audit_2d2.BUMP.commit
+    assert audit_2d2.BUMP.from_version == CudaVersionSpec(13, 2), "from 应为 13.2"
+    assert audit_2d2.BUMP.to_version == CudaVersionSpec(13, 3), "to 应为 13.3"
+    assert audit_2d2.BUMP.is_minor_bump, "13.2->13.3 应为 minor bump"
+    assert audit_2d2.BUMP.delta_minor == 1, "delta_minor 应为 1"
+    print(f"[PASS] Cuda2d2bc51UpgradeAudit.BUMP: {audit_2d2.BUMP.describe()}")
+
+    assert len(audit_2d2.new_dep_rules) == 2, "应有 2 条新增规则"
+    pins = [r.format_conda_pin() for r in audit_2d2.new_dep_rules]
+    assert "cuda-version=13.3" in pins, f"缺少 cuda-version=13.3，有: {pins}"
+    assert "cuda-toolkit==13.3.*" in pins, f"缺少 cuda-toolkit==13.3.*，有: {pins}"
+    print(f"[PASS] new_dep_rules: {pins}")
+
+    assert len(audit_2d2.skipped_artifacts) == 9, \
+        f"应跳过 9 个制品，实际: {len(audit_2d2.skipped_artifacts)}"
+    assert "dep_matrix" in audit_2d2.affected_types
+    print(f"[PASS] skipped_artifacts count={len(audit_2d2.skipped_artifacts)}")
+
+    audit_2d2.dump()
+    print(f"[PASS] Cuda2d2bc51UpgradeAudit.dump() 正常")
+
+    assert CudaVersionSpec(13, 3) in _CUDA_VERSIONS_AFTER_2D2BC51, "13.3 应在集合中"
+    assert CudaVersionSpec(12, 9) in _CUDA_VERSIONS_AFTER_2D2BC51, "12.9 应在集合中"
+    assert CudaVersionSpec(13, 2) not in _CUDA_VERSIONS_AFTER_2D2BC51, "13.2 已被 13.3 取代"
+    print(f"[PASS] _CUDA_VERSIONS_AFTER_2D2BC51={_CUDA_VERSIONS_AFTER_2D2BC51}")
 
     print("=== 所有自测通过 ===")
     sys.exit(0)
