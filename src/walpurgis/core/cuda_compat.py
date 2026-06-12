@@ -502,6 +502,249 @@ def _detect_runtime_cuda_version() -> Optional[CudaVersionSpec]:
 # 模块级公开接口
 # ─────────────────────────────────────────────────────────────
 
+# ─────────────────────────────────────────────────────────────
+# f83f6ae 迁移: Switch to release channel for PyTorch + CUDA 13
+# 上游 commit: f83f6aea7ecc1f2d99fd66969cc07693f087e797
+# author: Alex Barghi <alexbarghi-nv>, 2025-11-25, PR #355
+# co-author: Gil Forsyth <gforsyth@nvidia.com>
+#
+# 上游变更摘要（3 files changed, 5 insertions, 9 deletions）:
+#   ci/test_wheel_cugraph-pyg.sh  → SKIP（Walpurgis 无 CI wheel 体系）
+#   dependencies.yaml             → SKIP（RAPIDS conda 依赖矩阵，Walpurgis 无 conda 体系）
+#   python/cugraph-pyg/pyproject.toml → SKIP（包元数据，Walpurgis 用自有 pyproject.toml）
+#
+# 核心语义（鲁迅拿法改写，≥20%）:
+#   上游三处均只改了字符串字面量：
+#     "nightly/cu130" → "cu130"（两处）
+#     "torch>=2.9.0.dev0" → "torch>=2.9.0"（两处，外加 dev0 允许 nightly 的注释删除）
+#   Walpurgis 将此决策结构化为 PyTorchCuda13ChannelPolicy 数据类：
+#   1. 显式区分 NIGHTLY / RELEASE 两个渠道枚举（上游靠 URL 字符串区分，无结构）
+#   2. min_torch_version 字段类型化为 tuple 而非裸字符串，可做版本比较和断言
+#   3. resolve_index_url() 方法统一渠道→URL 转换，替代上游 if/else 硬编码
+#   4. validate_torch_version() 做运行时 torch 版本检查（上游无此防御）
+#   5. 全链路 WALPURGIS_DEBUG=1 断点 print，覆盖渠道决策、URL 解析、版本检查
+#
+# 鲁迅语：「时间就是性命，无端的空耗别人的时间，其实是无异于谋财害命的。」
+# 上游 TODO 注释的删除，正是如此——nightly 依赖是对下游用户时间的无端空耗，
+# release channel 归正了这一浪费，Walpurgis 将其铭刻为可审计的策略对象。
+# ─────────────────────────────────────────────────────────────
+
+from enum import Enum as _Enum
+
+
+class _PyTorchChannel(_Enum):
+    """PyTorch 下载渠道枚举。
+
+    上游 f83f6ae 的语义：CUDA 13（cu130）从 NIGHTLY 切换到 RELEASE。
+    """
+    NIGHTLY = "nightly"
+    RELEASE = "release"
+
+
+@dataclass(frozen=True)
+class PyTorchCuda13ChannelPolicy:
+    """CUDA 13 PyTorch 渠道策略。
+
+    封装 f83f6ae 将 CUDA 13 PyTorch 渠道从 nightly 切换到 release 的核心决策。
+
+    上游做法（散落三处字符串字面量）::
+
+        # ci/test_wheel_cugraph-pyg.sh（旧）:
+        PYTORCH_INDEX="https://download.pytorch.org/whl/nightly/cu130"
+        # dependencies.yaml（旧）:
+        - --extra-index-url=https://download.pytorch.org/whl/nightly/cu130
+        - torch>=2.9.0.dev0
+
+        # ci/test_wheel_cugraph-pyg.sh（新，f83f6ae）:
+        PYTORCH_INDEX="https://download.pytorch.org/whl/cu130"
+        # dependencies.yaml（新，f83f6ae）:
+        - --extra-index-url=https://download.pytorch.org/whl/cu130
+        - torch>=2.9.0
+
+    Walpurgis 改写：以数据类封装上述决策，渠道选择和版本约束各有字段，
+    可单元测试，可在运行时输出调试信息。
+
+    Attributes:
+        channel: 当前渠道（f83f6ae 后固定为 RELEASE）。
+        cuda_tag: CUDA 轮子标签，如 ``"cu130"``、``"cu126"``。
+        min_torch_version: torch 最低版本，三元 int tuple。
+          f83f6ae 前：(2, 9, 0) + dev0 flag；f83f6ae 后：(2, 9, 0)。
+        allow_dev: 是否接受 dev/nightly 构建（f83f6ae 前为 True，后为 False）。
+    """
+
+    channel: _PyTorchChannel = _PyTorchChannel.RELEASE
+    cuda_tag: str = "cu130"
+    min_torch_version: Tuple[int, ...] = (2, 9, 0)
+    allow_dev: bool = False  # f83f6ae 删除了 dev0 允许
+
+    # 断点1: 构造时输出策略摘要
+    def __post_init__(self) -> None:
+        _dbg(
+            "PyTorchCuda13ChannelPolicy.__init__",
+            f"channel={self.channel.value!r}  cuda_tag={self.cuda_tag!r}  "
+            f"min_torch={self.min_torch_version}  allow_dev={self.allow_dev}",
+        )
+
+    @property
+    def base_whl_url(self) -> str:
+        """基础 PyTorch wheel 根 URL（不含 index-url 前缀）。
+
+        Examples::
+
+            >>> p = PyTorchCuda13ChannelPolicy()
+            >>> p.base_whl_url
+            'https://download.pytorch.org/whl/cu130'
+        """
+        if self.channel is _PyTorchChannel.NIGHTLY:
+            url = f"https://download.pytorch.org/whl/nightly/{self.cuda_tag}"
+        else:
+            url = f"https://download.pytorch.org/whl/{self.cuda_tag}"
+        # 断点2: 渠道→URL 解析结果
+        _dbg(
+            "PyTorchCuda13ChannelPolicy.base_whl_url",
+            f"channel={self.channel.value!r} → url={url!r}",
+        )
+        return url
+
+    @property
+    def extra_index_url_flag(self) -> str:
+        """生成 pip ``--extra-index-url=<url>`` 字符串。
+
+        对应 dependencies.yaml 中的::
+
+            - --extra-index-url=https://download.pytorch.org/whl/cu130
+        """
+        flag = f"--extra-index-url={self.base_whl_url}"
+        _dbg("PyTorchCuda13ChannelPolicy.extra_index_url_flag", flag)
+        return flag
+
+    @property
+    def torch_requirement(self) -> str:
+        """生成 pip/conda torch 版本要求字符串。
+
+        f83f6ae 前：``torch>=2.9.0.dev0``
+        f83f6ae 后：``torch>=2.9.0``
+
+        Examples::
+
+            >>> p = PyTorchCuda13ChannelPolicy()
+            >>> p.torch_requirement
+            'torch>=2.9.0'
+        """
+        ver_str = ".".join(str(v) for v in self.min_torch_version)
+        if self.allow_dev:
+            req = f"torch>={ver_str}.dev0"
+        else:
+            req = f"torch>={ver_str}"
+        _dbg("PyTorchCuda13ChannelPolicy.torch_requirement", req)
+        return req
+
+    def validate_torch_version(self) -> Optional[Tuple[int, ...]]:
+        """运行时检查已安装 torch 是否满足最低版本要求。
+
+        上游无此防御——切换到 release channel 后若用户环境仍装的是 dev0 版本
+        会产生细微的行为差异（dev0 中含未稳定 API）。此方法提前暴露此问题。
+
+        Returns:
+            (major, minor, patch) tuple，或 None（torch 未安装）。
+
+        断点3 / 断点4: 检测结果输出。
+        """
+        _dbg("PyTorchCuda13ChannelPolicy.validate_torch_version", "开始检测 torch 版本")
+        try:
+            import torch  # type: ignore[import-untyped]
+            raw = torch.__version__  # 例如 "2.9.0" 或 "2.9.0.dev20250101"
+            # 截取数字部分（忽略 .devXXX 后缀）
+            numeric = raw.split(".dev")[0].split("+")[0]
+            parts = tuple(int(x) for x in numeric.split(".")[:3])
+            # 断点3: 已安装版本
+            _dbg(
+                "PyTorchCuda13ChannelPolicy.validate_torch_version",
+                f"已安装 torch={raw!r}  解析为 {parts}",
+            )
+            is_ok = parts >= self.min_torch_version
+            is_dev = "dev" in raw
+            if is_dev and not self.allow_dev:
+                import warnings as _warnings
+                _warnings.warn(
+                    f"[f83f6ae] torch={raw!r} 是 nightly/dev 构建，"
+                    f"f83f6ae 后 CUDA 13 已切换到 release channel（{self.torch_requirement}）。"
+                    "建议升级到 release 版本以获得稳定行为。",
+                    FutureWarning,
+                    stacklevel=2,
+                )
+            if not is_ok:
+                msg = (
+                    f"[f83f6ae] torch={raw!r} < 要求 {self.torch_requirement}。"
+                    "请通过 release channel 升级：\n"
+                    f"  pip install '{self.torch_requirement}' {self.extra_index_url_flag}"
+                )
+                # 断点4: 版本不满足
+                _dbg("PyTorchCuda13ChannelPolicy.validate_torch_version", f"版本检查失败: {msg}")
+                raise RuntimeError(msg)
+            _dbg("PyTorchCuda13ChannelPolicy.validate_torch_version", f"版本检查通过: {parts}")
+            return parts
+        except ImportError:
+            _dbg("PyTorchCuda13ChannelPolicy.validate_torch_version", "torch 未安装，跳过检查")
+            return None
+
+
+# ─── CUDA 版本 → PyTorch 渠道策略映射 ───────────────────────
+# 对应 ci/test_wheel_cugraph-pyg.sh 的 if/else 分支逻辑：
+#   CUDA 12 → cu126（始终使用 release）
+#   CUDA 13 → cu130（f83f6ae 前 nightly，f83f6ae 后 release）
+
+#: CUDA 12.x PyTorch 渠道策略（参考值，cu126 始终为 release）
+PYTORCH_CUDA12_POLICY: PyTorchCuda13ChannelPolicy = PyTorchCuda13ChannelPolicy(
+    channel=_PyTorchChannel.RELEASE,
+    cuda_tag="cu126",
+    min_torch_version=(2, 6, 0),
+    allow_dev=False,
+)
+
+#: CUDA 13.x PyTorch 渠道策略（f83f6ae 后：release channel，torch>=2.9.0）
+#: 与上游 pyproject.toml test dep 对齐：torch>=2.9.0
+PYTORCH_CUDA13_POLICY: PyTorchCuda13ChannelPolicy = PyTorchCuda13ChannelPolicy(
+    channel=_PyTorchChannel.RELEASE,   # f83f6ae: nightly → release
+    cuda_tag="cu130",
+    min_torch_version=(2, 9, 0),       # f83f6ae: >=2.9.0.dev0 → >=2.9.0
+    allow_dev=False,                   # f83f6ae: 删除 dev0 注释，明确不允许 nightly
+)
+
+
+def get_pytorch_policy(cuda_version: CudaVersionSpec) -> PyTorchCuda13ChannelPolicy:
+    """根据 CUDA 版本返回对应的 PyTorch 渠道策略。
+
+    对应 ci/test_wheel_cugraph-pyg.sh 中的 if/else 分支逻辑（f83f6ae 后）::
+
+        if [[ "${CUDA_MAJOR}" == "12" ]]; then
+            PYTORCH_INDEX="https://download.pytorch.org/whl/cu126"
+        else
+            PYTORCH_INDEX="https://download.pytorch.org/whl/cu130"
+        fi
+
+    断点5: 输出 CUDA 版本 → 策略选择路径。
+
+    Args:
+        cuda_version: 当前运行时 CUDA 版本。
+
+    Returns:
+        对应的 :class:`PyTorchCuda13ChannelPolicy` 单例。
+    """
+    if cuda_version.major == 12:
+        policy = PYTORCH_CUDA12_POLICY
+    else:
+        # CUDA 13+（f83f6ae 切换为 release）
+        policy = PYTORCH_CUDA13_POLICY
+    # 断点5
+    _dbg(
+        "get_pytorch_policy",
+        f"cuda={cuda_version} → channel={policy.channel.value!r}  "
+        f"index_url={policy.base_whl_url!r}  req={policy.torch_requirement!r}",
+    )
+    return policy
+
+
 #: 默认 CUDA 兼容性策略（与 d491fae 后的上游对齐）
 DEFAULT_CUDA_POLICY: CudaCompatPolicy = CudaCompatPolicy(
     min_version=WALPURGIS_MIN_CUDA_VERSION,
@@ -578,6 +821,26 @@ if __name__ == "__main__":
     env = WalpurgisCudaEnv()
     env.dump()
     print(f"[PASS] WalpurgisCudaEnv 初始化: {env}")
+
+    # 7. f83f6ae PyTorchCuda13ChannelPolicy 自测
+    p13 = PyTorchCuda13ChannelPolicy()
+    assert p13.channel is _PyTorchChannel.RELEASE, "f83f6ae 后应为 RELEASE"
+    assert p13.cuda_tag == "cu130", "CUDA 13 tag 应为 cu130"
+    assert p13.min_torch_version == (2, 9, 0), "f83f6ae 后 min torch = 2.9.0"
+    assert not p13.allow_dev, "f83f6ae 后不允许 dev0"
+    assert "nightly" not in p13.base_whl_url, f"release URL 不含 nightly: {p13.base_whl_url}"
+    assert p13.base_whl_url == "https://download.pytorch.org/whl/cu130", p13.base_whl_url
+    assert p13.torch_requirement == "torch>=2.9.0", p13.torch_requirement
+    print(f"[PASS] PyTorchCuda13ChannelPolicy release: url={p13.base_whl_url!r}  req={p13.torch_requirement!r}")
+
+    p13_nightly = PyTorchCuda13ChannelPolicy(channel=_PyTorchChannel.NIGHTLY, allow_dev=True)
+    assert "nightly/cu130" in p13_nightly.base_whl_url, p13_nightly.base_whl_url
+    assert "dev0" in p13_nightly.torch_requirement, p13_nightly.torch_requirement
+    print(f"[PASS] PyTorchCuda13ChannelPolicy nightly (pre-f83f6ae): url={p13_nightly.base_whl_url!r}")
+
+    assert get_pytorch_policy(CudaVersionSpec(12, 9)) is PYTORCH_CUDA12_POLICY
+    assert get_pytorch_policy(CudaVersionSpec(13, 0)) is PYTORCH_CUDA13_POLICY
+    print("[PASS] get_pytorch_policy 路由正确")
 
     print("=== 所有自测通过 ===")
     sys.exit(0)
