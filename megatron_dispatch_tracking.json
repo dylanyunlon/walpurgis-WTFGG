@@ -26,5 +26,12 @@
     "hash": "abe36e2e5",
     "subj": "large update including model parallelism and gpt2",
     "status": "firing"
+  },
+  "megatron_00002": {
+    "conv_id": "inline",
+    "hash": "2ef236753",
+    "subject": "Support latest PyTorch RNG state API. (#8)",
+    "dispatched_at": "2026-06-13 02:30:00",
+    "status": "completed"
   }
 }
