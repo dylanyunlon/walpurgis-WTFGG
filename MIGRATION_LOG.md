@@ -21,6 +21,67 @@
   SentencePiece 版本补全了与 WordPiece 路径的语义差异注释。
 
 - **`_dbg()` 断点**：每个脚本均含 `_dbg()` 函数，在 `CONFIG_LOADED`、`PREFLIGHT_DONE`、`TRAINING_LAUNCHED` 三个节点输出参数快照，受 `WALPURGIS_DBG` 环境变量控制（默认开启，生产设 0 关闭）。
+## migrate c0c1f9186: Add moe loss normalization for RL SFT (#3956)
+
+- **Upstream commit**: c0c1f9186 (Megatron-LM, 2025, #3956)
+- **Commit message**: `Add moe loss normalization for RL SFT (#3956)`
+- **Upstream diff 摘要** (5 files changed, 43 insertions(+), 6 deletions(-))：
+
+  | 文件 | 变更内容 |
+  |------|----------|
+  | `megatron/core/model_parallel_config.py` | 新增 `moe_grad_scale_func: Optional[Callable] = None` 字段，MoE aux loss 专用缩放钩子 |
+  | `megatron/core/pipeline_parallel/schedules.py` | `forward_step_calc_loss` 中 loss_scale 计算由二路改为三路优先级：moe_grad_scale_func() > grad_scale_func(ones) > ones |
+  | `megatron/training/arguments.py` | `_add_network_size_args` CLI 黑名单新增 `"moe_grad_scale_func"` |
+  | `tests/unit_tests/models/test_hybrid_moe_model.py` | GOLDEN_CONFIG 新增 `"moe_grad_scale_func": None` |
+  | `tests/unit_tests/test_argument_utils.py` | 新增 `TestMegatronNetworkArgumentGeneration`，断言回调字段不被注册为 CLI 参数 |
+
+- **迁移位置**：`src/walpurgis/core/moe_loss_norm_c0c1f9186.py`（新增）
+
+- **鲁迅拿法改写（≥20%）**：
+  上游此次改动，表面是给 MoE 辅助损失加一个专用缩放函数，实则是将一个「单锅炖」的
+  grad_scale_func 拆成了两口锅——一口炖通用 token 损失，一口炖专家路由辅助损失。
+  这让鲁迅想起《祝福》里祥林嫂分配柴火的故事：起初一家人共用一灶，柴火谁拿谁用，
+  算不清楚；后来立了规矩，祭祀用的柴不得烧饭，饭灶的柴不得染香，两口锅各归各，
+  清清爽爽——然而祥林嫂却再也用不上任何一口了。
+
+  RL SFT 场景下，token 级损失与 MoE auxiliary loss 的尺度差异可以极大：
+  前者随 batch size 归一化，后者依赖专家路由频率统计，若共用同一个 grad_scale_func，
+  要么主损失缩放过猛，要么辅助损失近乎消失。上游的解法是「分锅」——给辅助损失单独一个
+  钩子，且此钩子无需传参（moe_grad_scale_func()），意味着调用方在构造时已将缩放语义
+  封装进闭包，不依赖前向传播中途的 ones 张量——这比旧版更干净，也更危险：一旦闭包
+  捕获了过期的状态（如旧 step 的 loss scale），没有任何参数能暴露这个时序错误。
+  这是「两口锅」之后隐藏的第三只手。
+
+  Walpurgis 将此次「MoE 损失归一化」抽象为可程序化审计的五个结构：
+
+  1. **`MoeScaleStrategy` 枚举** — 三路优先级策略：MOE_DEDICATED / GRAD_SCALE_FALLBACK / ONES_DEFAULT，
+     使 loss_scale 的选择路径不再是隐式 if-elif-else，而是可枚举的可查询记录。
+  2. **`MoeScaleResolution` dataclass（frozen）** — 封装单次解析结果（strategy used、scale value、
+     fallback_reason、config_has_moe_func），每次前向传播的 loss scale 决策完整可追溯。
+  3. **`MoeGradScaleConfig` dataclass** — 对应 ModelParallelConfig 新增字段语义，携带 validate()
+     方法，程序化断言「moe_grad_scale_func 是否可调用」「是否已列入 CLI 黑名单」。
+  4. **`MoeLossNormResolver`** — 三路优先级解析器，实现 schedules.py 重构逻辑，
+     记录全部解析历史，提供 fallback_rate() 和 strategy_distribution() 统计接口。
+  5. **`MoeLossNormAuditLog`** — 结构化审计日志，detect_drift() 检测 ONES_DEFAULT 占比
+     超阈值的策略漂移（说明 moe_grad_scale_func 未配置，RL SFT 训练可能受影响）。
+
+  全链路 `WALPURGIS_DEBUG=1` 断点 print **14 处**（MODULE_LOAD×2、STRATEGY_ENUM、
+  RESOLVER_INIT、RESOLVER_RESOLVE×4（三路+完成）、AUDIT_RECORD×2、AUDIT_REPORT×2、
+  CONFIG_VALIDATE×2、ARG_BLACKLIST_CHECK、SELF_CHECK×多处），
+  `self_check()` 5 项断言全部通过。
+
+- **三维度审查（Knuth）**：
+  - **正确性**：三路优先级逻辑与上游 schedules.py 完全对应；getattr 安全访问语义
+    通过 `config_has_moe_attr` 参数显式传入，不依赖调用时的 AttributeError 捕获；
+    CLI 黑名单集合 `_CALLBACK_FIELD_BLACKLIST` 与 arguments.py 新增内容一致；
+    GOLDEN_CONFIG 字段 `"moe_grad_scale_func": None` 的语义通过断言4验证。
+  - **性能**：纯策略/配置模块，无算法/数据结构热路径，无运行时性能影响。
+    `MoeLossNormResolver.resolve()` 为 O(1)，`MoeLossNormAuditLog.detect_drift()` 为
+    O(drift_window)（常数窗口，默认50），`strategy_distribution()` 为 O(n)（n=历史记录数）。
+  - **可读性**：上游将三路逻辑写在 if-elif-else 裸代码中，无任何策略命名；
+    Walpurgis 将三路抽象为枚举 + 解析器 + 审计日志，每次 loss_scale 决策的来路
+    在 `MoeScaleResolution.audit_line()` 中一目了然，便于 RL SFT 调试时定位
+    「为何 MoE aux loss 突然失效」。
 
 ---
 
