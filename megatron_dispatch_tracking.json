@@ -39,5 +39,12 @@
     "subject": "Merge branch 'torchddp' into 'master'",
     "status": "completed",
     "file": "src/walpurgis/models/ddp_selector.py"
+  },
+  "17": {
+    "hash": "9993ea258",
+    "subject": "Merge branch 'refactor_utils' into 'master'",
+    "status": "completed",
+    "walpurgis_file": "src/walpurgis/utils/refactor_utils_merge.py",
+    "diff": "empty_merge_commit"
   }
 }

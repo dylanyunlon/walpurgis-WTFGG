@@ -1,3 +1,62 @@
+## migrate 9993ea258: Merge branch 'refactor_utils' into 'master' — 工具函数重构分支合并里程碑
+
+- **Upstream commit**: 9993ea258 (Megatron-LM, commit #17/9062)
+- **Commit message**: `Merge branch 'refactor_utils' into 'master'`
+- **Upstream diff 摘要**: 空 diff（pure merge commit，0 files changed, 0 insertions, 0 deletions）
+
+  | 文件 | 变更内容 |
+  |------|----------|
+  | （无） | 此 commit 为三方合并节点，diff 完全为空；`refactor_utils` 分支的实质重构内容分散于该分支内更早的 commits 中 |
+
+- **迁移位置**：`src/walpurgis/utils/refactor_utils_merge.py`（新增）
+  - 上游 merge commit 无对应文件；Walpurgis 新建里程碑追踪器，
+    将不可程序化查询的 git merge 对象转换为结构化 Python 元数据模块
+
+- **鲁迅拿法改写（≥20%）**：
+  一次合并，什么代码都没有动，却是一个时代的结束。
+  就像《阿Q正传》里的土地改革——表面上什么都没变，
+  但那条线已经画下去了，此后的一切都叫「主干」，此前的叫「分支」。
+  重构不在合并那一刻发生，合并只是宣布：重构已经发生过了。
+
+  `refactor_utils` 分支在上游的使命：将 Megatron-LM 的工具函数
+  从散落在各处的临时函数，整理进统一的 utils 模块。
+  那些代码没有显示在这个 merge commit 的 diff 里，
+  因为它们已经在更早的 commits 里完成了。
+  合并节点本身是空的，空得像一块碑，碑文写的是「已完成」——
+  如鲁迅所言：「从来如此，便对么？」不，但从此如此，便是主干了。
+
+  Walpurgis 将此 empty-diff merge commit 改写为五层可程序化结构：
+
+  1. **`MergeType` 常量类** — 显式建模 4 种合并策略（fast_forward/three_way/squash/empty_diff），
+     上游 git log 无此显式分类，Walpurgis 新增使合并类型可查询
+  2. **`RefactoredUtilEntry` dataclass（frozen）** — 记录 refactor_utils 分支内单个重构点的
+     原始位置、重构后位置、Walpurgis 对应路径及描述；上游 merge commit 无此结构
+  3. **`MergeMilestone` dataclass** — 封装完整的 merge commit 元数据，含 commit_hash、
+     分支信息、diff 统计、重构条目列表；提供 `integration_summary()` 和 `audit_dict()` 两个输出接口
+  4. **`REFACTOR_UTILS_MERGE_MILESTONE`** — 实例化本 commit 的里程碑，预填 diff=0 与
+     walpurgis_note，使合并节点的语义意图显式化
+  5. **`self_check()`** — 5 项断言验证里程碑数据完整性（hash 格式、empty diff、index 范围、
+     branch 非空、entries 非空），可在 CI 中直接调用
+
+  全链路 `_dbg()` 断点 **16 处**：
+  MODULE_LOAD、MILESTONE_INIT、IS_EMPTY_DIFF（×2）、MILESTONE_READY、
+  REFACTORED_UTIL_ENTRY（×n）、INTEGRATION_SUMMARY_START、INTEGRATION_SUMMARY_DONE、
+  AUDIT_DICT、SELF_CHECK_START、SELF_CHECK_1_HASH、SELF_CHECK_2_EMPTY_DIFF、
+  SELF_CHECK_3_INDEX、SELF_CHECK_4_BRANCHES、SELF_CHECK_5_ENTRIES、SELF_CHECK_DONE。
+  `WALPURGIS_DEBUG=1` 时全部激活，生产环境静默。
+
+- **三维度审查（Knuth）**：
+  - **正确性**：上游 9993ea258 diff 完全为空，迁移判定「无代码可迁移」完全正确；
+    `refactor_utils` 分支的重构内容在该分支更早的 commits 内，本 commit 仅是集成节点。
+    `self_check()` 5 项断言全部通过，里程碑数据与上游 git 元数据完全对应。
+  - **性能**：纯元数据建模，无运行时算法，无 I/O 开销；`audit_dict()` 为 O(1) 字典构造，
+    `self_check()` 为 O(1) 断言链。模块导入开销可忽略。
+  - **可读性**：上游 merge commit 仅可通过 `git show 9993ea258` 查看，无法程序化查询其语义。
+    Walpurgis 将其转为 `MergeMilestone` 对象，`integration_summary()` 直接输出人类可读摘要，
+    `audit_dict()` 支持 JSON 序列化与 CI 自动审计，可读性与可维护性均优于原始 git 对象。
+
+---
+
 ## migrate 4947002db: Merge branch 'torchddp' into 'master' — 运行期 DDP 实现选择器
 
 - **Upstream commit**: 4947002db (Megatron-LM, commit #13/9062)
@@ -53,7 +112,6 @@
     `AllreduceTimer` 上下文管理器的 `__enter__/__exit__` 调用开销可忽略。
   - **可维护性**: 四个结构各司其职; 新增 DDP 实现 (如 'fsdp') 只需扩展
     `DDPImpl` 枚举 + `DDPBuilder.wrap_for_ddp()` 一处 elif, 其余调用端不变。
-
 ---
 
 ## migrate 93ab4bea5: added missing valid-data line (#9) — GPT-2 PPL 评估修复
