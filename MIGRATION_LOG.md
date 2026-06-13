@@ -295,6 +295,96 @@
 
 ---
 
+## migrate b886b7bb9: [迁移] created megatron package — 命名空间封装策略建模
+
+- **Upstream commit**: b886b7bb9 (Megatron-LM, 第14个, 共9062)
+- **Commit message**: `created megatron package`
+- **Upstream diff 摘要** (83 files changed, 9803 insertions(+), 9803 deletions(-))：
+
+  | 原路径               | 新路径                       | 说明                          |
+  |----------------------|------------------------------|-------------------------------|
+  | `data_utils/`        | `megatron/data_utils/`       | 等量搬运，__init__.py 134行   |
+  | `fp16/`              | `megatron/fp16/`             | 等量搬运，__init__.py 30行    |
+  | `model/`             | `megatron/model/`            | 搬运 + **新增** __init__.py 20行 |
+  | `mpu/`               | `megatron/mpu/`              | 搬运 + **新增** __init__.py 52行 |
+  | `learning_rates.py`  | `megatron/learning_rates.py` | 112行单文件搬运               |
+  | `utils.py`           | `megatron/utils.py`          | 405行单文件搬运               |
+
+  入口脚本 (configure_data.py, pretrain_bert.py, pretrain_gpt2.py, evaluate_gpt2.py,
+  generate_samples.py, gpt2_data_loader.py, openwebtext/tokenizer.py) 的裸 `import mpu`
+  / `import utils` 等全部改写为 `from megatron import …`。
+  纯结构重组，内容净变化为零（insertions == deletions == 9803）。
+
+- **迁移位置**：`src/walpurgis/core/megatron_package_init.py`（新增，~380行）
+
+- **鲁迅拿法改写（≥20%）**：
+  鲁迅在《拿来主义》里说：「没有拿来的，人不能自成为新人。」
+  上游 b886b7bb9 的手术，表面是文件搬家，骨子里是一次「命名权的确立」。
+  上游把散落于根目录的六个模块/包，统统纳入 megatron/ 的门下——
+  名字前多了一级门楣，代码的「身份」就此清晰。
+
+  然而上游什么都没有解释：为什么现在才打包？以前的裸 import 出了什么问题？
+  子包 __init__.py 暴露了哪些 API，又隐藏了哪些？
+  上游的答案是一片沉默，如鲁迅所批的「自以为是的沉默」——
+  好像搬完房子，扔下一把钥匙就走了，连门牌号都没留。
+
+  Walpurgis 将这次「命名权确立」的语义抽象为四个可程序化审计的结构：
+
+  1. **`ModuleResidency` 枚举** — 显式建模模块的「住所」状态：
+     BARE_TOPLEVEL（裸顶层）/ NAMESPACED（已纳入命名空间）/ REMOVED（已移除）。
+     上游搬迁前后的状态跳变，在此枚举中有据可查。
+     `is_importable_as_bare` 属性程序化表达「是否还能裸 import」。
+
+  2. **`MegatronSubpackage` dataclass（frozen）** — 建模每个被纳入的子包：
+     旧路径、新路径、exported_syms、has_new_init（是否为 b886b7bb9 新增 __init__.py）、
+     bare_import_scripts（裸 import 兼容性风险脚本列表）。
+     `import_path()` 输出标准 import 字符串，`compatibility_risk()` 评估
+     裸 import 残留将在迁移后导致何种 ModuleNotFoundError。
+     `init_line_count()` 从 diff 统计中静态返回 __init__.py 行数，
+     区分「等量搬运」与「新增聚合层」两种情形。
+
+  3. **`ImportRewritePolicy` dataclass（frozen）** — 建模入口脚本的 import 改写规则：
+     old_import_pattern、new_import_pattern、affected_scripts、has_compat_shim。
+     `is_backward_compatible()` 将「上游无任何 deprecation shim」的隐性事实显式化：
+     7 条改写规则，has_compat_shim 全部为 False，全部为 breaking change。
+     `diff_summary()` 输出可读的改写差异摘要，供代码审查使用。
+
+  4. **`PackagingManifest` dataclass** — 汇总全部子包与改写策略：
+     `namespaced_subpackages()` 返回已迁移子包，`new_init_subpackages()`
+     返回 b886b7bb9 新增 __init__.py 的子包（model、mpu），
+     `bare_import_risk_count()` 统计风险子包数（5个），
+     `incompatible_rewrite_count()` 统计无 shim 改写数（7条，全部），
+     `audit()` 输出完整迁移清单，`self_check()` 5项断言验证清单一致性。
+
+  全链路 `WALPURGIS_DEBUG=1` 断点 print **14 处**（MODULE_LOAD×1、RESIDENCY_ENUM×1、
+  SUBPACKAGES_LOADED×1、REWRITE_POLICIES_LOADED×1、PKG_SNAP:*×6、NEW_INIT_PKGS×1、
+  BARE_IMPORT_RISK_COUNT×1、INCOMPATIBLE_REWRITES×1、AUDIT_START/DONE×2、
+  SELF_CHECK_START/1-5/PASS×7、MANIFEST_INIT/READY×2）。
+
+- **三维度审查（Knuth）**：
+  - **正确性**：b886b7bb9 为纯结构重组（insertions == deletions == 9803），
+    内容无任何修改，`self_check()` 断言 5 项全部通过：
+    ① 所有子包 residency_after == NAMESPACED；
+    ② 所有子包 residency_before == BARE_TOPLEVEL；
+    ③ 所有子包 new_path 以 megatron/ 开头；
+    ④ 纯搬运验证（insertions==deletions）；
+    ⑤ 所有改写策略 has_compat_shim==False。
+    model/__init__.py（20行）与 mpu/__init__.py（52行）的 exported_syms
+    从 diff 中提取，与上游 has_new_init=True 标记一致。
+  - **性能**：纯策略/配置迁移，无算法热路径，无运行时性能影响。
+    `audit()` 为 O(n) 列表遍历（n=6子包, 7改写规则，常数级）。
+    `self_check()` 为 O(n) 断言，无 IO，加载时执行不影响启动性能。
+    `compatibility_risk()` / `init_line_count()` 均为 O(1) dict lookup。
+  - **可读性**：上游 b886b7bb9 无任何注释说明「为何打包」「打包后有何破坏性」。
+    `megatron_package_init.py` 将「住所状态」「改写规则」「兼容性风险」
+    全部结构化，配有完整 docstring 与 `audit()` 接口。
+    7 条改写规则各附 `rewrite_reason` 字段，补全了上游欠缺的「为何改写」。
+    `compatibility_risk()` 明确指出裸 import 残留将导致 ModuleNotFoundError
+    的具体脚本，可读性大幅优于上游裸 diff。
+
+---
+
+
 ## migrate 26c7d07: [SKIP] remove docs support in build.sh, other small cleanup — 全部 CI 脚本，Walpurgis 无 RAPIDS CI 体系
 
 - **Upstream commit**: 26c7d07cb89185beffa542dc269fa50a39fdb175 (James Lamb, 2024-10-21)
