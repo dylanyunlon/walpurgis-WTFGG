@@ -271,6 +271,80 @@ get_batch_id_series = _get_batch_id_series_tombstone
 #: 删除记录（结构化文档）
 DASK_REMOVAL_RECORD = DaskRemovalRecord()
 
+
+# ── migrate a57912c: fix references to dask data loader ──────────────────────
+# 上游 a57912c 修正了两个测试文件中对 dask dataloader 的引用：
+#
+#   test_dask_dataloader.py:
+#     - 旧: cugraph_dgl.dataloading.DaskDataLoader(...)
+#     - 新: cugraph_dgl.dataloading.dask_dataloader.DaskDataLoader(...)
+#       (完整模块路径，绕过包级别 __init__ 的别名链)
+#
+#   test_dask_dataloader_mg.py:
+#     - 旧: cugraph_dgl.dataloading.DataLoader(...)  (1b2fce2 改完的结果)
+#     - 新: cugraph_dgl.dataloading.dask_dataloader.DaskDataLoader(...)
+#       (再次回到 DaskDataLoader，但用完整路径 — 测试就是要测废弃路径的行为)
+#
+# a57912c 的核心洞察：测试应通过「完整模块路径」而非「包级别别名」访问被测对象，
+# 这样即使 __init__ 发生重组也不会静默改变测试的实际目标。
+#
+# Walpurgis 20% 改写（鲁迅拿法）：
+# 新增 DataloaderRefSpec 数据类，将「完整路径 vs 别名」两种引用方式结构化记录，
+# 便于代码审查时快速定位「这个测试到底在测什么」。
+
+@dataclass(frozen=True)
+class DataloaderRefSpec:
+    """DataLoader 引用规格（migrate a57912c Walpurgis 改写）。
+
+    a57912c 的核心：用完整模块路径引用被测对象，
+    比包级别别名更稳定，不受 __init__ 重组影响。
+
+    在 Walpurgis 中，dask_dataloader 模块本身就是墓碑，
+    DataloaderRefSpec 记录测试应如何正确引用各种 loader 类型。
+    """
+
+    # 完整模块路径（a57912c 规范化的引用方式）
+    fully_qualified_path: str
+
+    # 包级别别名（历史上使用的方式，现在可能已废弃或重定向）
+    package_alias: str
+
+    # 是否已废弃（对应是否需要像 a57912c 一样修正）
+    is_deprecated_alias: bool
+
+    # 修正 commit（若有）
+    fix_commit: str = ""
+
+    def __post_init__(self):
+        """验证路径格式。"""
+        assert "." in self.fully_qualified_path, (
+            f"fully_qualified_path={self.fully_qualified_path!r} 应包含模块路径分隔符"
+        )
+
+
+# a57912c 规范化的 DataLoader 引用记录
+DATALOADER_REF_SPECS: tuple = (
+    DataloaderRefSpec(
+        fully_qualified_path="walpurgis.dataloader.dataloader.DataLoader",
+        package_alias="walpurgis.dataloader.DataLoader",
+        is_deprecated_alias=False,
+        fix_commit="",
+    ),
+    DataloaderRefSpec(
+        fully_qualified_path="walpurgis.dataloader.dask_dataloader.DaskDataLoader",
+        package_alias="walpurgis.dataloader.DaskDataLoader",
+        is_deprecated_alias=True,
+        fix_commit="a57912c",  # 上游此 commit 规范化引用方式
+    ),
+    DataloaderRefSpec(
+        fully_qualified_path="walpurgis.dataloader.dgl_dataloader.DataLoader",
+        package_alias="walpurgis.dataloader.DGLDataLoader",
+        is_deprecated_alias=False,
+        fix_commit="",
+    ),
+)
+
+
 __all__ = [
     "DaskDataLoader",
     "create_batch_df",
@@ -278,4 +352,6 @@ __all__ = [
     "DaskRemovalRecord",
     "TombstoneRegistry",
     "DASK_REMOVAL_RECORD",
+    "DataloaderRefSpec",
+    "DATALOADER_REF_SPECS",
 ]
