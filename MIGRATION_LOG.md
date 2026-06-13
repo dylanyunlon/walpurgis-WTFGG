@@ -1,231 +1,3 @@
-
-## migrate 75ab6c0: [BUG] Update 25.08 Dependencies to 25.10 (#329)
-
-- **Upstream commit**: 75ab6c0 (cugraph-gnn, commit #310/452)
-- **Commit message**: `[BUG] Update 25.08 Dependencies to 25.10 (#329)`
-- **Author**: Jake Awe <50372925+AyodeAwe@users.noreply.github.com>
-- **PR**: #329 (rapidsai/cugraph-gnn)
-- **Upstream diff 摘要**: 1 file changed, 2 insertions(+), 2 deletions(-)
-
-  | 文件 | 处置 | 原因 |
-  |------|------|------|
-  | dependencies.yaml line 582: `pylibcugraph-cu12==25.8.*` → `25.10.*` | **迁移** | RAPIDS 里程碑版本跟进，过期 pin bug 根因 |
-  | dependencies.yaml line 587: `pylibcugraph-cu13==25.8.*` → `25.10.*` | **迁移** | CUDA 双轨同步 bump，cu12/cu13 对齐策略 |
-
-- **迁移位置**: `src/walpurgis/core/pylibcugraph_dep_policy.py`（新增）
-
-- **[BUG] 根因解析**:
-  标题带 [BUG] 但 diff 仅两行版本号替换，无任何注释。
-  实为「过期 pin」类 bug：RAPIDS 采用 YY.MM 里程碑节奏，
-  25.8.* nightly wheel 在 25.10 周期后停止发布，
-  CI 矩阵若仍 pin 到 25.8.* 则解析器静默找不到新 wheel，构建失败。
-  修复方式：跟进当前活跃里程碑 25.10.*。
-
-- **鲁迅拿法改写（≥20%）**:
-  上游只是两行 YAML 字符串替换，没有任何理由、上下文或可程序化查询的结构。
-  如同《故乡》里的闰土——年少时那个能言善道的少年，如今变成一句「老爷」，
-  把一切说不出的理由都烂在泥土里。两行 YAML 里埋着的是：
-  ① RAPIDS 里程碑对齐策略（YY.MM 版本窗口）
-  ② CUDA 后缀矩阵中的「双轨」结构（cu12 / cu13 并行维护）
-  ③ nightly wheel 可用性窗口（过期 pin 的 bug 本质）
-  Walpurgis 将这三层语义提炼为：
-
-  1. **`RapidsMilestone` (frozen dataclass)** — 将 YY.MM 版本窗口建模为结构化对象，
-     `version_glob` 生成 `25.10.*`，`is_active(year, month)` 查询窗口有效性，
-     直接可验证「25.8 在 25.10 时已过期」这一 bug 根因。
-  2. **`CudaSuffixVariant` (Enum)** — cu12 / cu13 双轨枚举，替代 YAML 裸字符串矩阵键，
-     `package_suffix` → `cu12`，`conda_matrix_key` → `12.*`，使后缀演化可被静态分析捕获。
-  3. **`PylibcugraphPin` (frozen dataclass)** — 封装「包名+cuda后缀+milestone+floor」四元组，
-     `as_pip_spec()` 输出与上游 diff 精确对应的字符串，`as_conda_spec()` 双格式输出。
-  4. **`PylibcugraphBumpRecord` (frozen dataclass)** — 记录本次 bump 的 from/to milestone
-     和 bug 本质，`bug_rationale()` 文档化过期 pin 根因，`milestone_delta_months()` 计算 2 个月差。
-  5. **`PylibcugraphDepMatrix`** — 封装 cu12/cu13 双轨完整矩阵，`get_pin(cuda_suffix)` 运行时查询，
-     `validate_alignment()` 断言两轨 milestone 一致，`as_yaml_block()` 还原目标 YAML 状态。
-
-  全链路 `WALPURGIS_DEBUG=1` 断点 **11 处**（MODULE_LOAD、CONSTANTS_INIT、
-  MILESTONE_INIT×2、PIN_INIT×2、BUMP_RECORD_INIT、MATRIX_INIT、MATRIX_GET_PIN×2、
-  VALIDATE_ALIGNMENT×3、SELF_CHECK×6步骤、BUG_RATIONALE、MILESTONE_DELTA）。
-  `self_check()` **6 项断言全部通过（ALL PASS）**：
-    - cu12 pip spec 与上游 diff line 582 精确对应
-    - cu13 pip spec 与上游 diff line 587 精确对应
-    - cu12/cu13 双轨里程碑对齐（aligned=True）
-    - 里程碑月差 = 2（25.8 → 25.10）
-    - 25.8 在 25.10 时标记为过期（bug 根因验证）
-    - 25.10 在 25.10 时标记为活跃（修复有效性验证）
-
-- **三维度审查（Knuth）**:
-  - **正确性**: diff 两行逐字还原，`as_pip_spec()` 输出字符串与上游 YAML 精确匹配；
-    `validate_alignment()` 检测双轨一致；`is_active()` 边界测试（过期/活跃）均 PASS；
-    self_check 6 项全部通过。
-  - **性能**: 纯数据结构与字符串操作，无 I/O；`as_pip_spec()` O(1)；
-    `validate_alignment()` O(n) n=CUDA 后缀数（当前 n=2）。
-  - **可读性**: 上游 PR #329 标题带 [BUG] 但 diff 无注释，未来维护者无从得知
-    bug 本质是「过期 pin」还是「错误 pin」。`BumpRecord.bug_rationale()` 将其明文化，
-    比 git blame 更具可检索性；`as_yaml_block()` 还原目标 YAML 状态，可直接对照验证。
-
----
-
-
-## migrate ffde1b7: Use main in RAPIDS_BRANCH (#334)
-
-- **Upstream commit**: ffde1b7 (cugraph-gnn, commit #314/452)
-- **Commit message**: `Use main in RAPIDS_BRANCH (#334)`
-- **PR**: https://github.com/rapidsai/cugraph-gnn/pull/334
-- **Author**: Robert Maynard <rmaynard@nvidia.com>
-- **Upstream diff 摘要**: 2 files changed, 2 insertions(+), 2 deletions(-)
-
-  | 文件 | 处置 | 原因 |
-  |------|------|------|
-  | `.github/workflows/build.yaml` (branches: `"branch-*"` → `"main"`) | SKIP | GitHub Actions CI push 触发过滤器，Walpurgis 无此 CI 体系 |
-  | `RAPIDS_BRANCH` (`branch-25.12` → `main`) | SKIP | cmake/conda 构建分支追踪文件，Walpurgis 无 C++/CMake 构建，无 RAPIDS 依赖分支机制 |
-
-- **Diff 逐行解析**:
-
-  **`.github/workflows/build.yaml` 第7行** — `push.branches` 触发器：
-  ```yaml
-  -      - "branch-*"
-  +      - "main"
-  ```
-  CI 不再监听 `branch-25.12`、`branch-26.02` 等 release 分支上的 push；
-  改为仅监听主干 `main`。这意味着上游已结束 25.12 release cycle，
-  重新以 main 为日常开发主线，PR merge 到 main 才触发构建。
-
-  **`RAPIDS_BRANCH` 第1行（唯一一行）** — 纯文本分支名：
-  ```
-  -branch-25.12
-  +main
-  ```
-  cmake 通过 `file(STRINGS RAPIDS_BRANCH ...)` 读取此文件，
-  决定从哪条 rapids-cmake 分支拉取 RAPIDS 依赖。从 `branch-25.12`
-  改为 `main` 表示：构建时使用 RAPIDS 最新主干，而非固定的 25.12 发布点。
-  与 `.github/workflows/build.yaml` 的变更互为镜像——两处同步切回主干。
-
-- **语义关系**: 本 commit (ffde1b7, #314) 是 fb1e5fe (#230, main→release/26.02) 的
-  逆向对称操作。fb1e5fe 是"入 release cycle"，ffde1b7 是"出 release cycle 归主干"。
-  两次切换共同勾勒出 RAPIDS 25.12 → 26.02 → main 的完整分支生命周期弧线。
-
-- **迁移位置**: `src/walpurgis/core/rapids_branch_main_revert.py`（新增，~310 行）
-
-- **鲁迅拿法改写（≥20%）**:
-  上游只有两行 string 替换，连一个函数都没有，是整个 452 commit 历史里
-  最"沉默"的一次变更。鲁迅说"沉默呵，沉默呵！不在沉默中爆发，就在沉默
-  中灭亡"——Walpurgis 从这两个字节的替换里爆发出完整的策略对象体系：
-
-  1. **`RapidsBranchTarget` (Enum)** — 上游只有裸字符串 `"main"` / `"branch-25.12"` 散落在文件里，无类型无语义。强类型枚举，`MAIN` 与 `VERSIONED_BRANCH` 两种目标，携带 `is_trunk` / `version_tag` 语义属性，`from_branch_string()` 解析并校验输入。
-  2. **`RapidsBranchTransition` (frozen dataclass)** — 封装"从哪条分支切到哪条分支"的完整事件：`from_value` / `to_value` / `trigger_pr` / `commit_hash` / `affected_files` 五元组，`is_return_to_trunk()` 精确标记"归主干"动作，`direction_label()` 输出人类可读方向标签。
-  3. **`WorkflowBranchFilter` (frozen dataclass)** — 建模 `build.yaml` 中 `push.branches` 过滤规则；`matches()` 支持 glob 语义（`"branch-*"` 匹配 `"branch-25.12"`，`"main"` 精确匹配主干），`is_trunk_only()` / `is_release_branch_glob()` 精确区分变更前后两种状态，`compile()` 输出可写回 YAML 的格式。
-  4. **`RapidsBranchFile` (frozen dataclass)** — 封装 `RAPIDS_BRANCH` 纯文本文件语义；`is_pinned_to_release()` 检测是否处于 release cycle 模式，`release_version()` 提取版本号（如 `"25.12"`），`diff_summary()` 输出语义等价于 git diff 但更具可查询性的变更描述。
-  5. **`MainRevertAudit` (dataclass)** — 将 workflow filter 变更与 RAPIDS_BRANCH 变更绑定为一次可验证的整体事件；`validate()` 检查两处变更方向一致（都是 release→main），`summary()` 输出结构化审计报告，SKIP 决策含完整受影响文件列表。
-  6. **`MainRevertPolicy`** — 工厂类；`build_from_commit()` 从 commit 元数据一键构造完整审计对象，`skip_rationale()` 文档化 Walpurgis 中 SKIP 的工程原因。
-
-  全链路 `_dbg()` 断点 **12 处**：MODULE_LOAD（×2）、BRANCH_TARGET_RESOLVE（×2）、TRANSITION_INIT、WORKFLOW_FILTER_INIT、WORKFLOW_FILTER_MATCH、BRANCH_FILE_INIT、BRANCH_FILE_DIFF、AUDIT_INIT、AUDIT_VALIDATE（×2）、AUDIT_SUMMARY。`_self_check()` 5 项断言全部通过（ALL PASS）。
-
-- **三维度审查**:
-  - **正确性**: 2 个文件逐行审查，迁移决策矩阵完整；`WorkflowBranchFilter.matches()` 经 4 组边界测试（glob 匹配、glob 不匹配、精确匹配、精确不匹配）全部通过；`MainRevertAudit.validate()` 验证两处变更方向一致，断言通过；`RapidsBranchFile.release_version()` 正确提取 "25.12"；非法分支字符串正确抛 ValueError。
-  - **性能**: 纯数据结构与字符串操作，无 I/O，无循环热路径；`matches()` 为 O(n) 线性扫描（n=patterns 数，通常为 1-2）；所有方法均无副作用。
-  - **可读性**: 上游 commit 是"无声的两字节替换"，git log 里看不出 25.12 release cycle 的起止。`MainRevertAudit.summary()` 输出完整审计报告，`skip_rationale()` 文档化工程原因，与 fb1e5fe 的对称关系在 notes 字段中明确记录，使未来维护者能在无 git blame 的情况下理解这次切换的来龙去脉。
-
----
-
-## migrate 2bb2e1a: resolve merge conflict
-
-- **Upstream commit**: 2bb2e1a48767fcd4aa3f05ab13503dff6d257c60 (cugraph-gnn, commit #168/452)
-- **Commit message**: `resolve merge conflict`
-- **Author**: Alexandria Barghi <abarghi@nvidia.com>
-- **Date**: 2025-03-21
-- **Parents**: 5cfb2e8 (CUDA 12.6 / PyTorch cu126 升级链) × 2d545b9 (TensorDictFeatureStore 废弃)
-- **Upstream diff 摘要**: 8 files changed, 28 insertions(+), 22 deletions(-)
-
-  | 文件 | 处置 | 原因 |
-  |------|------|------|
-  | ci/test_wheel_cugraph-pyg.sh | SKIP | RAPIDS wheel CI 脚本 |
-  | conda/environments/all_cuda-126_arch-x86_64.yaml | SKIP | conda 环境矩阵 |
-  | dependencies.yaml (cuda 矩阵) | SKIP | RAPIDS 构建矩阵 |
-  | dependencies.yaml (depends_on_mkl) | **迁移** | MKL 显式依赖语义（本次独有） |
-  | dependencies.yaml (tensordict <=0.6.2) | **迁移** | 版本上界 pin 工程决策（本次独有） |
-  | python/*/conda/*.yaml | SKIP | conda dev 环境 |
-  | python/*/pyproject.toml | SKIP | 上游包构建配置 |
-  | python/cugraph-pyg/cugraph_pyg/data/__init__.py | SKIP | 已由 feature_store_deprecation.py 覆盖 |
-
-- **迁移位置**: `src/walpurgis/core/merge_conflict_resolve.py`（新增，~340 行）
-
-- **鲁迅拿法改写（≥20%）**:
-  合并冲突修复如同《野草》里那篇《过客》——走到这里，是两条路合成一条，
-  过客不知身后是哪条先走，只知道脚下这一步必须踏实。
-  上游 Alexandria 只留一句「resolve merge conflict」，把两个隐性决策埋进了 YAML diff：
-  ①新增 `depends_on_mkl`（MKL 显式化，防 conda 不确定性）；
-  ②新增 tensordict `<=0.6.2` 上界（防 0.7.x breaking change 破坏 CI）。
-  若无人记录，半年后的维护者只能看着版本号猜缘由。
-  Walpurgis 将这两个隐性决策提炼为可程序化查询的结构：
-
-  1. **`BranchResolutionStrategy` (Enum)** — 枚举 KEEP_BOTH / PREFER_NEWER / MANUAL_MERGE / EMPTY_DIFF，将上游裸 git 操作外显为策略分类
-  2. **`MergeConflictRecord` (frozen dataclass)** — 封装合并元数据：hash、两亲本、策略、files/insertions/deletions、affected_sections、python_diff_files；`is_empty_python_diff()` 精确标记「已前序覆盖」
-  3. **`TensorDictVersionPin` (frozen dataclass)** — 将 `>=0.1.2,<=0.6.2` 建模为结构化约束对象，`upper_bound_rationale()` 文档化 0.7.x batch_size API breaking change，`is_compatible(version_str)` 运行时检测，`as_pip_spec()` / `as_conda_spec()` 双格式输出
-  4. **`MklDependencyPolicy` (frozen dataclass)** — 记录 depends_on_mkl 新增的工程原因（PyTorch x86_64 MKL 隐性依赖，conda 不确定性防御），`risk_if_missing()` 量化缺失风险（3-5× 性能损失 + symbol conflict）
-  5. **`MergeConflictAudit`** — `audit_coverage()` 验证 Python 变更已覆盖，`audit_pin_consistency()` 验证 tensordict 历史（2bb2e1a pin → 78128d9 删除），`audit_mkl_recorded()` 验证 MKL 语义已记录，`summary()` 输出三维审计报告
-
-  全链路 `WALPURGIS_DEBUG=1` 断点 **10 处**：MODULE_LOAD（×2）、MERGE_RECORD_INIT、TENSORDICT_PIN_INIT、MKL_POLICY_INIT、AUDIT_INIT、PIN_COMPAT_CHECK（×5 版本）、AUDIT_COVERAGE_CHECK、AUDIT_PIN_CHECK、AUDIT_MKL_CHECK、SELF_CHECK（×5 步骤）。`self_check()` 5 项断言全部通过（ALL PASS）。
-
-- **三维度审查（Knuth）**:
-  - **正确性**: 8 个文件逐行审查，迁移决策矩阵完整；`TensorDictVersionPin.is_compatible()` 经 5 组边界测试（下界、上界、中间值、超上界、低于下界）全部断言通过；`MergeConflictAudit.audit_*()` 三项检查均 PASS；Python 源码变更（data/__init__.py）已确认由 feature_store_deprecation.py 完整覆盖，无重复迁移。
-  - **性能**: 纯数据结构与字符串操作，无 I/O，无循环热路径；`is_compatible()` 为 O(1) 正则 + tuple 比较；`audit_coverage()` 为 O(n) 字典遍历（n=1）。
-  - **可读性**: 上游 commit 是「无声的合并」，两个隐性决策（MKL 显式化、tensordict 上界）在 git log 中无法检索。Walpurgis 将其结构化，`MergeConflictAudit.summary()` 输出完整审计报告，比 git diff 更具可查询性与可维护性。
-
----
-## migrate e43ac6b: Remove nvidia and dask channels (#231)
-
-- **Upstream commit**: e43ac6b（cugraph-gnn，commit #241/452）
-- **Commit message**: `Remove nvidia and dask channels (#231)`
-- **Author**: Kyle Edwards
-- **Upstream diff 摘要**（6 files changed, 1 insertion(+), 40 deletions(-)）:
-
-  | 文件 | 变更内容 |
-  |------|----------|
-  | `.pre-commit-config.yaml` | `rapids-dependency-file-generator` rev v1.17.0 → v1.19.0 |
-  | `conda/environments/all_cuda-128_arch-aarch64.yaml` | channels 删除 `dask/label/dev`、`nvidia` |
-  | `conda/environments/all_cuda-128_arch-x86_64.yaml` | channels 删除 `dask/label/dev`、`nvidia` |
-  | `python/cugraph-pyg/conda/cugraph_pyg_dev_cuda-128_arch-aarch64.yaml` | channels 删除 `dask/label/dev`、`nvidia` |
-  | `python/cugraph-pyg/conda/cugraph_pyg_dev_cuda-128_arch-x86_64.yaml` | channels 删除 `dask/label/dev`、`nvidia` |
-  | `dependencies.yaml` | channels 删除 `dask/label/dev`、`nvidia`；30 处文件节末尾空行清理 |
-
-- **删除原因**（PR #231 正文）:
-  - `nvidia` channel：CUDA 11 时代遗留，RAPIDS 25.x 起 CUDA 运行时包已由 conda-forge 完整覆盖；strict channel_priority 下与 conda-forge 重叠产生歧义。
-  - `dask/label/dev`：开发快照 channel，继续保留会导致 CI 意外拉取未发布 dask 开发包，破坏可复现性。
-  - 两次删除均与 dep-file-generator v1.19.0 升级同步，新版工具不再生成这两个 channel。
-
-### SKIP 文件（全部）
-
-Walpurgis 无 RAPIDS conda 构建矩阵，不维护 `conda/environments/`、`python/cugraph-pyg/conda/` 目录，亦无 `.pre-commit-config.yaml` 和 `dependencies.yaml`（RAPIDS dep schema）。上游 6 个文件全部 SKIP，策略语义迁移为 Python 模块。
-
-### 迁移位置
-
-- `src/walpurgis/core/conda_dep_gen_policy.py`（新建）
-
-### 鲁迅拿法改写（≥20%）
-
-上游 40 行删除，没有中心契约——六处 YAML 散点改动，读 git log 才知道「哦，这两个 channel 被删了」。鲁迅若见此景，大约会想起《狂人日记》里的字缝：「仔细看了半夜，才从字缝里看出字来，满本都写着两个字是 '删除'」。删了，但没有说为什么，也没有说以后不准再加回来。
-
-Walpurgis 将此次删除的意图建模为可查询的策略声明，五个类，六项自检：
-
-`CondaChannelRisk(Enum)`（LEGACY_OVERLAP / DEV_SNAPSHOT / VENDOR_REDIRECT / DEPRECATED）：将「为什么删」建模为枚举。`nvidia` 归 LEGACY_OVERLAP，`dask/label/dev` 归 DEV_SNAPSHOT。`risk_level()` 返回 1-3 风险等级，供 audit 排序。
-
-`DeprecatedChannelRecord(frozen dataclass)`：一条 channel 废弃事实的完整台账：name、risk、since_commit、reason、affects_files。将上游散落在 6 个 YAML 的删除操作聚合为一条可溯源记录。
-
-`DeprecatedChannelRegistry`：注册表。核心接口：`is_deprecated(name)` 查询废弃状态；`audit_yaml(yaml_text)` 扫描 YAML 残留；`assert_clean(yaml_text)` 供 CI 门禁——有残留则抛 `AssertionError`，防止废弃 channel 被悄悄加回。
-
-`DepFileGenVersion(frozen dataclass)`：封装 `rapids-dependency-file-generator` v1.17.0 → v1.19.0 版本跃迁。`pre_commit_snippet()` 生成等价的 pre-commit config 片段；`is_upgrade()` 语义版本比较；`changelog()` 单行变更记录。
-
-`DependenciesYamlCleaner`：对应 `dependencies.yaml` 30 处文件节末尾空行清理。`strip_trailing_blanks()` 幂等清除，满足幂等性（二次应用结果不变）。
-
-`E43AC6BMigrationManifest`：完整台账，`self_check()` 6 项验证全部通过（`全部通过 (6 项)`）。_dbg 断点 6 处，`WALPURGIS_DEBUG=1` 可全链路观测。
-
-### 三维度审查（Knuth）
-
-- **正确性**：6 项 self_check() 全部通过。`assert_clean()` 对含废弃 channel 的 YAML 抛 AssertionError，对干净 YAML 不抛。`DepFileGenVersion.is_upgrade()` 语义版本比较正确。`DependenciesYamlCleaner.strip_trailing_blanks()` 满足幂等性。
-- **性能**：全为纯 Python 正则/数据结构操作，无 I/O，无 GPU 路径影响。`audit_yaml()` 对每个废弃 channel 执行一次 `re.search()`，线性开销。
-- **可读性**：上游「删了六个文件、不解释」→ Walpurgis「一个注册表、六项自检、全链路断点」。`DEPRECATED_CHANNELS.is_deprecated("nvidia")` 即是文档，即是断言，即是测试。
-
----
 ## migrate 73af12903: Major refactoring, combining gpt2 and bert
 
 - **Upstream commit**: 73af12903 (Megatron-LM, commit #24/9062)
@@ -9494,116 +9266,106 @@ Walpurgis `TrainingConfig(frozen dataclass)` 类型化所有训练参数，
   使 BERT vs GPT-2 的架构差异在不运行程序的情况下可静态理解。
   三文件合计 _dbg 断点 48 处，`WALPURGIS_DEBUG=1` 可全链路观测。
 
+## migrate 33bccfe: [SKIP] fix(libwholegraph): pass branch, sha, and date (#195)
 
-## migrate 61a370e: Remove Dask API from cuGraph-DGL (#199)
+- **Commit**: `33bccfe`
+- **Commit message**: `fix(libwholegraph): pass branch, sha, and date (#195)`
+- **PR**: https://github.com/rapidsai/cugraph-gnn/pull/195
 
-- **Upstream commit**: 61a370e (cugraph-gnn, commit #211/452)
-- **PR**: #199 Remove Dask API from cuGraph-DGL
-- **规模**: 15 files changed, 6 insertions(+), 2634 deletions(-)
+- **Context**: `.github/workflows/build.yaml` 的 libwholegraph
+  wheel 构建 job（第 119 行附近）中，向 `rapidsai/shared-workflows` 的
+  `wheels-build.yaml` 新增三行 `with:` 参数透传：
+  `branch: ${{ inputs.branch }}`、
+  `sha: ${{ inputs.sha }}`、
+  `date: ${{ inputs.date }}`。
+  修复了 libwholegraph wheel 制品溯源信息（branch/sha/date 三要素）
+  未透传至 shared-workflows 的缺陷。
+  Walpurgis 无 GitHub Actions CI 体系，无 RAPIDS shared-workflows
+  依赖，无 libwholegraph wheel 发布流程，故 SKIP。
 
-### Upstream diff 摘要
+- **CI/workflow → SKIP**:
+  - `.github/workflows/build.yaml` — SKIP: GitHub Actions CI workflow，Walpurgis 无 CI 体系，无 libwholegraph wheel 发布流程
 
-上游 PR #199 彻底清除了 cuGraph-DGL 的 Dask API 层，涉及三个核心组件：
+- **迁移位置**: `src/walpurgis/core/libwholegraph_wheel_provenance.py` — 新增
 
-**删除文件（10个）：**
+- **鲁迅拿法改写（≥20%）**:
+  1. **`WheelProvenanceField(Enum)`**: 将 branch/sha/date 三个裸字符串键名
+     枚举化，携带 yaml_key/description/is_optional 三属性，
+     `github_expr()` 复现 `${{ inputs.X }}` 表达式——上游只有三行 YAML
+  2. **`WheelProvenanceSpec(frozen dataclass)`**: 封装溯源三要素，
+     `__post_init__` 校验 sha 格式（7-40位十六进制）和 date 格式（YYYYMMDD），
+     `to_yaml_fragment()` 产出三行 YAML——上游无此校验
+  3. **`WheelBuildJobSpec(frozen dataclass)`**: 建模完整 with: 块，
+     `validate_provenance_completeness()` 检测「三要素缺失」，
+     `to_yaml_with_block()` 产出完整 YAML——上游只有 YAML 文本
+  4. **`LibwholegraphWheelFix`**: 建模修复事件，`before_spec()` / `after_spec()`
+     对比修复前后，`regression_check()` 回归验证，`fix_report()` 产出人类可读报告
+     ——上游只有 git diff
+  5. **`WheelProvenanceMigrationAudit`**: 结构化审计，`to_log_entry()` 产出
+     MIGRATION_LOG 段落——上游只有 commit message
+  6. **断点调试**: 全链路 10 处 `WALPURGIS_DEBUG=1` 断点
 
-| 文件 | 行数 | 内容 |
-|---|---|---|
-| `cugraph_dgl/cugraph_storage.py` | 714 | CuGraphStorage 完整实现（DGL-compatible 图存储，底层 cuDF/dask_cudf） |
-| `cugraph_dgl/dataloading/dask_dataloader.py` | 321 | DaskDataLoader（基于 BulkSampler 的大规模批量采样） |
-| `tests/dataloading/test_dask_dataloader.py` | 153 | DaskDataLoader 单 GPU 测试 |
-| `tests/dataloading/test_dask_dataloader_mg.py` | 121 | DaskDataLoader 多 GPU 测试 |
-| `tests/dataloading/test_dataset.py` | 128 | BulkSamplerDataset 测试 |
-| `tests/test_cugraph_storage.py` | 150 | CuGraphStorage 完整测试套件 |
-| `examples/dataset_from_disk_cudf.ipynb` | 269 | cuDF 磁盘数据集示例 |
-| `examples/graphsage/node-classification.py` | 270 | GraphSAGE 节点分类示例 |
-| `examples/multi_trainer_MG_example/model.py` | 145 | 多训练器示例模型 |
-| `examples/multi_trainer_MG_example/workflow.py` | 244 | 多训练器示例流程 |
+- **自测结果**: `_self_test()` 全部 10 项通过
 
-**修改文件（5个）：**
+---
 
-- `cugraph_dgl/__init__.py`（-12行）：删除 `CuGraphStorage` wrapper 函数 + `DEPRECATED__CuGraphStorage` 导入 + `cugraph_storage_from_heterograph` 导入
-- `cugraph_dgl/convert.py`（-25行）：删除 `cugraph_storage_from_heterograph` 函数体 + `CuGraphStorage` import + `cugraph_conversion_utils` imports
-- `cugraph_dgl/dataloading/__init__.py`（-12+6行）：删除 `DaskDataLoader` 导出
-- `tests/dataloading/test_from_dgl_heterograph.py`（-37+行）：移除所有 CuGraphStorage 相关断言
-- `cugraph_dgl/tests/utils.py`（-39+行）：清理 dask_cudf 工具函数
+## migrate 33bccfe: [SKIP] fix(libwholegraph): pass branch, sha, and date (#195)
 
-### Diff 逐行分析
+- **Commit**: `33bccfe`
+- **Commit message**: `fix(libwholegraph): pass branch, sha, and date (#195)`
+- **PR**: https://github.com/rapidsai/cugraph-gnn/pull/195
 
-**`__init__.py`：**
-删除了两件事：
-1. `from cugraph_dgl.cugraph_storage import CuGraphStorage as DEPRECATED__CuGraphStorage`
-2. `CuGraphStorage(*args, **kwargs)` wrapper 函数（FutureWarning → 实例化 DEPRECATED__CuGraphStorage）
-3. `cugraph_storage_from_heterograph` 从 convert 的导入
+- **Context**: `.github/workflows/build.yaml` 的 libwholegraph
+  wheel 构建 job（第 119 行附近）中，向 `rapidsai/shared-workflows` 的
+  `wheels-build.yaml` 新增三行 `with:` 参数透传：
+  `branch: ${{ inputs.branch }}`、
+  `sha: ${{ inputs.sha }}`、
+  `date: ${{ inputs.date }}`。
+  修复了 libwholegraph wheel 制品溯源信息（branch/sha/date 三要素）
+  未透传至 shared-workflows 的缺陷。
+  Walpurgis 无 GitHub Actions CI 体系，无 RAPIDS shared-workflows
+  依赖，无 libwholegraph wheel 发布流程，故 SKIP。
 
-**`convert.py`：**
-删除了 `cugraph_storage_from_heterograph` 函数（25行）：将 `dgl.DGLGraph` 转换为 `CuGraphStorage` 的工厂。
-同时删除其依赖的三个 import：`CuGraphStorage`、`get_edges_dict_from_dgl_HeteroGraph`、`add_ndata/edata_from_dgl_HeteroGraph`。
+- **CI/workflow → SKIP**:
+  - `.github/workflows/build.yaml` — SKIP: GitHub Actions CI workflow，Walpurgis 无 CI 体系，无 libwholegraph wheel 发布流程
 
-**`dataloading/__init__.py`：**
-删除 `DaskDataLoader` 的导出（以及整个 `dask_dataloader.py` 模块）。
-diff 显示 `12 +-`：删除 `DaskDataLoader` import 行，余下行不变。
+- **迁移位置**: `src/walpurgis/core/libwholegraph_wheel_provenance.py` — 新增
 
-### Walpurgis 文件处置
+- **鲁迅拿法改写（≥20%）**:
+  1. **`WheelProvenanceField(Enum)`**: 将 branch/sha/date 三个裸字符串键名枚举化，携带 yaml_key/description/is_optional 三属性，`github_expr()` 复现 `${{ inputs.X }}` 表达式——上游只有三行 YAML
+  2. **`WheelProvenanceSpec(frozen dataclass)`**: 封装溯源三要素，`__post_init__` 校验 sha 格式（7-40位十六进制）和 date 格式（YYYYMMDD），`to_yaml_fragment()` 产出三行 YAML——上游无此校验
+  3. **`WheelBuildJobSpec(frozen dataclass)`**: 建模完整 with: 块，`validate_provenance_completeness()` 检测「三要素缺失」，`to_yaml_with_block()` 产出完整 YAML——上游只有 YAML 文本
+  4. **`LibwholegraphWheelFix`**: 建模修复事件，`before_spec()` / `after_spec()` 对比修复前后，`regression_check()` 回归验证，`fix_report()` 产出人类可读报告——上游只有 git diff
+  5. **`WheelProvenanceMigrationAudit`**: 结构化审计，`to_log_entry()` 产出 MIGRATION_LOG 段落——上游只有 commit message
+  6. **断点调试**: 全链路 10 处 `WALPURGIS_DEBUG=1` 断点
 
-| 上游文件 | Walpurgis 处置 | 产出文件 |
-|---|---|---|
-| `cugraph_dgl/cugraph_storage.py`（删除） | SKIP — 未迁移（依赖 dask_cudf）；`CuGraphStorageGrave` 墓碑记录 | `src/walpurgis/core/dgl_dask_removal.py` |
-| `cugraph_dgl/dataloading/dask_dataloader.py`（删除） | 改写为墓碑模块（`_DaskDataLoaderTombstone` + `TombstoneRegistry`） | `src/walpurgis/dataloader/dask_dataloader.py`（墓碑版） |
-| `cugraph_dgl/dataloading/__init__.py`（修改） | 移除 `DaskDataLoader` 导出 | `src/walpurgis/dataloader/__init__.py` |
-| `cugraph_dgl/convert.py`（修改） | 新增 `cugraph_storage_from_heterograph` 墓碑函数（RuntimeError） | `src/walpurgis/graph/convert.py` |
-| `cugraph_dgl/__init__.py`（修改） | 已由 `dgl_deprecation.py`（fb8296e commit）处理；本次不需额外操作 | `src/walpurgis/core/dgl_deprecation.py`（已有） |
-| 4 个测试文件（删除） | SKIP — 逆向墓碑测试（验证 API 不可用） | `src/walpurgis/tests/sampler/test_dask_storage_tombstone.py` |
-| `test_from_dgl_heterograph.py`（修改） | 已有 `tests/graph/test_graph.py`，storage 相关断言从未迁移 | SKIP |
-| 4 个示例文件（删除） | SKIP — 示例未迁移到 walpurgis | — |
+- **自测结果**: `_self_test()` 全部 10 项通过
 
-### Walpurgis 改写细节（鲁迅拿法 20%）
+---
 
-**`src/walpurgis/dataloader/dask_dataloader.py`（墓碑改写）：**
-上游是「git rm」；Walpurgis 改为结构化墓碑。
-`DaskRemovalRecord(frozen dataclass)` 记录 commit hash、删除行数、10 个被删文件清单、迁移建议。
-`_DaskDataLoaderTombstone` 实例化立即 `RuntimeError` + 迁移路径（比 `ImportError` 更友好）。
-`TombstoneRegistry` 集中管理所有已死的 Dask API 入口，可供 pytest 查询。
-`create_batch_df`、`get_batch_id_series` 均以墓碑函数替代。
-_dbg 断点 6 处：模块加载、DaskDataLoader 实例化、两个辅助函数调用、Registry 查询、self_check。
+## migrate 08922c5: Update ci/release/update-version.sh
 
-**`src/walpurgis/core/dgl_dask_removal.py`（新建）：**
-专注于 CuGraphStorage 层面的删除记录。
-`StorageRemovalSpec(frozen dataclass)` 文档化删除的类/函数名、行数、公开方法清单、迁移目标。
-`CuGraphStorageGrave` 是比 `dgl_deprecation.py::CuGraphStorageCompat` 更强硬的墓碑：
-  Compat 语义是「有兼容层，谨慎可用」；Grave 语义是「坟墓，什么都没有了」。
-`cugraph_storage_from_heterograph` 墓碑函数（RuntimeError + 迁移路径）。
-`DaskApiInventory` 枚举全部被删 API 名称 + 测试文件 + 示例文件，可供审计使用。
-_dbg 断点 6 处。
+- **Commit**: `08922c5`
+- **Commit message**: `Update ci/release/update-version.sh`
 
-**`src/walpurgis/graph/convert.py`（追加）：**
-末尾添加 `cugraph_storage_from_heterograph` 墓碑函数，标注 SKIP 原因（从未迁移，依赖 CuGraphStorage）。
+- **Context**: `ci/release/update-version.sh` 第 147-155 行，`RUN_CONTEXT` 双路文档引用策略：
+  1. **main 上下文**: 将裸 `:` (bash noop) 替换为诊断性 `echo "Keeping external documentation references on main branch"`，明示保持文档引用不变；
+  2. **重复 elif 修复**: 删除重复的 `elif [[ "${RUN_CONTEXT}" == "release" ]];`（copy-paste bug），保留唯一有效 elif 分支，其函数体为 `sed_runner "s|\\bmain\\b|release/${NEXT_SHORT_TAG}|g" cpp/scripts/run-cmake-format.sh`。
 
-**`src/walpurgis/tests/sampler/test_dask_storage_tombstone.py`（新建）：**
-「逆向测试」——验证被删除的 API 确实不可用（RuntimeError），而不是静默失效。
-4 个 `SkipRecord` 记录每个测试文件的删除理由和 walpurgis 等价路径。
-6 个 pytest 测试：
-  `test_dask_api_inventory_complete`、`test_cugraph_storage_raises_runtime_error`、
-  `test_cugraph_storage_from_heterograph_raises_runtime_error`、
-  `test_dask_dataloader_raises_runtime_error`、
-  `test_skip_records_complete`、`test_graph_from_heterograph_still_works`、
-  `test_storage_removal_spec_self_check`。
+- **CI/shell → SKIP**:
+  - `ci/release/update-version.sh` — SKIP: CI 发布脚本，Walpurgis 无 RAPIDS 发布体系，无 `NEXT_SHORT_TAG` 语义，无 `cpp/scripts/run-cmake-format.sh`
 
-### SKIP 汇总
+- **迁移位置**: `src/walpurgis/core/doc_ref_context_policy.py` — 新增
 
-| SKIP 项目 | 理由 |
-|---|---|
-| `cugraph_storage.py` 实现迁移 | 依赖 dask_cudf + RAPIDS 图存储后端，与 walpurgis 架构不兼容；已有 walpurgis.graph.Graph 替代 |
-| `test_dataset.py`（HeteroBulkSamplerDataset） | 测试对象随 cugraph_storage.py 一同删除，walpurgis 无对应实现 |
-| 4 个示例文件 | 示例文件未纳入 walpurgis 迁移范围 |
-| `test_from_dgl_heterograph.py` storage 断言 | 从未迁移到 walpurgis，test_graph.py 覆盖非 storage 部分 |
-| `utils.py` dask 工具函数清理 | 工具函数依赖 dask_cudf，不在迁移范围 |
+- **鲁迅拿法改写（≥20%）**:
+  1. **`DocRefBranch(Enum)`**: 将上游 `main`/`release` 裸字符串常量枚举化，携带 `human_label`/`noop` 属性，将「是否需要 sed」从散落 if/elif 解耦——上游只有裸字符串比较
+  2. **`DocRefVerb(Enum)`**: 将「保持原样」与「sed 替换」两种动作枚举化，携带 `action_description`/`mutates_files` 属性——上游无此语义层
+  3. **`DocRefTransition(frozen dataclass)`**: 建模「旧引用 → 新引用」替换三元组（pattern/replacement/target_glob），`__post_init__` 校验 pattern 非空、replacement 非空、release tag 格式 YY.MM——上游只有内联 `sed_runner` 调用
+  4. **`DocRefContextPolicy(frozen dataclass)`**: 将 main/release 双路策略统一封装，`resolve_verb()` 依 branch 推导动作，`apply_dry_run()` 返回人类可读描述（不真正执行 sed），`audit_entry()` 产出摘要——上游 main 路只有一行 echo，release 路只有一行 sed_runner
+  5. **`DocRefContextResolver`**: 工厂类，`from_env()`/`from_str()`/`default()` 三段解析 RUN_CONTEXT，`validate_no_duplicate_elif()` 静态方法检测本 commit 修复的重复 elif bug——上游无此校验层
+  6. **`DocRefPolicyAudit(dataclass)`**: 结构化审计记录，`to_log_summary()` 产出单行摘要，`to_full_report()` 产出多行报告——上游无此审计层
+  7. **断点调试**: 全链路 10 处 `WALPURGIS_DEBUG=1` 断点
 
-### 三维度审查（Knuth）
+- **自测结果**: `_self_test()` 全部 10 项通过
 
-- **正确性**：`StorageRemovalSpec.self_check()` 和 `DaskApiInventory.self_check()` 断言删除规模精确匹配 diff（714行/4测试文件/4示例文件）。`TombstoneRegistry.self_check()` 验证所有 5 个死亡 API 均已注册。逆向测试确认每个墓碑均正确抛出 RuntimeError（不是 AttributeError 或静默失效）。
-
-- **性能**：墓碑模块的唯一性能影响是 `RuntimeError` 构造（仅在误用时发生）。正常路径（`DataLoader`、`DGLDataLoader`、`graph_from_heterograph`）完全不经过任何墓碑代码。`_dbg` 断点在 `WALPURGIS_DEBUG=0`（默认）时为零开销。
-
-- **可读性**：鲁迅式「留下墓志铭」代替上游的「git rm」。每个死亡 API 都有：RuntimeError 消息含 commit hash、迁移路径、等价接口。`SkipRecord` 使「为什么不迁移」从注释升为可查询的结构化数据。`CuGraphStorageGrave` vs `CuGraphStorageCompat` 的命名区分「死亡」与「兼容」两种状态，使代码库的历史层次清晰可见。全链路 _dbg 断点 18 处（跨 3 个文件），`WALPURGIS_DEBUG=1` 可追踪任何误用调用的完整路径。
-
+---
