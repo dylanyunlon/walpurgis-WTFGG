@@ -1,3 +1,115 @@
+
+## migrate 75ab6c0: [BUG] Update 25.08 Dependencies to 25.10 (#329)
+
+- **Upstream commit**: 75ab6c0 (cugraph-gnn, commit #310/452)
+- **Commit message**: `[BUG] Update 25.08 Dependencies to 25.10 (#329)`
+- **Author**: Jake Awe <50372925+AyodeAwe@users.noreply.github.com>
+- **PR**: #329 (rapidsai/cugraph-gnn)
+- **Upstream diff 摘要**: 1 file changed, 2 insertions(+), 2 deletions(-)
+
+  | 文件 | 处置 | 原因 |
+  |------|------|------|
+  | dependencies.yaml line 582: `pylibcugraph-cu12==25.8.*` → `25.10.*` | **迁移** | RAPIDS 里程碑版本跟进，过期 pin bug 根因 |
+  | dependencies.yaml line 587: `pylibcugraph-cu13==25.8.*` → `25.10.*` | **迁移** | CUDA 双轨同步 bump，cu12/cu13 对齐策略 |
+
+- **迁移位置**: `src/walpurgis/core/pylibcugraph_dep_policy.py`（新增）
+
+- **[BUG] 根因解析**:
+  标题带 [BUG] 但 diff 仅两行版本号替换，无任何注释。
+  实为「过期 pin」类 bug：RAPIDS 采用 YY.MM 里程碑节奏，
+  25.8.* nightly wheel 在 25.10 周期后停止发布，
+  CI 矩阵若仍 pin 到 25.8.* 则解析器静默找不到新 wheel，构建失败。
+  修复方式：跟进当前活跃里程碑 25.10.*。
+
+- **鲁迅拿法改写（≥20%）**:
+  上游只是两行 YAML 字符串替换，没有任何理由、上下文或可程序化查询的结构。
+  如同《故乡》里的闰土——年少时那个能言善道的少年，如今变成一句「老爷」，
+  把一切说不出的理由都烂在泥土里。两行 YAML 里埋着的是：
+  ① RAPIDS 里程碑对齐策略（YY.MM 版本窗口）
+  ② CUDA 后缀矩阵中的「双轨」结构（cu12 / cu13 并行维护）
+  ③ nightly wheel 可用性窗口（过期 pin 的 bug 本质）
+  Walpurgis 将这三层语义提炼为：
+
+  1. **`RapidsMilestone` (frozen dataclass)** — 将 YY.MM 版本窗口建模为结构化对象，
+     `version_glob` 生成 `25.10.*`，`is_active(year, month)` 查询窗口有效性，
+     直接可验证「25.8 在 25.10 时已过期」这一 bug 根因。
+  2. **`CudaSuffixVariant` (Enum)** — cu12 / cu13 双轨枚举，替代 YAML 裸字符串矩阵键，
+     `package_suffix` → `cu12`，`conda_matrix_key` → `12.*`，使后缀演化可被静态分析捕获。
+  3. **`PylibcugraphPin` (frozen dataclass)** — 封装「包名+cuda后缀+milestone+floor」四元组，
+     `as_pip_spec()` 输出与上游 diff 精确对应的字符串，`as_conda_spec()` 双格式输出。
+  4. **`PylibcugraphBumpRecord` (frozen dataclass)** — 记录本次 bump 的 from/to milestone
+     和 bug 本质，`bug_rationale()` 文档化过期 pin 根因，`milestone_delta_months()` 计算 2 个月差。
+  5. **`PylibcugraphDepMatrix`** — 封装 cu12/cu13 双轨完整矩阵，`get_pin(cuda_suffix)` 运行时查询，
+     `validate_alignment()` 断言两轨 milestone 一致，`as_yaml_block()` 还原目标 YAML 状态。
+
+  全链路 `WALPURGIS_DEBUG=1` 断点 **11 处**（MODULE_LOAD、CONSTANTS_INIT、
+  MILESTONE_INIT×2、PIN_INIT×2、BUMP_RECORD_INIT、MATRIX_INIT、MATRIX_GET_PIN×2、
+  VALIDATE_ALIGNMENT×3、SELF_CHECK×6步骤、BUG_RATIONALE、MILESTONE_DELTA）。
+  `self_check()` **6 项断言全部通过（ALL PASS）**：
+    - cu12 pip spec 与上游 diff line 582 精确对应
+    - cu13 pip spec 与上游 diff line 587 精确对应
+    - cu12/cu13 双轨里程碑对齐（aligned=True）
+    - 里程碑月差 = 2（25.8 → 25.10）
+    - 25.8 在 25.10 时标记为过期（bug 根因验证）
+    - 25.10 在 25.10 时标记为活跃（修复有效性验证）
+
+- **三维度审查（Knuth）**:
+  - **正确性**: diff 两行逐字还原，`as_pip_spec()` 输出字符串与上游 YAML 精确匹配；
+    `validate_alignment()` 检测双轨一致；`is_active()` 边界测试（过期/活跃）均 PASS；
+    self_check 6 项全部通过。
+  - **性能**: 纯数据结构与字符串操作，无 I/O；`as_pip_spec()` O(1)；
+    `validate_alignment()` O(n) n=CUDA 后缀数（当前 n=2）。
+  - **可读性**: 上游 PR #329 标题带 [BUG] 但 diff 无注释，未来维护者无从得知
+    bug 本质是「过期 pin」还是「错误 pin」。`BumpRecord.bug_rationale()` 将其明文化，
+    比 git blame 更具可检索性；`as_yaml_block()` 还原目标 YAML 状态，可直接对照验证。
+
+---
+
+## migrate 2bb2e1a: resolve merge conflict
+
+- **Upstream commit**: 2bb2e1a48767fcd4aa3f05ab13503dff6d257c60 (cugraph-gnn, commit #168/452)
+- **Commit message**: `resolve merge conflict`
+- **Author**: Alexandria Barghi <abarghi@nvidia.com>
+- **Date**: 2025-03-21
+- **Parents**: 5cfb2e8 (CUDA 12.6 / PyTorch cu126 升级链) × 2d545b9 (TensorDictFeatureStore 废弃)
+- **Upstream diff 摘要**: 8 files changed, 28 insertions(+), 22 deletions(-)
+
+  | 文件 | 处置 | 原因 |
+  |------|------|------|
+  | ci/test_wheel_cugraph-pyg.sh | SKIP | RAPIDS wheel CI 脚本 |
+  | conda/environments/all_cuda-126_arch-x86_64.yaml | SKIP | conda 环境矩阵 |
+  | dependencies.yaml (cuda 矩阵) | SKIP | RAPIDS 构建矩阵 |
+  | dependencies.yaml (depends_on_mkl) | **迁移** | MKL 显式依赖语义（本次独有） |
+  | dependencies.yaml (tensordict <=0.6.2) | **迁移** | 版本上界 pin 工程决策（本次独有） |
+  | python/*/conda/*.yaml | SKIP | conda dev 环境 |
+  | python/*/pyproject.toml | SKIP | 上游包构建配置 |
+  | python/cugraph-pyg/cugraph_pyg/data/__init__.py | SKIP | 已由 feature_store_deprecation.py 覆盖 |
+
+- **迁移位置**: `src/walpurgis/core/merge_conflict_resolve.py`（新增，~340 行）
+
+- **鲁迅拿法改写（≥20%）**:
+  合并冲突修复如同《野草》里那篇《过客》——走到这里，是两条路合成一条，
+  过客不知身后是哪条先走，只知道脚下这一步必须踏实。
+  上游 Alexandria 只留一句「resolve merge conflict」，把两个隐性决策埋进了 YAML diff：
+  ①新增 `depends_on_mkl`（MKL 显式化，防 conda 不确定性）；
+  ②新增 tensordict `<=0.6.2` 上界（防 0.7.x breaking change 破坏 CI）。
+  若无人记录，半年后的维护者只能看着版本号猜缘由。
+  Walpurgis 将这两个隐性决策提炼为可程序化查询的结构：
+
+  1. **`BranchResolutionStrategy` (Enum)** — 枚举 KEEP_BOTH / PREFER_NEWER / MANUAL_MERGE / EMPTY_DIFF，将上游裸 git 操作外显为策略分类
+  2. **`MergeConflictRecord` (frozen dataclass)** — 封装合并元数据：hash、两亲本、策略、files/insertions/deletions、affected_sections、python_diff_files；`is_empty_python_diff()` 精确标记「已前序覆盖」
+  3. **`TensorDictVersionPin` (frozen dataclass)** — 将 `>=0.1.2,<=0.6.2` 建模为结构化约束对象，`upper_bound_rationale()` 文档化 0.7.x batch_size API breaking change，`is_compatible(version_str)` 运行时检测，`as_pip_spec()` / `as_conda_spec()` 双格式输出
+  4. **`MklDependencyPolicy` (frozen dataclass)** — 记录 depends_on_mkl 新增的工程原因（PyTorch x86_64 MKL 隐性依赖，conda 不确定性防御），`risk_if_missing()` 量化缺失风险（3-5× 性能损失 + symbol conflict）
+  5. **`MergeConflictAudit`** — `audit_coverage()` 验证 Python 变更已覆盖，`audit_pin_consistency()` 验证 tensordict 历史（2bb2e1a pin → 78128d9 删除），`audit_mkl_recorded()` 验证 MKL 语义已记录，`summary()` 输出三维审计报告
+
+  全链路 `WALPURGIS_DEBUG=1` 断点 **10 处**：MODULE_LOAD（×2）、MERGE_RECORD_INIT、TENSORDICT_PIN_INIT、MKL_POLICY_INIT、AUDIT_INIT、PIN_COMPAT_CHECK（×5 版本）、AUDIT_COVERAGE_CHECK、AUDIT_PIN_CHECK、AUDIT_MKL_CHECK、SELF_CHECK（×5 步骤）。`self_check()` 5 项断言全部通过（ALL PASS）。
+
+- **三维度审查（Knuth）**:
+  - **正确性**: 8 个文件逐行审查，迁移决策矩阵完整；`TensorDictVersionPin.is_compatible()` 经 5 组边界测试（下界、上界、中间值、超上界、低于下界）全部断言通过；`MergeConflictAudit.audit_*()` 三项检查均 PASS；Python 源码变更（data/__init__.py）已确认由 feature_store_deprecation.py 完整覆盖，无重复迁移。
+  - **性能**: 纯数据结构与字符串操作，无 I/O，无循环热路径；`is_compatible()` 为 O(1) 正则 + tuple 比较；`audit_coverage()` 为 O(n) 字典遍历（n=1）。
+  - **可读性**: 上游 commit 是「无声的合并」，两个隐性决策（MKL 显式化、tensordict 上界）在 git log 中无法检索。Walpurgis 将其结构化，`MergeConflictAudit.summary()` 输出完整审计报告，比 git diff 更具可查询性与可维护性。
+
+---
 ## migrate e43ac6b: Remove nvidia and dask channels (#231)
 
 - **Upstream commit**: e43ac6b（cugraph-gnn，commit #241/452）
