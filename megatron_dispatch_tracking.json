@@ -54,5 +54,12 @@
     "walpurgis_file": "src/walpurgis/datasets/code_reuse_merge.py",
     "diff": "empty_merge_commit",
     "note": "code_reuse 分支实质内容已在 #27 cbd8c054e 迁移至 datasets/corpora.py"
+  },
+  "30": {
+    "hash": "0f873f979",
+    "subject": "Merge branch 'multiple-eos-edge-case' into 'master'",
+    "status": "completed",
+    "walpurgis_file": "src/walpurgis/core/multiple_eos_edge_case.py",
+    "diff": "empty_merge_commit"
   }
 }
