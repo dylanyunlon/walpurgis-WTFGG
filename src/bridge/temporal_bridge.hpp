@@ -59,6 +59,7 @@
 #include <cstdint>
 #include <optional>        // a056923: node_time_func optional return
 #include <iostream>
+#include <random>          // mt19937_64 for temporal_negative_sample
 #include "../core/interval_index.hpp"     // M011: dual-sorted interval index
 #include "../core/partition_skiplist.hpp" // M013: augmented interval skip list
 
@@ -254,7 +255,6 @@ inline void debug_dtype_dispatch(uint8_t feature_dtype, const char* op) {
     int         align   = tb_emb_align_count(feature_dtype);
     printf("[DEBUG 220563b dispatch] op=%s feature_dtype=%s wire_id=%u align=%d\n",
            op, name, (unsigned)wire_id, align);
-}
 }
 
 
@@ -927,17 +927,12 @@ public:
     // Knuth review note: the enum values deliberately mirror the PyG string
     // names (with underscores) so a future Python binding can round-trip them
     // with a simple snake_case → enum lookup.
-    enum class TemporalComparison : uint8_t {
-        strictly_increasing      = 0,
-        monotonically_increasing = 1,
-        strictly_decreasing      = 2,
-        monotonically_decreasing = 3,  // DEFAULT — most common for link prediction
-        last                     = 4,  // for temporal_strategy='last'
-    };
+    // 使用 namespace 级别的 TemporalComparison (L80), 不重复定义
+    // a056923: 枚举值为大写 (MONOTONICALLY_DECREASING 等)
 
     // Default temporal comparison (a056923: was "monotonically decreasing" string).
     static constexpr TemporalComparison kDefaultTemporalComparison =
-        TemporalComparison::monotonically_decreasing;
+        TemporalComparison::MONOTONICALLY_DECREASING;
 
     // Register a node-time lookup function for this bridge's node population.
     // Call once after feature store is populated. Pass nullptr to clear.

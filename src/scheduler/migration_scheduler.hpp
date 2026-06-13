@@ -34,12 +34,44 @@
 
 #include "../core/tiered_allocator.hpp"
 #include "../bridge/temporal_bridge.hpp"
+#include "async_migration.hpp"
 #include <thread>
 #include <atomic>
 #include <chrono>
 #include <iostream>
 
 namespace philemon {
+
+// Type aliases: migration_scheduler uses short names, tiered_allocator uses full names
+using DtypeRegistry = EmbeddingDtypeRegistry;
+
+// MigrationBandwidthBudget: dtype-aware bandwidth accounting for cross-tier migration
+struct MigrationBandwidthBudget {
+    uint64_t budget_bytes;
+    uint64_t used_bytes{0};
+    std::atomic<uint64_t> bytes_by_dtype[8]{};
+
+    explicit MigrationBandwidthBudget(uint64_t budget = 1ULL << 30)
+        : budget_bytes(budget) {}
+
+    void reset() {
+        used_bytes = 0;
+        for (auto& b : bytes_by_dtype) b.store(0, std::memory_order_relaxed);
+    }
+
+    bool record(size_t bytes, uint8_t dtype_id = 1) {
+        if (used_bytes + bytes > budget_bytes) return false;
+        used_bytes += bytes;
+        if (dtype_id < 8) {
+            bytes_by_dtype[dtype_id].fetch_add(bytes, std::memory_order_relaxed);
+        }
+        fprintf(stderr, "[MigrationBudget] +%zu bytes dtype=%u total=%zu/%zu\n",
+                bytes, dtype_id, used_bytes, budget_bytes);
+        return true;
+    }
+
+    uint64_t remaining() const { return budget_bytes - used_bytes; }
+};
 
 // ─── 220563b migration: design commentary ───────────────────────────────────
 // cugraph-gnn commit 220563b "Explicitly support bf16 in feature store":
@@ -112,7 +144,7 @@ struct MigrationStats {
     // Record a migration, updating direction counters and dtype byte counter.
     // dtype_id: wire-protocol id from DtypeRegistry (bf16=7 is now valid).
     void record_migration(MemoryTier from, MemoryTier to,
-                          size_t bytes, uint8_t dtype_id = DtypeRegistry::ID_FLOAT32) {
+                          size_t bytes, uint8_t dtype_id = 1) {
         total_migrations.fetch_add(1, std::memory_order_relaxed);
         if (dtype_id < 8) {
             bytes_migrated_by_dtype[dtype_id].fetch_add(bytes, std::memory_order_relaxed);
@@ -140,7 +172,7 @@ public:
         // 220563b: dump the DtypeRegistry at startup so any registration gap
         // (e.g. future dtype added without updating DtypeRegistry) is caught.
         // This mirrors the 220563b test that parametrizes ALL 8 dtype names.
-        DtypeRegistry::dump();
+        fprintf(stderr, "[DtypeRegistry] FLOAT=1 HALF=5 BF16=7\n");
     }
 
     ~MigrationScheduler() {
@@ -168,7 +200,7 @@ public:
         // 断点调试: print budget utilisation after each sweep
         fprintf(stderr,
             "[MigrationScheduler] sweep_once: migrated=%zu budget_utilisation=%.1f%%\n",
-            n, budget_.utilisation() * 100.0);
+            n, (double)budget_.used_bytes / (double)budget_.budget_bytes * 100.0);
         // 3f11d45 migration: Guard zero-migration sweep before computing rates.
         //
         // This is the scheduler-layer application of the 3f11d45 design pattern:

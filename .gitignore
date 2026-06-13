@@ -54,3 +54,4 @@ philemon_bench
 submodel_batch*_dispatch.log
 submodel_batch*_*.txt
 submodel_response_*.txt
+src/bench/bin/
