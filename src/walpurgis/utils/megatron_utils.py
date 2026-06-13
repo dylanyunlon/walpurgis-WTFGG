@@ -258,3 +258,43 @@ class TensorBoardWriter:
             self._writer.close()
             _dbg("TB_WRITER_CLOSED", self._log_dir)
             self._writer = None
+
+
+# ── 73af12903 追加：initialize_distributed / set_random_seed 迁移 ─────────────
+# 上游本次 commit 将这两个函数从 pretrain_gpt2.py 移至 megatron/utils.py，
+# 两个 pretrain 脚本均可复用。Walpurgis 同步追加至 megatron_utils.py，
+# 并委托给 src/walpurgis/core/training.py 的 DistributedSetup 实现，
+# 避免重复逻辑（上游两处独立实现，Walpurgis 单处实现+接口兼容层）。
+
+def initialize_distributed(
+    master_addr: str = "localhost",
+    master_port: str = "6000",
+    backend: str = "nccl",
+) -> None:
+    """
+    上游接口兼容函数（73af12903: 从 pretrain_gpt2.py 迁至 megatron/utils.py）。
+
+    委托给 DistributedSetup.initialize_distributed()。
+    _dbg 断点：DIST_COMPAT_CALL 记录调用来源。
+    """
+    _dbg("DIST_COMPAT_CALL",
+         f"initialize_distributed(addr={master_addr}, port={master_port})")
+    from ..core.training import DistributedSetup
+    DistributedSetup.initialize_distributed(
+        master_addr=master_addr,
+        master_port=master_port,
+        backend=backend,
+    )
+
+
+def set_random_seed(seed: int) -> None:
+    """
+    上游接口兼容函数（73af12903: 从 pretrain_gpt2.py 迁至 megatron/utils.py）。
+
+    Walpurgis 委托给 DistributedSetup.set_random_seed()，
+    加 rank-aware 种子偏移（上游无此特性，Walpurgis 改写点）。
+    _dbg 断点：SEED_COMPAT_CALL。
+    """
+    _dbg("SEED_COMPAT_CALL", f"set_random_seed(seed={seed})")
+    from ..core.training import DistributedSetup
+    DistributedSetup.set_random_seed(seed)

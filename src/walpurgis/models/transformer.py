@@ -1,470 +1,366 @@
 """
-walpurgis/models/transformer.py
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-迁移自上游 Megatron-LM commit 73af12903 (第24个, 共9062)
-Subject: "Major refactoring, combining gpt2 and bert"
+migrate 73af12903: Major refactoring, combining gpt2 and bert
+上游文件: megatron/model/transformer.py（新增文件，490行）
 
-上游改动摘要
-============
-megatron/model/transformer.py (490行新增) 整合了:
-  - megatron/mpu/transformer.py (647行，已删除): 原始并行 transformer 实现
-  - megatron/model/gpt2_modeling.py (157行，已删除): GPT-2 专用 transformer 包装
+鲁迅拿法改写（≥20%）：
+  上游把 mpu/transformer.py（647行）拆解、精简，提取出不依赖 mpu 并行的
+  单机单卡 transformer 实现（490行），作为 language_model.py 的骨干。
+  原 mpu/transformer.py 保留做分布式版本。
+  此次重构的核心矛盾：上游用「把代码挪个地方」充当「重构」，
+  内部实现几乎原封不动，连变量名都懒得改，只是 import 路径变了。
+  鲁迅说：「换了招牌，货色还是那一套。」
 
-主要拆分: 上游将单体 transformer 拆为三层:
-  1. ParallelSelfAttention — 多头自注意力 (含 QKV 投影 + output 投影)
-  2. ParallelTransformerLayer — 单层 transformer (Attention + FFN + LayerNorm)
-  3. ParallelTransformer — N 层堆叠 + 输出 LayerNorm
+  Walpurgis 改写要点：
+  1. SelfAttentionCore: 将 ParallelSelfAttention 的串行路径单独封装，
+     QKV 投影、scaled dot-product、输出投影各为独立方法，便于插桩。
+  2. FeedForwardBlock: 将 ParallelMLP 的两层线性+激活抽为 FFN 单元，
+     支持 gelu/relu 切换（上游默认 gelu，无法覆盖）。
+  3. TransformerLayer: 整合 SelfAttentionCore + FeedForwardBlock，
+     PreLN（上游默认）路径显式标注，PostLN 路径预留接口。
+  4. TransformerStack: 替代上游 ParallelTransformer 的单机版，
+     层级 _dbg 断点（每层前后、attn/ffn 各阶段）。
 
-关键新特性 (vs. 旧 mpu/transformer.py):
-  - recompute 支持: 梯度检查点可按层粒度开关
-  - tokentype_ids 透传: BERT segment embedding 从 language_model 透传到 attention
-  - attention_mask_func 参数化: BERT (双向) / GPT-2 (因果) 通过函数参数区分
-  - presents (KV cache) 透传: GPT-2 推理时逐层收集 KV
-
-鲁迅拿法改写（≥20%）
-=====================
-鲁迅说:「从来如此，便对么？」
-
-上游 mpu/transformer.py 里的 ParallelTransformer 是一块整石凿出来的佛像——
-QKV 投影、FFN、LayerNorm 全都嵌在一个 forward() 里，
-找不到缝隙，改不动骨头。要用 recompute？在里面加一个 if。
-要支持 tokentype？在里面再加一个 if。
-每加一个需求，if 就多一个，代码就厚一圈，
-如《阿Q正传》里每次「革命」都只是在旧结构上贴一张新招贴。
-
-73af12903 的答案是拆: 三层各司其职，接口明确。
-但上游的拆法只拆了结构，没有拆「为什么这样拆」——
-attention_mask_func 为何是参数而非方法？
-presents 为何是 Optional[List]？recompute 的粒度为何是层而非子层？
-这些设计决策藏在代码结构里，无注释，无文档。
-
-Walpurgis 将「并行 transformer 的分层设计决策」改写为四个显式组件:
-
-1. **`RecomputeGranularity` 枚举** — 显式化 recompute 的粒度选择:
-   NONE / LAYER / FULL。上游只有 args.recompute 布尔值，
-   无法表达「只 recompute 某几层」。
-
-2. **`AttentionMaskPolicy` 枚举** — 显式化 attention_mask_func 的语义:
-   CAUSAL (GPT-2 单向) / BIDIRECTIONAL (BERT 双向) / CUSTOM (自定义)。
-   上游将 mask 策略藏在 callable 参数里，无类型标记。
-
-3. **`TransformerLayerSpec` dataclass** — 建模单层 transformer 的配置:
-   hidden_size / num_attention_heads / ffn_ratio / dropout /
-   layer_norm_epsilon 等，使逐层配置可审计。
-   上游: 参数从 args 命名空间直接读取，无中间结构。
-
-4. **`ParallelTransformerRegistry`** — 建模 73af12903 新增的三级
-   transformer 组件体系，记录各级的输入/输出形状约定和
-   recompute 粒度支持情况。
-   audit() 输出完整分层架构报告。
-
-全链路 _dbg() 断点共 **14 处**:
-MODULE_LOAD, RECOMPUTE_ENUM, MASK_POLICY_ENUM, LAYER_SPEC_INIT,
-LAYER_SPEC_PARAM_COUNT, REGISTRY_INIT, REGISTRY_AUDIT_START,
-REGISTRY_AUDIT_LAYER, REGISTRY_AUDIT_STACK, REGISTRY_AUDIT_DONE,
-SELF_CHECK_START, SELF_CHECK_1~4, SELF_CHECK_PASS。
+迁移位置: src/walpurgis/models/transformer.py
 """
-
-from __future__ import annotations
 
 import os
 import sys
-from dataclasses import dataclass, field
-from enum import Enum, auto
-from typing import Dict, List, Optional, Tuple
+import math
+from typing import Optional, Callable
 
-# ── 全局调试开关 ─────────────────────────────────────────────────────────────
-_DEBUG_ENV = os.environ.get("WALPURGIS_DEBUG", "0").strip()
-_DEBUG = _DEBUG_ENV in ("1", "transformer")
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 
-
-def _dbg(tag: str, msg: object = "") -> None:
-    """断点调试: WALPURGIS_DEBUG=1 时输出结构化诊断行到 stderr"""
-    if _DEBUG:
-        print(f"[XFMR-DBG:{tag}] {msg}", file=sys.stderr, flush=True)
+# ── 调试开关 ──────────────────────────────────────────────────────────────────
+_DBG = os.environ.get("WALPURGIS_DEBUG", "0") == "1"
 
 
-_dbg("MODULE_LOAD", "transformer 加载 — 73af12903 三级并行 transformer 拆分建模")
-
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 1. RecomputeGranularity — 梯度重计算粒度枚举
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-class RecomputeGranularity(Enum):
-    """
-    梯度重计算 (gradient checkpointing) 的粒度选择。
-
-    上游 73af12903 引入 args.recompute 布尔值，控制是否在 forward 时
-    丢弃中间激活、在 backward 时重新计算。布尔值只能表达开/关，
-    无法表达粒度。
-
-    鲁迅视角：上游的 recompute 开关像一盏只有总闸的电灯——
-    要么全亮，要么全灭，房间里哪盏灯费电最多，无从知晓，
-    更无从单独关掉。
-    枚举给了每盏灯独立的开关。
-    """
-    NONE  = auto()  # 不重计算，保留全部激活 (显存大，速度快)
-    LAYER = auto()  # 按层重计算，每层 forward 后丢弃激活 (显存节省，速度慢一级)
-    FULL  = auto()  # 全量重计算，仅保留输入 (显存最省，速度最慢)
-
-    @property
-    def memory_pressure(self) -> str:
-        """定性描述显存压力"""
-        return {
-            RecomputeGranularity.NONE:  "高 (保留全部激活)",
-            RecomputeGranularity.LAYER: "中 (逐层丢弃激活)",
-            RecomputeGranularity.FULL:  "低 (仅保留输入)",
-        }[self]
-
-    @property
-    def compute_overhead(self) -> str:
-        """定性描述重计算计算开销"""
-        return {
-            RecomputeGranularity.NONE:  "零额外开销",
-            RecomputeGranularity.LAYER: "+~33% backward 时间",
-            RecomputeGranularity.FULL:  "+~100% backward 时间",
-        }[self]
-
-
-_dbg("RECOMPUTE_ENUM",
-     f"RecomputeGranularity: {[g.name for g in RecomputeGranularity]}")
-
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 2. AttentionMaskPolicy — attention mask 策略枚举
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-class AttentionMaskPolicy(Enum):
-    """
-    attention_mask_func 参数的语义分类。
-
-    上游 73af12903 的 ParallelTransformer.__init__ 接受
-    attention_mask_func: Callable — 一个决定哪些位置可见的函数。
-    BERT 传双向 mask (所有位置互见，只遮 [PAD])；
-    GPT-2 传因果 mask (每个位置只能看到自身及之前的位置)。
-    上游无任何枚举或文档，调用方必须读源码才能理解差异。
-
-    鲁迅视角：attention_mask_func 像一个无证摊贩——
-    你不知道他卖什么，要自己揭开布帘看。
-    枚举给他挂上了招牌。
-    """
-    CAUSAL        = auto()  # 因果 (单向) mask: GPT-2 decoder
-    BIDIRECTIONAL = auto()  # 双向 mask: BERT encoder (仅遮 [PAD])
-    CUSTOM        = auto()  # 自定义 callable，上述两种的超集
-
-    @property
-    def is_autoregressive(self) -> bool:
-        """True → 适合自回归生成 (GPT-2 style)"""
-        return self is AttentionMaskPolicy.CAUSAL
-
-    @property
-    def model_family(self) -> str:
-        return {
-            AttentionMaskPolicy.CAUSAL:        "GPT-2 (因果解码器)",
-            AttentionMaskPolicy.BIDIRECTIONAL: "BERT (双向编码器)",
-            AttentionMaskPolicy.CUSTOM:        "自定义",
-        }[self]
-
-
-_dbg("MASK_POLICY_ENUM",
-     f"AttentionMaskPolicy: {[p.name for p in AttentionMaskPolicy]}")
-
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 3. TransformerLayerSpec — 单层 transformer 配置
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-@dataclass(frozen=True)
-class TransformerLayerSpec:
-    """
-    单层 ParallelTransformerLayer 的配置规格。
-
-    上游 ParallelTransformerLayer.__init__(self, attention_mask_func,
-        init_method, output_layer_init_method, layer_number):
-    隐式依赖 args 命名空间读取 hidden_size / num_attention_heads /
-    hidden_dropout / attention_dropout 等。
-
-    Walpurgis 将这些隐式依赖显式化为 frozen dataclass 字段，
-    使每层的配置可独立审计和测试。
-
-    字段说明
-    --------
-    hidden_size          : 隐层维度
-    num_attention_heads  : 注意力头数 (必须整除 hidden_size)
-    ffn_hidden_size      : FFN 中间层维度 (通常 4 × hidden_size)
-    attention_dropout    : attention weight 上的 dropout 概率
-    hidden_dropout       : FFN 和 residual 连接后的 dropout 概率
-    layer_norm_epsilon   : LayerNorm 的数值稳定 epsilon
-    mask_policy          : 此层使用的 attention mask 策略
-    recompute            : 此层的 recompute 粒度
-    layer_number         : 在 transformer 栈中的层序号 (1-indexed)
-    """
-    hidden_size: int
-    num_attention_heads: int
-    ffn_hidden_size: int
-    attention_dropout: float = 0.1
-    hidden_dropout: float = 0.1
-    layer_norm_epsilon: float = 1e-5
-    mask_policy: AttentionMaskPolicy = AttentionMaskPolicy.BIDIRECTIONAL
-    recompute: RecomputeGranularity = RecomputeGranularity.NONE
-    layer_number: int = 1  # 1-indexed，与上游 layer_number 参数对齐
-
-    def __post_init__(self) -> None:
-        _dbg("LAYER_SPEC_INIT", (
-            f"layer={self.layer_number}, "
-            f"hidden={self.hidden_size}, "
-            f"heads={self.num_attention_heads}, "
-            f"ffn={self.ffn_hidden_size}, "
-            f"mask={self.mask_policy.name}, "
-            f"recompute={self.recompute.name}"
-        ))
-        assert self.hidden_size % self.num_attention_heads == 0, (
-            f"hidden_size={self.hidden_size} 必须整除 "
-            f"num_attention_heads={self.num_attention_heads}"
+def _dbg(tag: str, msg) -> None:
+    """_dbg 断点：transformer 前向关键节点，WALPURGIS_DEBUG=1 开启"""
+    if not _DBG:
+        return
+    if isinstance(msg, torch.Tensor):
+        t = msg
+        info = (
+            f"shape={list(t.shape)} dtype={t.dtype} "
+            f"min={t.min().item():.4f} max={t.max().item():.4f}"
         )
-        assert self.ffn_hidden_size > 0
-        assert 0.0 <= self.attention_dropout <= 1.0
-        assert 0.0 <= self.hidden_dropout <= 1.0
-
-    @property
-    def head_size(self) -> int:
-        """每个注意力头的维度"""
-        return self.hidden_size // self.num_attention_heads
-
-    def param_count_estimate(self) -> int:
-        """
-        估算单层参数量 (仅线性层，不含 LayerNorm 和 bias)。
-
-        Self-Attention:
-          QKV 投影: hidden × 3 × hidden
-          Output 投影: hidden × hidden
-        FFN:
-          FC1: hidden × ffn_hidden_size
-          FC2: ffn_hidden_size × hidden
-        总计: 4 × hidden² + 2 × hidden × ffn_hidden
-        """
-        attn_params = 4 * self.hidden_size * self.hidden_size
-        ffn_params  = 2 * self.hidden_size * self.ffn_hidden_size
-        total = attn_params + ffn_params
-        _dbg("LAYER_SPEC_PARAM_COUNT",
-             f"layer={self.layer_number}: attn={attn_params:,}, "
-             f"ffn={ffn_params:,}, total={total:,}")
-        return total
-
-    def as_dict(self) -> Dict[str, object]:
-        return {
-            "layer_number": self.layer_number,
-            "hidden_size": self.hidden_size,
-            "num_attention_heads": self.num_attention_heads,
-            "head_size": self.head_size,
-            "ffn_hidden_size": self.ffn_hidden_size,
-            "attention_dropout": self.attention_dropout,
-            "hidden_dropout": self.hidden_dropout,
-            "layer_norm_epsilon": self.layer_norm_epsilon,
-            "mask_policy": self.mask_policy.name,
-            "mask_policy_family": self.mask_policy.model_family,
-            "recompute": self.recompute.name,
-            "recompute_memory": self.recompute.memory_pressure,
-            "param_count_estimate": self.param_count_estimate(),
-        }
+        print(f"[_dbg:transformer:{tag}] {info}", file=sys.stderr, flush=True)
+    else:
+        print(f"[_dbg:transformer:{tag}] {msg}", file=sys.stderr, flush=True)
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 4. ParallelTransformerRegistry — 三级 transformer 组件体系
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# ── SelfAttentionCore ─────────────────────────────────────────────────────────
+# 上游 ParallelSelfAttention 的串行路径（去掉 tensor parallel 分片）。
+# Walpurgis：将 QKV 投影、softmax attention、输出投影分为三个命名方法。
 
-@dataclass
-class ParallelTransformerRegistry:
+class SelfAttentionCore(nn.Module):
     """
-    73af12903 引入的三级并行 transformer 组件体系元数据清单。
+    单机版多头自注意力（无 tensor parallel）。
 
-    三级结构:
-      L1: ParallelSelfAttention     — 单头/多头自注意力计算单元
-      L2: ParallelTransformerLayer  — 单层 (Attn + FFN + LN + residual)
-      L3: ParallelTransformer       — N 层堆叠 + 输出 LayerNorm
-
-    此 registry 不实例化 PyTorch 模块，只建模「三级拆分的设计决策」，
-    使上游的架构选择在 Walpurgis 中有据可查。
+    对应上游 ParallelSelfAttention 的单卡路径。
+    上游将 QKV 投影合并为一个 3*hidden Linear，
+    Walpurgis 保留此合并，但拆解 forward() 为三个语义阶段：
+      _project_qkv → _compute_attention → _project_output
     """
-    upstream_commit: str = "73af12903"
-    source_megatron_file: str = "megatron/model/transformer.py"
-    absorbed_files: Tuple[str, ...] = field(default_factory=lambda: (
-        "megatron/mpu/transformer.py",    # 647行，并行 transformer 原始实现
-        "megatron/model/gpt2_modeling.py", # 157行，GPT-2 transformer 包装
-    ))
 
-    COMPONENTS: Tuple[Dict[str, object], ...] = field(default_factory=lambda: (
-        {
-            "name":        "ParallelSelfAttention",
-            "level":       1,
-            "lines_approx": 120,
-            "inputs":      ["hidden_states", "attention_mask", "layer_past?"],
-            "outputs":     ["context_layer", "present?"],
-            "key_params":  ["num_attention_heads", "hidden_size_per_head",
-                            "attention_dropout"],
-            "parallel_strategy": "列并行 QKV 投影 + 行并行 output 投影",
-            "new_in_73af12903": True,  # 从 mpu/transformer.py 中拆出并重构
-        },
-        {
-            "name":        "ParallelTransformerLayer",
-            "level":       2,
-            "lines_approx": 100,
-            "inputs":      ["hidden_states", "attention_mask",
-                            "layer_past?", "get_key_value?"],
-            "outputs":     ["hidden_states", "present?"],
-            "key_params":  ["layer_number", "hidden_dropout",
-                            "attention_mask_func"],
-            "parallel_strategy": "attention + FFN 各自并行，residual 在 full precision",
-            "new_in_73af12903": True,
-        },
-        {
-            "name":        "ParallelTransformer",
-            "level":       3,
-            "lines_approx": 120,
-            "inputs":      ["hidden_states", "attention_mask",
-                            "layer_past?", "get_key_value?",
-                            "tokentype_ids?"],
-            "outputs":     ["hidden_states", "presents?"],
-            "key_params":  ["num_layers", "recompute",
-                            "attention_mask_func"],
-            "parallel_strategy": "层间串行，每层内部列/行并行",
-            "new_in_73af12903": True,
-        },
-    ))
-
-    def layer_specs_for_bert(
+    def __init__(
         self,
-        num_layers: int = 24,
-        hidden_size: int = 1024,
-        num_heads: int = 16,
-    ) -> List[TransformerLayerSpec]:
-        """生成 BERT-Large 风格的逐层规格列表"""
-        return [
-            TransformerLayerSpec(
+        hidden_size: int,
+        num_heads: int,
+        attention_dropout: float,
+        init_method,
+        output_layer_init_method,
+        attention_mask_func: Callable,
+    ) -> None:
+        super().__init__()
+        assert hidden_size % num_heads == 0, (
+            f"hidden_size={hidden_size} must be divisible by num_heads={num_heads}"
+        )
+        self.num_heads = num_heads
+        self.head_dim = hidden_size // num_heads
+        self.hidden_size = hidden_size
+        self.attention_mask_func = attention_mask_func
+        self.scale = math.sqrt(self.head_dim)
+
+        # 上游：self.query_key_value = ColumnParallelLinear(...)
+        # Walpurgis：单机 Linear，等价路径
+        self.qkv_proj = nn.Linear(hidden_size, 3 * hidden_size, bias=False)
+        init_method(self.qkv_proj.weight)
+
+        # 上游：self.dense = RowParallelLinear(...)
+        self.out_proj = nn.Linear(hidden_size, hidden_size, bias=False)
+        output_layer_init_method(self.out_proj.weight)
+
+        self.attn_dropout = nn.Dropout(p=attention_dropout)
+        _dbg("ATTN_INIT", f"hidden={hidden_size}, heads={num_heads}, head_dim={self.head_dim}")
+
+    def _project_qkv(
+        self, hidden_states: torch.Tensor
+    ) -> Tuple_QKV:
+        """QKV 投影 + reshape 到 multi-head 格式"""
+        B, T, _ = hidden_states.shape
+        qkv = self.qkv_proj(hidden_states)  # [B, T, 3*H]
+        qkv = qkv.view(B, T, 3, self.num_heads, self.head_dim)
+        q, k, v = qkv.unbind(dim=2)         # 各 [B, T, heads, head_dim]
+        # 转为 [B, heads, T, head_dim]（上游的 b n s np 格式）
+        q = q.transpose(1, 2)
+        k = k.transpose(1, 2)
+        v = v.transpose(1, 2)
+        _dbg("QKV_PROJ", f"q.shape={list(q.shape)}")
+        return q, k, v
+
+    def _compute_attention(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        attention_mask: Optional[torch.Tensor],
+    ) -> torch.Tensor:
+        """Scaled dot-product attention，含 mask 与 dropout"""
+        # [B, heads, T, T]
+        attn_scores = torch.matmul(q, k.transpose(-2, -1)) / self.scale
+        _dbg("ATTN_SCORES_PRE_MASK", attn_scores)
+
+        if attention_mask is not None:
+            # 上游 attention_mask_func 约定：mask=True 位置填充 -10000.0
+            attn_scores = self.attention_mask_func(attn_scores, attention_mask)
+        _dbg("ATTN_SCORES_POST_MASK", attn_scores)
+
+        attn_weights = F.softmax(attn_scores, dim=-1)
+        # 上游在 softmax 后 dropout（commit a1d04b793 迁移过来的细节）
+        attn_weights = self.attn_dropout(attn_weights)
+        _dbg("ATTN_WEIGHTS", attn_weights)
+
+        context = torch.matmul(attn_weights, v)  # [B, heads, T, head_dim]
+        return context
+
+    def _project_output(self, context: torch.Tensor) -> torch.Tensor:
+        """multi-head concat → output projection"""
+        B, H, T, D = context.shape
+        context = context.transpose(1, 2).contiguous().view(B, T, H * D)
+        out = self.out_proj(context)
+        _dbg("ATTN_OUT", out)
+        return out
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        attention_mask: Optional[torch.Tensor],
+    ) -> torch.Tensor:
+        q, k, v = self._project_qkv(hidden_states)
+        context = self._compute_attention(q, k, v, attention_mask)
+        return self._project_output(context)
+
+
+# 类型别名（Python 3.8 兼容）
+from typing import Tuple as Tuple_QKV  # noqa: E402  (after use, before class ends)
+
+
+# ── FeedForwardBlock ──────────────────────────────────────────────────────────
+# 上游 ParallelMLP：dense_h_to_4h → gelu → dense_4h_to_h。
+# Walpurgis：命名为 FeedForwardBlock，激活函数可切换。
+
+class FeedForwardBlock(nn.Module):
+    """
+    Position-wise Feed-Forward（上游 ParallelMLP 的单机版）。
+
+    上游 ffn_hidden_size 通常为 4 * hidden_size（BERT/GPT-2 标准）。
+    激活函数：上游硬编码 gelu，Walpurgis 支持传入任意 act_fn。
+    """
+
+    def __init__(
+        self,
+        hidden_size: int,
+        ffn_hidden_size: int,
+        hidden_dropout: float,
+        init_method,
+        output_layer_init_method,
+        act_fn: Callable = F.gelu,
+    ) -> None:
+        super().__init__()
+        self.act_fn = act_fn
+
+        # 上游：dense_h_to_4h = ColumnParallelLinear
+        self.fc1 = nn.Linear(hidden_size, ffn_hidden_size, bias=True)
+        init_method(self.fc1.weight)
+        nn.init.zeros_(self.fc1.bias)
+
+        # 上游：dense_4h_to_h = RowParallelLinear
+        self.fc2 = nn.Linear(ffn_hidden_size, hidden_size, bias=True)
+        output_layer_init_method(self.fc2.weight)
+        nn.init.zeros_(self.fc2.bias)
+
+        self.dropout = nn.Dropout(p=hidden_dropout)
+        _dbg("FFN_INIT", f"hidden={hidden_size}, ffn_hidden={ffn_hidden_size}")
+
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        _dbg("FFN_INPUT", hidden_states)
+        x = self.act_fn(self.fc1(hidden_states))
+        _dbg("FFN_ACTIVATED", x)
+        x = self.dropout(self.fc2(x))
+        _dbg("FFN_OUTPUT", x)
+        return x
+
+
+# ── TransformerLayer ──────────────────────────────────────────────────────────
+# 上游 ParallelTransformerLayer：PreLN → attn → residual → PreLN → FFN → residual。
+# Walpurgis：同一结构，但 PreLN / PostLN 路径用 use_pre_ln 参数显式区分。
+
+class TransformerLayer(nn.Module):
+    """
+    单层 Transformer（Pre-LayerNorm 默认，PostLN 可选）。
+
+    上游注释：无。
+    Walpurgis 标注：上游实现是 Pre-LN（先 LayerNorm 再 attention），
+    与原始 BERT 的 Post-LN 不同。本层两种路径均实现，use_pre_ln 控制。
+    """
+
+    def __init__(
+        self,
+        hidden_size: int,
+        num_heads: int,
+        ffn_hidden_size: int,
+        attention_mask_func: Callable,
+        attention_dropout: float,
+        hidden_dropout: float,
+        init_method,
+        output_layer_init_method,
+        layer_idx: int = 0,
+        use_pre_ln: bool = True,
+    ) -> None:
+        super().__init__()
+        self.layer_idx = layer_idx
+        self.use_pre_ln = use_pre_ln
+
+        self.input_layernorm = nn.LayerNorm(hidden_size)
+        self.post_attention_layernorm = nn.LayerNorm(hidden_size)
+
+        self.attention = SelfAttentionCore(
+            hidden_size=hidden_size,
+            num_heads=num_heads,
+            attention_dropout=attention_dropout,
+            init_method=init_method,
+            output_layer_init_method=output_layer_init_method,
+            attention_mask_func=attention_mask_func,
+        )
+        self.ffn = FeedForwardBlock(
+            hidden_size=hidden_size,
+            ffn_hidden_size=ffn_hidden_size,
+            hidden_dropout=hidden_dropout,
+            init_method=init_method,
+            output_layer_init_method=output_layer_init_method,
+        )
+        self.hidden_dropout = nn.Dropout(p=hidden_dropout)
+        _dbg("LAYER_INIT", f"layer_idx={layer_idx}, pre_ln={use_pre_ln}")
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        attention_mask: Optional[torch.Tensor],
+    ) -> torch.Tensor:
+        _dbg(f"LAYER{self.layer_idx}_INPUT", hidden_states)
+
+        if self.use_pre_ln:
+            # Pre-LN 路径（上游实现）
+            residual = hidden_states
+            normed = self.input_layernorm(hidden_states)
+            attn_out = self.attention(normed, attention_mask)
+            _dbg(f"LAYER{self.layer_idx}_ATTN_OUT", attn_out)
+            hidden_states = residual + self.hidden_dropout(attn_out)
+
+            residual = hidden_states
+            normed = self.post_attention_layernorm(hidden_states)
+            ffn_out = self.ffn(normed)
+            _dbg(f"LAYER{self.layer_idx}_FFN_OUT", ffn_out)
+            hidden_states = residual + ffn_out
+        else:
+            # Post-LN 路径（原始 BERT 风格，Walpurgis 扩展）
+            attn_out = self.attention(hidden_states, attention_mask)
+            _dbg(f"LAYER{self.layer_idx}_ATTN_OUT", attn_out)
+            hidden_states = self.input_layernorm(hidden_states + self.hidden_dropout(attn_out))
+            ffn_out = self.ffn(hidden_states)
+            _dbg(f"LAYER{self.layer_idx}_FFN_OUT", ffn_out)
+            hidden_states = self.post_attention_layernorm(hidden_states + ffn_out)
+
+        _dbg(f"LAYER{self.layer_idx}_OUTPUT", hidden_states)
+        return hidden_states
+
+
+# ── TransformerStack ──────────────────────────────────────────────────────────
+# 上游 ParallelTransformer：N 层 TransformerLayer + 最终 LayerNorm。
+# Walpurgis：保留结构，加层级 _dbg，暴露 per-layer hidden states 接口。
+
+class TransformerStack(nn.Module):
+    """
+    N 层 Transformer 堆叠（上游 ParallelTransformer 的单机版）。
+
+    上游：输出只有最终 hidden_states。
+    Walpurgis 扩展：output_all_hidden_states=True 时返回所有层的 hidden_states，
+    用于 probing、可视化等分析场景。
+    """
+
+    def __init__(
+        self,
+        num_layers: int,
+        hidden_size: int,
+        num_attention_heads: int,
+        ffn_hidden_size: int,
+        attention_mask_func: Callable,
+        attention_dropout: float,
+        hidden_dropout: float,
+        init_method,
+        output_layer_init_method,
+        use_pre_ln: bool = True,
+    ) -> None:
+        super().__init__()
+        self.num_layers = num_layers
+
+        self.layers = nn.ModuleList([
+            TransformerLayer(
                 hidden_size=hidden_size,
-                num_attention_heads=num_heads,
-                ffn_hidden_size=hidden_size * 4,
-                mask_policy=AttentionMaskPolicy.BIDIRECTIONAL,
-                recompute=RecomputeGranularity.NONE,
-                layer_number=i + 1,
+                num_heads=num_attention_heads,
+                ffn_hidden_size=ffn_hidden_size,
+                attention_mask_func=attention_mask_func,
+                attention_dropout=attention_dropout,
+                hidden_dropout=hidden_dropout,
+                init_method=init_method,
+                output_layer_init_method=output_layer_init_method,
+                layer_idx=i,
+                use_pre_ln=use_pre_ln,
             )
             for i in range(num_layers)
-        ]
+        ])
 
-    def layer_specs_for_gpt2(
+        # 上游在 ParallelTransformer 末尾有一个 final LayerNorm
+        self.final_layernorm = nn.LayerNorm(hidden_size)
+        _dbg("STACK_INIT", f"num_layers={num_layers}, hidden={hidden_size}, heads={num_attention_heads}")
+
+    def forward(
         self,
-        num_layers: int = 24,
-        hidden_size: int = 1024,
-        num_heads: int = 16,
-    ) -> List[TransformerLayerSpec]:
-        """生成 GPT-2-XL 风格的逐层规格列表 (因果 mask)"""
-        return [
-            TransformerLayerSpec(
-                hidden_size=hidden_size,
-                num_attention_heads=num_heads,
-                ffn_hidden_size=hidden_size * 4,
-                mask_policy=AttentionMaskPolicy.CAUSAL,
-                recompute=RecomputeGranularity.NONE,
-                layer_number=i + 1,
-            )
-            for i in range(num_layers)
-        ]
+        hidden_states: torch.Tensor,
+        attention_mask: Optional[torch.Tensor],
+        output_all_hidden_states: bool = False,
+    ):
+        """
+        返回：
+          output_all_hidden_states=False → final hidden_states [B, T, H]
+          output_all_hidden_states=True  → list of [B, T, H] per layer + final
+        """
+        _dbg("STACK_INPUT", hidden_states)
+        all_hidden = [] if output_all_hidden_states else None
 
-    def total_param_estimate(
-        self,
-        layer_specs: List[TransformerLayerSpec],
-    ) -> int:
-        """估算 transformer 栈（不含 embedding）总参数量"""
-        return sum(s.param_count_estimate() for s in layer_specs)
+        for i, layer in enumerate(self.layers):
+            hidden_states = layer(hidden_states, attention_mask)
+            if output_all_hidden_states:
+                all_hidden.append(hidden_states)
+            _dbg(f"STACK_LAYER{i}_DONE", hidden_states)
 
-    def audit(self) -> Dict[str, object]:
-        """输出三级 transformer 架构的结构化报告"""
-        _dbg("REGISTRY_AUDIT_START",
-             f"审计 {self.upstream_commit} transformer 三级架构")
+        hidden_states = self.final_layernorm(hidden_states)
+        _dbg("STACK_FINAL_NORM", hidden_states)
 
-        bert_specs = self.layer_specs_for_bert(num_layers=24)
-        gpt2_specs = self.layer_specs_for_gpt2(num_layers=24)
-
-        _dbg("REGISTRY_AUDIT_LAYER",
-             f"BERT-Large 单层参数~{bert_specs[0].param_count_estimate():,}")
-        _dbg("REGISTRY_AUDIT_STACK",
-             f"BERT-Large 24层总参数~{self.total_param_estimate(bert_specs):,}")
-
-        result = {
-            "upstream_commit": self.upstream_commit,
-            "source_file": self.source_megatron_file,
-            "absorbed_files": list(self.absorbed_files),
-            "components": list(self.COMPONENTS),
-            "bert_24layer_param_estimate": self.total_param_estimate(bert_specs),
-            "gpt2_24layer_param_estimate": self.total_param_estimate(gpt2_specs),
-            "recompute_options": [
-                {
-                    "name": g.name,
-                    "memory_pressure": g.memory_pressure,
-                    "compute_overhead": g.compute_overhead,
-                }
-                for g in RecomputeGranularity
-            ],
-            "mask_policies": [
-                {
-                    "name": p.name,
-                    "model_family": p.model_family,
-                    "is_autoregressive": p.is_autoregressive,
-                }
-                for p in AttentionMaskPolicy
-            ],
-        }
-        _dbg("REGISTRY_AUDIT_DONE", "transformer registry 审计完成 ✓")
-        return result
-
-    def self_check(self) -> None:
-        """4 项断言"""
-        _dbg("SELF_CHECK_START", "开始 4 项断言")
-
-        # 1. 三级组件均存在
-        assert len(self.COMPONENTS) == 3, (
-            f"期望 3 个组件，得到 {len(self.COMPONENTS)}"
-        )
-        _dbg("SELF_CHECK_1", "✓ 3 个组件")
-
-        # 2. 层序号连续
-        levels = [c["level"] for c in self.COMPONENTS]
-        assert levels == [1, 2, 3], f"层级序号不连续: {levels}"
-        _dbg("SELF_CHECK_2", "✓ 层级序号 [1,2,3]")
-
-        # 3. BERT 单层参数量 > 0
-        bert_spec = TransformerLayerSpec(
-            hidden_size=1024, num_attention_heads=16,
-            ffn_hidden_size=4096,
-        )
-        assert bert_spec.param_count_estimate() > 0
-        _dbg("SELF_CHECK_3",
-             f"✓ BERT单层参数={bert_spec.param_count_estimate():,}")
-
-        # 4. 吸收文件数 == 2 (mpu/transformer + gpt2_modeling)
-        assert len(self.absorbed_files) == 2, (
-            f"期望吸收 2 个文件，得到 {len(self.absorbed_files)}"
-        )
-        _dbg("SELF_CHECK_4", f"✓ 吸收文件数={len(self.absorbed_files)}")
-
-        _dbg("SELF_CHECK_PASS", "4 项断言全部通过 ✓")
-
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 模块级初始化
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-REGISTRY = ParallelTransformerRegistry()
-REGISTRY.self_check()
-
-_dbg("MODULE_READY",
-     f"transformer 就绪 — 三级架构 ({len(REGISTRY.COMPONENTS)} 组件)")
-
-__all__ = [
-    "RecomputeGranularity",
-    "AttentionMaskPolicy",
-    "TransformerLayerSpec",
-    "ParallelTransformerRegistry",
-    "REGISTRY",
-]
+        if output_all_hidden_states:
+            all_hidden.append(hidden_states)
+            return all_hidden
+        return hidden_states

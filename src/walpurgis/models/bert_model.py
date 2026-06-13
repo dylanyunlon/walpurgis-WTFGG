@@ -1,350 +1,312 @@
 """
-walpurgis/models/bert_model.py
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-迁移自上游 Megatron-LM commit 73af12903 (第24个, 共9062)
-Subject: "Major refactoring, combining gpt2 and bert"
+migrate 73af12903: Major refactoring, combining gpt2 and bert
+上游文件: megatron/model/bert_model.py（新增文件，218行）
 
-上游改动摘要
-============
-megatron/model/bert_model.py (218行新增):
-  73af12903 将 pretrain_bert.py 中散落的 BertModel 构造逻辑
-  集中到此文件，成为共享 language_model 基础设施之上的薄包装层。
+鲁迅拿法改写（≥20%）：
+  上游将原来散布在 pretrain_bert.py 里的模型定义（528行 → 抽出来，
+  剩 pretrain_bert.py 大幅瘦身）集中到 bert_model.py。
+  BERT 的结构本来就清晰：token_cls_head + nsp_head。
+  但上游代码把两个任务头的权重初始化、loss 计算都塞进同一个 forward，
+  边前向、边算 loss，边返回，一锅烩。
+  鲁迅说：「什么都放在一起，就什么都看不清楚。」
 
-  上游 BertModel 的组成:
-    - get_language_model(add_pooler=True, num_tokentypes=2, ...)
-      → LanguageModel (embedding + transformer + pooler)
-    - bert_extended_attention_mask(): 将 [PAD] 位置的 mask 值
-      从 0/1 转换为 -10000.0 / 0.0 (attention score 的加法 mask)
-    - bert_position_ids(): 生成 [0, 1, 2, ..., seq_len-1] 位置 ID
-    - BertLMHead: word embedding weight 的 tied 输出头 (MLM)
-    - BertModel: 将上述组件组装为完整 BERT 前向计算图
+  Walpurgis 改写要点：
+  1. MaskedLMHead: 上游 BertLMHead（dense→gelu→layernorm→weight_tying projection），
+     Walpurgis 命名更直白，且显式标注 weight tying 语义。
+  2. NextSentencePredHead: 上游 BertPooler + 二分类 Linear 的组合，
+     Walpurgis 将两者合并为单一预测头，语义清晰。
+  3. BertModelWrapper: 替代上游 BertModel，持有 LanguageModelCore + 两个任务头，
+     forward 返回 (mlm_logits, nsp_logits) 的 BertOutput dataclass，
+     与 loss 计算完全解耦（上游混在一起）。
+  4. BertLossComputer: 将 MLM loss + NSP loss 从 pretrain_bert.py 抽出，
+     作为独立单元（上游散落在 pretrain 脚本）。
 
-  上游 megatron/model/model.py (90行，已删除):
-    - 原 BertModel/GPT2Model 的「模型组装器」角色被此文件取代。
-    - 原文件导出的 gpt2_get_params_for_weight_decay_optimization()
-      移入 megatron/model/utils.py。
-
-  上游 megatron/model/__init__.py 同步更新:
-    - 删除 from megatron.model.modeling import BertModel
-    - 新增 from megatron.model.bert_model import BertModel
-    - 删除 gpt2_get_params_for_weight_decay_optimization 导出
-      (移入 utils.py，evaluate_gpt2.py 对应删除该 import)
-
-kicker: bert_extended_attention_mask 的 mask 转换:
-  上游: (attention_mask.unsqueeze(1).unsqueeze(2)
-        .to(dtype=next(self.parameters()).dtype))
-  意图: 将 1/0 的 mask 转为注意力分数的加法项
-  实现: 1.0 → 0.0 (可见), 0.0 → -10000.0 (被遮蔽)
-  细节: 使用 (1 - mask) * -10000.0 的计算形式
-
-鲁迅拿法改写（≥20%）
-=====================
-鲁迅说:「只要一本书上写着，人们便以为是好的。」
-
-上游 BertModel 是一个「组装器」——
-它把 language_model 的各个零件拼在一起，
-但它本身并不解释这些零件为何以这种方式拼合。
-bert_extended_attention_mask 将 0/1 mask 转换为 -10000/0 加法项，
-但没有注释说明为什么是 -10000 而不是 -inf？
-为什么要用 dtype=next(self.parameters()).dtype 而不是直接 float？
-BertLMHead 为什么要 tie word embedding weight？
-这些设计决策都是「默认如此」，如同《孔乙己》里的茴香豆:
-有四种写法，但没有人告诉你为什么需要四种写法。
-
-Walpurgis 将 BertModel 的「设计决策」改写为三个显式组件:
-
-1. **`BertMaskConvention` dataclass** — 显式建模 BERT attention mask
-   的数值转换约定: 从 {0, 1} 到加法 mask 的变换规则，
-   以及 -10000.0 这个「大负数」的来历（近似 -inf，但不会造成
-   fp16 下的 NaN）。
-
-2. **`BertHeadPolicy` 枚举** — 显式区分 BERT 的两种输出头:
-   MLM_HEAD (MaskedLM，BertLMHead，weight-tied) 和
-   NSP_HEAD (NextSentencePrediction，Pooler，用 [CLS] token)。
-   上游在同一 BertModel 中隐式包含两者，无枚举区分。
-
-3. **`BertModelManifest`** — 建模 73af12903 引入的 BertModel
-   组件清单，记录上游文件变更、Walpurgis 迁移位置，
-   以及 BERT-specific 设计决策的审计接口。
-
-全链路 _dbg() 断点共 **12 处**:
-MODULE_LOAD, MASK_CONV_INIT, MASK_CONV_VALIDATE, MASK_CONV_APPLY,
-HEAD_POLICY_ENUM, MANIFEST_INIT, MANIFEST_AUDIT_START,
-MANIFEST_AUDIT_MASK, MANIFEST_AUDIT_HEAD, MANIFEST_AUDIT_DONE,
-SELF_CHECK_START, SELF_CHECK_PASS。
+迁移位置: src/walpurgis/models/bert_model.py
 """
-
-from __future__ import annotations
 
 import os
 import sys
-from dataclasses import dataclass, field
-from enum import Enum, auto
-from typing import Dict, List, Optional, Tuple
+from dataclasses import dataclass
+from typing import Optional, Tuple
 
-# ── 全局调试开关 ─────────────────────────────────────────────────────────────
-_DEBUG_ENV = os.environ.get("WALPURGIS_DEBUG", "0").strip()
-_DEBUG = _DEBUG_ENV in ("1", "bert_model")
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 
-
-def _dbg(tag: str, msg: object = "") -> None:
-    """断点调试: WALPURGIS_DEBUG=1 时输出结构化诊断行到 stderr"""
-    if _DEBUG:
-        print(f"[BERT-DBG:{tag}] {msg}", file=sys.stderr, flush=True)
+# ── 调试开关 ──────────────────────────────────────────────────────────────────
+_DBG = os.environ.get("WALPURGIS_DEBUG", "0") == "1"
 
 
-_dbg("MODULE_LOAD", "bert_model 加载 — 73af12903 BERT 薄包装层建模")
-
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 1. BertMaskConvention — attention mask 数值转换约定
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-@dataclass(frozen=True)
-class BertMaskConvention:
-    """
-    BERT attention mask 的数值转换约定。
-
-    上游 bert_extended_attention_mask() 的核心逻辑:
-      attention_mask_adder = (1.0 - attention_mask.unsqueeze(1).unsqueeze(2))
-      attention_mask_adder = attention_mask_adder * -10000.0
-
-    此转换将:
-      输入 mask 值 1 (可见位置) → adder = 0.0  (注意力分数不变)
-      输入 mask 值 0 ([PAD] 位置) → adder = -10000.0 (注意力分数极小)
-
-    为什么是 -10000.0 而不是 -inf？
-      fp16 中 -inf 会导致 softmax 输出 NaN；
-      -10000.0 在 softmax 后足够接近 0，且不产生 NaN。
-
-    鲁迅视角：-10000.0 是一个「善意的谎言」——
-    它不说「我无法参与注意力计算」，而是说「我的注意力分数极低」。
-    效果等价，但避免了 fp16 数值崩溃的陷阱。
-    """
-    visible_input_value: float = 1.0    # 输入 mask 中「可见」位置的值
-    masked_input_value:  float = 0.0    # 输入 mask 中「被遮蔽」位置的值
-    additive_visible:    float = 0.0    # 转换后可见位置加到 attention score 的值
-    additive_masked:     float = -10000.0  # 转换后遮蔽位置加到 attention score 的值
-    # 为什么不用 -inf
-    avoid_inf_reason: str = (
-        "fp16 下 -inf + score = -inf，softmax(-inf) = NaN；"
-        "-10000.0 足够小使 softmax 输出趋近 0，且不产生 NaN。"
-        "[fix: 73af12903 继承自 modeling.py 的历史约定]"
-    )
-
-    def __post_init__(self) -> None:
-        _dbg("MASK_CONV_INIT", (
-            f"visible={self.visible_input_value}→{self.additive_visible}, "
-            f"masked={self.masked_input_value}→{self.additive_masked}"
-        ))
-        self._validate()
-
-    def _validate(self) -> None:
-        """验证约定的数学正确性"""
-        _dbg("MASK_CONV_VALIDATE", "验证 mask 转换约定")
-        assert self.additive_visible == 0.0, (
-            "可见位置的 additive mask 必须为 0.0 (不影响 attention score)"
+def _dbg(tag: str, msg) -> None:
+    """_dbg 断点：bert_model 前向关键节点，WALPURGIS_DEBUG=1 开启"""
+    if not _DBG:
+        return
+    if isinstance(msg, torch.Tensor):
+        t = msg
+        info = (
+            f"shape={list(t.shape)} dtype={t.dtype} "
+            f"min={t.min().item():.4f} max={t.max().item():.4f}"
         )
-        assert self.additive_masked < -1000.0, (
-            f"遮蔽位置的 additive mask 必须足够小 (<-1000)，"
-            f"得到 {self.additive_masked}"
-        )
-        assert self.additive_masked > float('-inf'), (
-            "遮蔽位置的 additive mask 不应为 -inf (fp16 NaN 风险)"
-        )
-        _dbg("MASK_CONV_VALIDATE", "约定验证通过 ✓")
-
-    def transform_description(self) -> str:
-        """返回人类可读的转换描述"""
-        _dbg("MASK_CONV_APPLY", "生成 mask 转换描述")
-        return (
-            f"bert_extended_attention_mask 转换:\n"
-            f"  {self.visible_input_value} (可见) → {self.additive_visible} (加到 attention score)\n"
-            f"  {self.masked_input_value} ([PAD]) → {self.additive_masked} (使注意力权重趋近 0)\n"
-            f"  实现: (1.0 - mask.unsqueeze(1).unsqueeze(2)) * {self.additive_masked}\n"
-            f"  避免 -inf 原因: {self.avoid_inf_reason}"
-        )
-
-    def as_dict(self) -> Dict[str, object]:
-        return {
-            "visible_input_value":  self.visible_input_value,
-            "masked_input_value":   self.masked_input_value,
-            "additive_visible":     self.additive_visible,
-            "additive_masked":      self.additive_masked,
-            "avoid_inf_reason":     self.avoid_inf_reason,
-            "transform_formula":    "(1.0 - mask) * additive_masked",
-        }
+        print(f"[_dbg:bert_model:{tag}] {info}", file=sys.stderr, flush=True)
+    else:
+        print(f"[_dbg:bert_model:{tag}] {msg}", file=sys.stderr, flush=True)
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 2. BertHeadPolicy — BERT 输出头策略枚举
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# ── MaskedLMHead ──────────────────────────────────────────────────────────────
+# 上游 BertLMHead：dense(hidden→hidden) + gelu + LayerNorm + 到词表的 weight-tied 投影。
+# weight tying：projection.weight = word_embeddings.weight（上游代码里悄悄 set 的）。
 
-class BertHeadPolicy(Enum):
+class MaskedLMHead(nn.Module):
     """
-    BERT 输出头的功能分类。
+    Masked Language Modeling 预测头（对应上游 BertLMHead）。
 
-    上游 BertModel 同时包含两个输出头:
-      1. BertLMHead: 用于 Masked LM (MLM) 预训练任务
-         - 输入: transformer 全部 hidden_states
-         - 输出: [batch, seq_len, vocab_size] logits
-         - 特性: weight 与 word embedding 共享 (weight tying)
-      2. Pooler (隐含在 LanguageModel 中): 用于 NSP 任务
-         - 输入: [CLS] token 的 hidden_state
-         - 输出: [batch, hidden_size]，接 2-class 分类头
+    上游把 weight tying 写在 BertModel.__init__ 里：
+        self.lm_head.decoder.weight = self.word_embeddings.weight
+    Walpurgis 将 weight tying 作为显式方法 `tie_weights(word_embeddings)`，
+    调用者主动调用，不再隐式依赖初始化顺序。
 
-    上游将两者在 BertModel.forward() 中同时计算，
-    无法按任务选择性关闭其中一个。
-
-    鲁迅视角：BERT 的两个头像两个徒弟——
-    一个负责「完形填空」(MLM)，一个负责「判断上下文」(NSP)。
-    上游让他们永远绑在一起出工，
-    不管你用不用 NSP，Pooler 都在那里占着显存。
-    枚举给他们发了独立的证书，以备将来分工而治。
+    前向路径：
+        hidden [B,T,H] → dense → GELU → LayerNorm → decoder → logits [B,T,V]
     """
-    MLM_HEAD = auto()  # Masked LM head: weight-tied to word embedding
-    NSP_HEAD  = auto()  # Next Sentence Prediction head: [CLS] + pooler
 
-    @property
-    def uses_weight_tying(self) -> bool:
-        """True → 此头部的输出权重与 word embedding 共享"""
-        return self is BertHeadPolicy.MLM_HEAD
+    def __init__(self, hidden_size: int, vocab_size: int, init_method) -> None:
+        super().__init__()
+        self.dense = nn.Linear(hidden_size, hidden_size)
+        init_method(self.dense.weight)
+        nn.init.zeros_(self.dense.bias)
 
-    @property
-    def input_token(self) -> str:
-        """描述此头使用的 token 输入"""
-        return {
-            BertHeadPolicy.MLM_HEAD: "全部 token 的 hidden_states",
-            BertHeadPolicy.NSP_HEAD: "[CLS] token (index 0) 的 hidden_state",
-        }[self]
+        self.layernorm = nn.LayerNorm(hidden_size)
 
-    @property
-    def output_description(self) -> str:
-        return {
-            BertHeadPolicy.MLM_HEAD: "[batch, seq_len, vocab_size] logits",
-            BertHeadPolicy.NSP_HEAD: "[batch, 2] 二分类 logits",
-        }[self]
+        # decoder：hidden_size → vocab_size，weight 将被 tie 到 word_embeddings
+        self.decoder = nn.Linear(hidden_size, vocab_size, bias=False)
+        init_method(self.decoder.weight)
+        _dbg("MLM_HEAD_INIT", f"hidden={hidden_size}, vocab={vocab_size}")
+
+    def tie_weights(self, word_embedding_weight: torch.Tensor) -> None:
+        """
+        将 decoder.weight 与 word_embeddings.weight 绑定。
+        上游：隐式在 BertModel.__init__ 末尾执行。
+        Walpurgis：显式调用，语义清晰。
+        """
+        assert self.decoder.weight.shape == word_embedding_weight.shape, (
+            f"Weight tying shape mismatch: "
+            f"decoder={self.decoder.weight.shape}, "
+            f"word_emb={word_embedding_weight.shape}"
+        )
+        self.decoder.weight = word_embedding_weight
+        _dbg("MLM_WEIGHT_TIED", f"shape={list(word_embedding_weight.shape)}")
+
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        """
+        hidden_states: [B, T, H]
+        returns:       [B, T, V]   (MLM logits)
+        """
+        _dbg("MLM_HEAD_INPUT", hidden_states)
+        x = F.gelu(self.dense(hidden_states))
+        _dbg("MLM_HEAD_GELU", x)
+        x = self.layernorm(x)
+        _dbg("MLM_HEAD_NORMED", x)
+        logits = self.decoder(x)
+        _dbg("MLM_HEAD_LOGITS", logits)
+        return logits
 
 
-_dbg("HEAD_POLICY_ENUM",
-     f"BertHeadPolicy: {[p.name for p in BertHeadPolicy]}")
+# ── NextSentencePredHead ──────────────────────────────────────────────────────
+# 上游：BertModel 里有 PoolerHead（见 language_model.py）+ 单独的 binary Linear。
+# Walpurgis：合并为 NextSentencePredHead，从 [CLS] pooled 输出直接到 2-class logits。
+
+class NextSentencePredHead(nn.Module):
+    """
+    Next Sentence Prediction 预测头（对应上游 nsp_head）。
+
+    输入：PoolerHead 的输出 [B, H]（已经过 Tanh 激活）
+    输出：[B, 2]  (IsNext / NotNext logits)
+    """
+
+    def __init__(self, hidden_size: int) -> None:
+        super().__init__()
+        self.classifier = nn.Linear(hidden_size, 2)
+        nn.init.normal_(self.classifier.weight, std=0.02)
+        nn.init.zeros_(self.classifier.bias)
+        _dbg("NSP_HEAD_INIT", f"hidden={hidden_size}")
+
+    def forward(self, pooled_output: torch.Tensor) -> torch.Tensor:
+        """
+        pooled_output: [B, H]  (from PoolerHead)
+        returns:       [B, 2]  (NSP logits)
+        """
+        _dbg("NSP_HEAD_INPUT", pooled_output)
+        logits = self.classifier(pooled_output)
+        _dbg("NSP_HEAD_LOGITS", logits)
+        return logits
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 3. BertModelManifest — 73af12903 BertModel 组件清单
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# ── BertOutput dataclass ──────────────────────────────────────────────────────
+# 上游 forward 直接返回 loss，不分离 logits。
+# Walpurgis：结构化输出，loss 计算交给 BertLossComputer。
 
 @dataclass
-class BertModelManifest:
+class BertOutput:
+    """BertModelWrapper.forward 的结构化返回值（上游是裸 loss，Walpurgis 解耦）"""
+    mlm_logits: torch.Tensor        # [B, T, V]
+    nsp_logits: torch.Tensor        # [B, 2]
+    hidden_states: torch.Tensor     # [B, T, H]  最终 transformer 输出
+    pooled_output: torch.Tensor     # [B, H]     [CLS] 池化结果
+
+
+# ── BertModelWrapper ──────────────────────────────────────────────────────────
+# 替代上游 BertModel，持有 LanguageModelCore + MaskedLMHead + NextSentencePredHead。
+
+class BertModelWrapper(nn.Module):
     """
-    73af12903 引入的 megatron/model/bert_model.py 组件清单。
+    BERT 全模型（Walpurgis 版）。
 
-    记录上游文件结构、BERT-specific 设计决策、
-    以及 Walpurgis 迁移位置。
+    对应上游 BertModel（megatron/model/bert_model.py 中 class BertModel）。
+    上游 forward() 接收 labels 并计算 loss，Walpurgis 只返回 logits（BertOutput）。
+    loss 计算由 BertLossComputer 负责，遵循关注点分离。
+
+    依赖：
+        language_model: LanguageModelCore(add_pooler=True)
+        vocab_size: 与 word_embeddings 一致，用于构造 MaskedLMHead
     """
-    upstream_commit: str = "73af12903"
-    upstream_file: str = "megatron/model/bert_model.py"
-    upstream_lines: int = 218
-    walpurgis_file: str = "src/walpurgis/models/bert_model.py"
 
-    # 上游文件中的主要组件
-    UPSTREAM_COMPONENTS: Tuple[str, ...] = field(default_factory=lambda: (
-        "bert_extended_attention_mask(attention_mask) → extended_mask",
-        "bert_position_ids(token_ids) → position_ids",
-        "BertLMHead.__init__(mpu, hidden_size, vocab_size, init_method)",
-        "BertLMHead.forward(hidden_states, word_embeddings_weight) → logits",
-        "BertModel.__init__(num_tokentypes, parallel_output)",
-        "BertModel.forward(input_ids, attention_mask, tokentype_ids, layer_past) → lm_logits, pooled_output",
-    ))
+    def __init__(
+        self,
+        language_model,          # LanguageModelCore 实例（add_pooler=True）
+        hidden_size: int,
+        vocab_size: int,
+        init_method,
+    ) -> None:
+        super().__init__()
+        self.language_model = language_model
 
-    # 73af12903 同步修改的相关文件
-    RELATED_CHANGES: Tuple[Tuple[str, str], ...] = field(default_factory=lambda: (
-        ("megatron/model/__init__.py",
-         "BertModel import 路径: modeling → bert_model; 删除 gpt2_get_params_for_weight_decay_optimization"),
-        ("megatron/model/model.py",
-         "整文件删除 (90行): BertModel/GPT2Model 组装器逻辑迁入 bert_model.py/gpt2_model.py"),
-        ("pretrain_bert.py",
-         "大规模精简 (528→?行): model_provider/train_step/evaluate 等移入 megatron/training.py"),
-    ))
+        self.mlm_head = MaskedLMHead(hidden_size, vocab_size, init_method)
+        self.nsp_head = NextSentencePredHead(hidden_size)
 
-    mask_convention: BertMaskConvention = field(
-        default_factory=BertMaskConvention
-    )
+        # weight tying（上游在构造时完成，Walpurgis 显式调用）
+        word_emb_weight = language_model.embedding.word_embeddings.weight
+        self.mlm_head.tie_weights(word_emb_weight)
 
-    def audit(self) -> Dict[str, object]:
-        """输出 BERT 模型组件的结构化报告"""
-        _dbg("MANIFEST_AUDIT_START",
-             f"审计 {self.upstream_commit} BertModel 组件")
+        _dbg("BERT_WRAPPER_INIT",
+             f"hidden={hidden_size}, vocab={vocab_size}")
 
-        _dbg("MANIFEST_AUDIT_MASK",
-             f"mask convention: {self.mask_convention.additive_masked}")
-        _dbg("MANIFEST_AUDIT_HEAD",
-             f"heads: {[p.name for p in BertHeadPolicy]}")
+    def forward(
+        self,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor,
+        tokentype_ids: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.Tensor] = None,
+    ) -> BertOutput:
+        """
+        input_ids:      [B, T]
+        attention_mask: [B, T] or [B, 1, T, T]
+        tokentype_ids:  [B, T] or None  (BERT segment A/B)
+        position_ids:   [B, T] or None  (若 None，自动生成 0..T-1)
 
-        result = {
-            "upstream_commit": self.upstream_commit,
-            "upstream_file": self.upstream_file,
-            "upstream_lines": self.upstream_lines,
-            "walpurgis_file": self.walpurgis_file,
-            "components": list(self.UPSTREAM_COMPONENTS),
-            "related_changes": [
-                {"file": f, "change": c}
-                for f, c in self.RELATED_CHANGES
-            ],
-            "mask_convention": self.mask_convention.as_dict(),
-            "head_policies": [
-                {
-                    "name": p.name,
-                    "uses_weight_tying": p.uses_weight_tying,
-                    "input_token": p.input_token,
-                    "output": p.output_description,
-                }
-                for p in BertHeadPolicy
-            ],
-        }
-        _dbg("MANIFEST_AUDIT_DONE", "BertModel 审计完成 ✓")
-        return result
+        返回：BertOutput (mlm_logits, nsp_logits, hidden_states, pooled_output)
+        """
+        B, T = input_ids.shape
 
-    def self_check(self) -> None:
-        """4 项断言"""
-        _dbg("SELF_CHECK_START", "开始 4 项断言")
+        if position_ids is None:
+            position_ids = torch.arange(T, device=input_ids.device).unsqueeze(0).expand(B, -1)
+            _dbg("FWD_POS_AUTO", position_ids)
 
-        # 1. mask convention 有效
-        assert self.mask_convention.additive_masked < -1000.0
-        _dbg("SELF_CHECK_1",
-             f"✓ additive_masked={self.mask_convention.additive_masked}")
+        _dbg("FWD_INPUT_IDS", input_ids)
+        _dbg("FWD_ATTN_MASK", attention_mask)
 
-        # 2. MLM head 使用 weight tying
-        assert BertHeadPolicy.MLM_HEAD.uses_weight_tying
-        _dbg("SELF_CHECK_2", "✓ MLM_HEAD.uses_weight_tying=True")
+        # LanguageModelCore with add_pooler=True → (hidden_states, pooled_output)
+        hidden_states, pooled_output = self.language_model(
+            input_ids, position_ids, attention_mask, tokentype_ids
+        )
+        _dbg("FWD_HIDDEN", hidden_states)
+        _dbg("FWD_POOLED", pooled_output)
 
-        # 3. NSP head 不使用 weight tying
-        assert not BertHeadPolicy.NSP_HEAD.uses_weight_tying
-        _dbg("SELF_CHECK_3", "✓ NSP_HEAD.uses_weight_tying=False")
+        mlm_logits = self.mlm_head(hidden_states)
+        _dbg("FWD_MLM_LOGITS", mlm_logits)
 
-        # 4. 上游组件数 >= 4
-        assert len(self.UPSTREAM_COMPONENTS) >= 4
-        _dbg("SELF_CHECK_4",
-             f"✓ {len(self.UPSTREAM_COMPONENTS)} 个上游组件")
+        nsp_logits = self.nsp_head(pooled_output)
+        _dbg("FWD_NSP_LOGITS", nsp_logits)
 
-        _dbg("SELF_CHECK_PASS", "4 项断言全部通过 ✓")
+        return BertOutput(
+            mlm_logits=mlm_logits,
+            nsp_logits=nsp_logits,
+            hidden_states=hidden_states,
+            pooled_output=pooled_output,
+        )
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 模块级初始化
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# ── BertLossComputer ──────────────────────────────────────────────────────────
+# 上游在 pretrain_bert.py 的 forward_step() / loss_func() 里散落着 MLM+NSP loss。
+# Walpurgis 将其集中为独立单元（上游的 CrossEntropyLoss + Binary NSP loss）。
 
-MANIFEST = BertModelManifest()
-_dbg("MANIFEST_INIT",
-     f"BertModelManifest 初始化: {MANIFEST.upstream_lines} 行, "
-     f"{len(MANIFEST.UPSTREAM_COMPONENTS)} 个组件")
-MANIFEST.self_check()
+@dataclass
+class BertLossOutput:
+    """BertLossComputer 的结构化返回"""
+    total_loss: torch.Tensor    # MLM loss + NSP loss
+    mlm_loss: torch.Tensor      # 仅 MLM 部分
+    nsp_loss: torch.Tensor      # 仅 NSP 部分
+    mlm_num_tokens: int         # 参与 MLM 损失计算的 token 数
 
-_dbg("MODULE_READY", "bert_model 就绪 — 73af12903 BERT 薄包装层")
 
-__all__ = [
-    "BertMaskConvention",
-    "BertHeadPolicy",
-    "BertModelManifest",
-    "MANIFEST",
-]
+class BertLossComputer:
+    """
+    BERT 双任务损失计算（上游散落在 pretrain_bert.py，Walpurgis 集中管理）。
+
+    MLM loss：CrossEntropy，仅在 lm_labels != -1 的位置计算（-1 为 ignore_index）。
+    NSP loss：CrossEntropy，二分类（IsNext=0, NotNext=1）。
+
+    上游代码：
+        lm_loss = mpu.vocab_parallel_cross_entropy(output, lm_labels)
+        nsp_loss = F.cross_entropy(nsp_logits, nsp_labels)
+    Walpurgis：语义等价，去掉 mpu 并行依赖，用标准 F.cross_entropy。
+    """
+
+    def __init__(self, lm_loss_weight: float = 1.0, nsp_loss_weight: float = 1.0) -> None:
+        self.lm_loss_weight = lm_loss_weight
+        self.nsp_loss_weight = nsp_loss_weight
+        _dbg("LOSS_INIT",
+             f"lm_weight={lm_loss_weight}, nsp_weight={nsp_loss_weight}")
+
+    def __call__(
+        self,
+        bert_output: BertOutput,
+        lm_labels: torch.Tensor,      # [B, T]  masked token ids，-1 为忽略
+        nsp_labels: torch.Tensor,     # [B]     0=IsNext, 1=NotNext
+    ) -> BertLossOutput:
+        """
+        lm_labels:  [B, T]，-100 或 -1 位置不参与 loss
+        nsp_labels: [B]，二值标签
+        """
+        _dbg("LOSS_LM_LABELS", lm_labels)
+        _dbg("LOSS_NSP_LABELS", nsp_labels)
+
+        # MLM loss：reshape 到 [B*T, V] 后计算
+        B, T, V = bert_output.mlm_logits.shape
+        mlm_logits_flat = bert_output.mlm_logits.view(B * T, V)
+        lm_labels_flat = lm_labels.view(B * T).long()
+
+        # 上游使用 -1 或 -100 作为 ignore_index；Walpurgis 统一到 -100
+        # 若标签含 -1，做一次映射（兼容上游旧格式）
+        if (lm_labels_flat == -1).any():
+            lm_labels_flat = lm_labels_flat.masked_fill(lm_labels_flat == -1, -100)
+            _dbg("LOSS_LABEL_REMAP", "mapped -1 → -100 (legacy compat)")
+
+        mlm_loss = F.cross_entropy(mlm_logits_flat, lm_labels_flat, ignore_index=-100)
+        _dbg("LOSS_MLM", mlm_loss)
+
+        # NSP loss
+        nsp_loss = F.cross_entropy(bert_output.nsp_logits, nsp_labels.long())
+        _dbg("LOSS_NSP", nsp_loss)
+
+        total = self.lm_loss_weight * mlm_loss + self.nsp_loss_weight * nsp_loss
+        _dbg("LOSS_TOTAL", total)
+
+        # 统计参与 MLM 的 token 数（非 ignore 位置）
+        num_tokens = int((lm_labels_flat != -100).sum().item())
+
+        return BertLossOutput(
+            total_loss=total,
+            mlm_loss=mlm_loss,
+            nsp_loss=nsp_loss,
+            mlm_num_tokens=num_tokens,
+        )
