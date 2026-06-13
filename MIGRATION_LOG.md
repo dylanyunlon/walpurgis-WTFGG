@@ -1,3 +1,40 @@
+## migrate 288af1f: use GitHub Actions artifacts (#203)
+
+- **Upstream commit**: 288af1f82 (cugraph-gnn, commit #214/452)
+- **Commit message**: `use GitHub Actions artifacts (#203)`
+- **Upstream diff 摘要** (1 file changed, 2 insertions(+), 2 deletions(-)):
+
+  | 文件 | 变更内容 |
+  |------|----------|
+  | `ci/build_wheel_pylibwholegraph.sh` | SKIP（Walpurgis 无 RAPIDS wheel 构建体系） |
+
+- **迁移位置**:
+
+  | 上游文件 | Walpurgis 迁移位置 |
+  |----------|-------------------|
+  | `ci/build_wheel_pylibwholegraph.sh` | `src/walpurgis/core/github_artifacts_wheel_policy.py`（新增） |
+
+- **鲁迅拿法改写（≥20%）**:
+
+  鲁迅在《热风·随感录四十八》中写道：「中国的事，不是那种事情的问题，是做那种事情的人的问题。」
+  上游把 wheel 的「在哪里取」从 S3 改成 GitHub，看似只是 URL 替换——但「谁来告诉调用者路径在哪」的责任归属已悄悄易主：
+  旧方案硬编码 /tmp/libwholegraph_dist，新方案由命令 stdout 吐出路径由调用者捕获。这是接口契约的转移，不只是 URL 的替换。
+
+  Walpurgis 将此次 2 行 diff 内化为五个可测试结构：
+
+  1. **`WheelStorageBackend`** 枚举 — 显式区分 S3 / GITHUB_ARTIFACTS / LOCAL，`returns_path_via_stdout` 属性捕获 GitHub 方案的接口契约差异。
+  2. **`WheelDownloadSpec`** dataclass — `from_s3()` / `from_github()` 工厂方法与上游两种命令路径一一对应；`simulated_wheelhouse_path()` 对应 $() 命令替换路径捕获。
+  3. **`ConstraintWriteMode`** 枚举 — 区分 TRUNCATE（>）/ APPEND（>>），`open_mode` 属性与 Python `open()` 直接对应。
+  4. **`WheelConstraintEntry`** dataclass — `glob_expand()` 用 pathlib 复现 shell glob 展开，天然处理路径空格。
+  5. **`WheelConstraintFile`** / **`WheelArtifactPipeline`** — 写入策略 + 端到端流水线，4 行 diff 全部封装为可审计 Python 对象。
+
+  _dbg() 断点 8 处，`WALPURGIS_DEBUG=1` 可全链路观测。
+
+- **自测**: 全部 8 项断言通过。
+
+---
+
+## migrate 73af12903: Major refactoring, combining gpt2 and bert
 
 ## migrate 2bb2e1a: resolve merge conflict
 
