@@ -90,6 +90,83 @@ from .graph_ops import (
     add_csr_self_loop,
 )
 
+
+# ── migrate e01196b: Make WholeGraph a Hard Dependency ───────────────────────
+# 上游 e01196b ([IMP] Make WholeGraph a Hard Dependency of cuGraph-PyG, PR #172):
+#   conda/recipes/cugraph-pyg/meta.yaml: 新增 pylibwholegraph={{ minor_version }}
+#   dependencies.yaml: 新增 depends_on_pylibwholegraph
+#   pyproject.toml: 新增 "pylibwholegraph==25.6.*,>=0.0.0a0"
+#   各 example 文件: 移除 cudf spilling（CUDF_SPILL=1 / enable_spilling()）
+#
+# cudf spilling 依赖 cudf 库（用于将 GPU 内存溢出到主机内存）。
+# WholeGraph 成为硬依赖后，大内存对象直接存入 WholeGraph（RMM managed_memory），
+# 不再需要 cudf spilling 作为兜底方案。
+#
+# Walpurgis 20% 改写（鲁迅拿法）：
+# 新增 WholegraphDependencySpec 数据类，将「可选 → 硬依赖」的迁移过程结构化记录。
+# 上游是改 meta.yaml/pyproject.toml——无法捕捉「为什么这么改」的语义。
+# Walpurgis 的 WholegraphDependencySpec 记录依赖升级的动机和影响范围，
+# 防止未来有人误以为 pylibwholegraph 仍然是可选依赖。
+
+from dataclasses import dataclass as _dataclass
+from dataclasses import field as _field
+from typing import List as _List
+
+
+@_dataclass(frozen=True)
+class WholegraphDependencySpec:
+    """WholeGraph 依赖规格（migrate e01196b Walpurgis 改写）。
+
+    e01196b 将 pylibwholegraph 从可选依赖升级为硬依赖，
+    同时移除了各 example 中的 cudf spilling（enable_spilling / CUDF_SPILL=1）。
+
+    Walpurgis 将此依赖变更结构化记录，避免未来误判依赖类型。
+    """
+
+    commit_hash: str = "e01196b"
+    pr_number: int = 172
+    pr_title: str = "[IMP] Make WholeGraph a Hard Dependency of cuGraph-PyG"
+
+    # pylibwholegraph 在此 commit 之前是可选依赖，之后是硬依赖
+    was_optional_before: bool = True
+    is_hard_dependency_after: bool = True
+
+    # 版本约束（来自 pyproject.toml）
+    version_constraint: str = "pylibwholegraph==25.6.*,>=0.0.0a0"
+
+    # 移除的 cudf spilling 模式（不再需要）
+    removed_spilling_patterns: _List[str] = _field(default_factory=lambda: [
+        'os.environ["CUDF_SPILL"] = "1"',
+        "from cugraph.testing.mg_utils import enable_spilling",
+        "enable_spilling()",
+    ])
+
+    # 移除 spilling 的 example 文件（上游路径）
+    examples_with_spilling_removed: _List[str] = _field(default_factory=lambda: [
+        "gcn_dist_mnmg.py",    # CUDF_SPILL + enable_spilling in init_pytorch_worker
+        "gcn_dist_sg.py",      # enable_spilling at module level
+        "gcn_dist_snmg.py",    # CUDF_SPILL + enable_spilling in init_pytorch_worker
+        "movielens_mnmg.py",   # enable_spilling in init_pytorch_worker
+        "rgcn_link_class_mnmg.py",  # enable_spilling in init_pytorch_worker
+        "rgcn_link_class_sg.py",    # enable_spilling at module level
+        "rgcn_link_class_snmg.py",  # enable_spilling in init_pytorch_worker
+    ])
+
+    def why_cudf_spilling_removed(self) -> str:
+        """解释为什么移除 cudf spilling。"""
+        return (
+            "WholeGraph 成为硬依赖后，大内存对象直接存入 WholeGraph（RMM managed_memory）。"
+            "cudf spilling（CUDF_SPILL=1）依赖 cudf 库将 GPU 对象溢出到主机内存，"
+            "这是 cudf 不再作为依赖后的遗留方案。"
+            "RMM managed_memory（用于 WholeGraph）本身就支持内存过订阅，"
+            "不再需要 cudf 层的 spilling。"
+        )
+
+
+#: e01196b WholeGraph 依赖规格（硬依赖声明）
+WHOLEGRAPH_DEPENDENCY_SPEC = WholegraphDependencySpec()
+
+
 __all__ = [
     # init
     "init", "init_torch_env", "init_torch_env_and_create_wm_comm", "finalize",
@@ -116,4 +193,7 @@ __all__ = [
     "generate_random_positive_int_cpu",
     "generate_exponential_distribution_negative_float_cpu",
     "append_unique", "add_csr_self_loop",
+    # e01196b: hard dependency spec
+    "WholegraphDependencySpec",
+    "WHOLEGRAPH_DEPENDENCY_SPEC",
 ]
