@@ -1,3 +1,42 @@
+## migrate 6d9561d: Empty commit to trigger a build (#319)
+
+- **Upstream commit**: 6d9561d (cugraph-gnn, commit #302/452)
+- **Commit message**: `Empty commit to trigger a build (#319)`
+- **PR**: #319
+- **Upstream diff 摘要**: 0 files changed, 0 insertions(+), 0 deletions(-)
+
+  | 文件 | 处置 | 原因 |
+  |------|------|------|
+  | （无任何文件变更） | SKIP | 空提交，diff 为空 |
+
+- **迁移位置**: `src/walpurgis/core/build_trigger_sentinel.py`（新增，~200 行）
+
+- **鲁迅拿法改写（≥20%）**:
+  鲁迅在《呐喊·自序》里写过：「凡是愚弱的国民，即使体格如何健全，
+  如何茁壮，也只能做毫无意义的示众的材料和看客。」
+  空提交正是 CI 世界里的那声沉默的呐喊——代码不变，但一个「我还在这里」
+  的信号必须被发出，否则机器不会回应，构建不会启动，轮子不会转动。
+
+  工程界有三类「空动作」，表面相同，本质迥异：
+  1. **触发型空提交**（本次）—— 以空提交为 webhook，强制唤醒 CI
+  2. **占位型空提交** —— 为 git bisect 或 cherry-pick 保留历史锚点
+  3. **仪式型空提交** —— 版本发布后以 `[skip ci]` 标记封存
+
+  Walpurgis 将「构建触发」语义抽象为三个可程序化查询结构：
+  1. **`BuildTriggerReason` (Enum)** — 分类空提交触发动机（5 种：webhook_bypass / ci_keyword_trigger / stuck_pipeline_reset / branch_sync_anchor / unknown）
+  2. **`BuildTriggerRecord` (frozen dataclass)** — 封装触发事件元数据：hash、序号、PR编号、动机、files_changed/insertions/deletions（均为0验证）、`is_empty()` / `progress_ratio()` / `summary_line()`
+  3. **`BuildTriggerAudit`** — `all_empty()` 验证全记录、`reason_distribution()` 统计动机分布、`coverage_ratio()` 计算空提交在452次迁移中的系统性占比（当前 0.22%）
+
+  全链路 `WALPURGIS_DEBUG=1` 断点 **10 处**：MODULE_LOAD、ENUM_LOADED、TRIGGER_RECORD_INIT、THIS_COMMIT_REGISTERED、AUDIT_INIT、AUDIT_REGISTER、AUDIT_ALL_EMPTY（×2）、AUDIT_REASON_DIST、AUDIT_COVERAGE_RATIO、DEFAULT_AUDIT_READY、SELF_CHECK（×7步骤）。`self_check()` 5 项断言全部通过（ALL PASS）。
+
+- **三维度审查（Knuth）**:
+  - **正确性**: diff 为空已逐行确认（0 files / 0 insertions / 0 deletions）；`BuildTriggerRecord.__post_init__` 三重断言强制验证空提交约束；`self_check()` 5 项断言（is_empty、index==302、total==452、progress_ratio∈(0.66,0.68)、reason==STUCK_PIPELINE_RESET）全部通过。
+  - **性能**: 纯数据结构，无 I/O，无循环热路径；所有方法为 O(1) 或 O(n)（n=记录数，当前 n=1）。
+  - **可读性**: 空提交在 git log 中是最难追溯意图的类型——无 diff，无上下文，只有 message。Walpurgis 将其动机结构化，`BuildTriggerAudit.summary()` 可跨会话查询所有空提交的系统性分布，比 `git log --all-match` 更具可程序化性。
+
+---
+
+## migrate 2bb2e1a: resolve merge conflict
 ## migrate 73af12903: Major refactoring, combining gpt2 and bert
 
 - **Upstream commit**: 73af12903 (Megatron-LM, commit #24/9062)
