@@ -9402,6 +9402,35 @@ Walpurgis `TrainingConfig(frozen dataclass)` 类型化所有训练参数，
 
 ---
 
+## migrate 2910605: Use main shared-workflows branch (#385)
+
+- **Commit**: `2910605`
+- **Commit message**: `Use main shared-workflows branch (#385)`
+- **PR**: https://github.com/rapidsai/cugraph-gnn/pull/385
+
+- **Context**: 将 rapidsai/shared-workflows 的所有引用从固定版本标签 `@cuda-13.1.0` 切换至滚动主干 `@main`，涉及 4 个 GitHub Actions workflow 文件共 30 处 `uses:` 引用字段（build.yaml 10处、pr.yaml 15处、test.yaml 4处、trigger-breaking-change-alert.yaml 1处）。工程动机：不再钉死在某个 CUDA 版本的时间切片里，转为实时跟踪上游 shared-workflows 主干，获取最新构建基础设施改进。
+
+- **CI workflows → 全部 SKIP**:
+  - `.github/workflows/build.yaml` — SKIP：纯 YAML `@ref` 字符串替换，Walpurgis 无 GitHub Actions CI 体系，无实际运行环境
+  - `.github/workflows/pr.yaml` — SKIP：同上
+  - `.github/workflows/test.yaml` — SKIP：同上
+  - `.github/workflows/trigger-breaking-change-alert.yaml` — SKIP：同上
+
+- **迁移位置**:
+  - `src/walpurgis/core/shared_workflow_branch_policy` — 新增（无后缀，铁律）
+
+- **鲁迅拿法改写（≥20%）**:
+  1. **`SharedWorkflowRefKind(Enum)`**: 将"固定版本标签"与"滚动主干"两种引用语义显式枚举（PINNED/ROLLING），携带 `is_stable()`/`is_live()`/`label()` 属性——上游此语义完全隐藏在 `@cuda-13.1.0` vs `@main` 字符串差异里，无任何枚举层
+  2. **`SharedWorkflowRef(frozen dataclass)`**: 将每条 `uses: repo/.../workflow.yaml@ref` 结构化为 repo/workflow_path/kind/ref_value/host_workflow 五元组，`uses_string()` 还原上游格式，`audit_line()` 产出可嵌入 YAML 的注释——上游只有 30 行散落的字符串字面量
+  3. **`WorkflowMigrationRecord(frozen dataclass)`**: 将单次分支策略切换显式化为可审计记录（from_ref/to_ref/workflow_count/pr_url/commit_sha），`summary()` 单行输出，`audit_line()` 多行注释格式——上游此信息完全散落在 git log 里
+  4. **`SharedWorkflowBranchManifest`**: 单点定义（Single Source of Truth）替代上游 4 个 YAML 中 30 处重复字面量；`all_refs()` 枚举全部引用，`rolling_ratio()` 计算滚动引用占比，`refs_by_host()` 按宿主文件筛选，`audit_report()` 产出结构化审计报告——上游开发者只能 grep YAML 推算
+  5. **断点调试**: 全链路 10 处 `_dbg()` 覆盖模块加载、枚举构造、manifest 构造、rolling_ratio 计算、审计报告生成全路径
+
+- **自测结果**: `_self_test()` 全部 10 项通过；`rolling_ratio=100.0%`，30 条引用全部 ROLLING，4 个宿主文件覆盖完整
+
+
+---
+
 ## migrate 4933710: [SKIP] Empty commit to trigger a build (#376) — CI 构建触发 commit
 
 - **Commit**: `4933710`

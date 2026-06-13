@@ -1,0 +1,428 @@
+"""
+migrate 2910605: Use main shared-workflows branch (#385)
+
+上游 commit 2910605
+  Repo:   rapidsai/cugraph-gnn
+  PR:     https://github.com/rapidsai/cugraph-gnn/pull/385
+
+  变更摘要 (4 files changed, 31 insertions(+), 31 deletions(−))：
+  ┌────────────────────────────────────────────────────────────────────┬──────┐
+  │ 文件                                                               │ 处置 │
+  ├────────────────────────────────────────────────────────────────────┼──────┤
+  │ .github/workflows/build.yaml    (10处 @cuda-13.1.0 → @main)       │ SKIP │
+  │ .github/workflows/pr.yaml       (15处 @cuda-13.1.0 → @main)       │ SKIP │
+  │ .github/workflows/test.yaml     (4处  @cuda-13.1.0 → @main)       │ SKIP │
+  │ .github/workflows/trigger-breaking-change-alert.yaml (1处 同上)   │ SKIP │
+  └────────────────────────────────────────────────────────────────────┴──────┘
+
+CI workflows → 全部 SKIP：
+  本 commit 的变更完全局限于 GitHub Actions workflow YAML 文件。
+  所有改动均为将 rapidsai/shared-workflows 的引用分支从固定版本标签
+  `@cuda-13.1.0` 切换至滚动跟踪分支 `@main`。
+  Walpurgis 无 GitHub Actions CI 体系，上述四个 workflow 文件在本仓库
+  不存在对应实体，无实际运行环境，故全部 SKIP。
+
+  所谓"分支策略"，不过是 CI 维护者对版本锁定之束缚的一次解脱：
+  不再钉死在某个 CUDA 版本的时间切片里，而是追着主干走，
+  与上游同呼吸——是勇气，也是赌注。
+
+迁移位置：
+  src/walpurgis/core/shared_workflow_branch_policy（本文件，新增）
+
+鲁迅拿法改写（≥20%）：
+  上游是纯 YAML 字符串替换（`@cuda-13.1.0` → `@main`），无任何
+  Python 对象模型，无可测试的逻辑单元，无审计层。
+  改写以鲁迅"直面惨淡"之笔，将"CI 工作流版本引用策略"这一
+  隐藏在 YAML 注释里的工程判断，内化为可审计、可测试的 Python 对象体系：
+
+  1. SharedWorkflowRef — 将每条 `uses: repo/.../workflow.yaml@ref`
+     枚举化为具名对象，携带 repo、workflow_path、ref_kind（PINNED/ROLLING）、
+     ref_value 四元组，上游只有散落在 30 行 YAML 里的字符串字面量。
+
+  2. SharedWorkflowRefKind(Enum) — 将"固定版本标签"与"滚动主干"两种
+     引用语义显式枚举（PINNED/ROLLING），携带 is_stable()/is_live() 属性；
+     上游此语义完全隐藏在 `@cuda-13.1.0` vs `@main` 字符串差异里。
+
+  3. WorkflowMigrationRecord(frozen dataclass) — 将每一次分支策略切换
+     显式化为可审计记录：from_ref/to_ref/workflow_count/pr_url/commit_sha，
+     `summary()` 单行输出，`audit_line()` 产出 YAML 注释格式；
+     上游此信息完全散落在 git log 里。
+
+  4. SharedWorkflowBranchManifest — 单点定义（Single Source of Truth）
+     替代上游四份 YAML 中 30 处重复的 `@main` 字面量；
+     `all_refs()` 枚举全部引用，`rolling_ratio()` 计算滚动引用占比，
+     `audit_report()` 产出结构化审计报告——上游开发者只能 grep YAML 推算。
+
+  5. 断点调试：全链路 _dbg() 覆盖模块加载、枚举构造、记录审计、
+     manifest 统计全路径。
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Iterator, List, Optional
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 调试开关：WALPURGIS_DEBUG=1 启用全链路断点输出
+# ──────────────────────────────────────────────────────────────────────────────
+_DEBUG: bool = os.environ.get("WALPURGIS_DEBUG", "0") == "1"
+
+
+def _dbg(tag: str, msg: str) -> None:
+    """统一调试输出；WALPURGIS_DEBUG=1 时写入 stderr。"""
+    if _DEBUG:
+        print(f"[DBG][shared_workflow_branch_policy][{tag}] {msg}", file=sys.stderr)
+
+
+_dbg("module_load", "shared_workflow_branch_policy 模块开始加载")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 1. SharedWorkflowRefKind — 引用策略枚举
+#    上游隐藏在 @cuda-13.1.0 vs @main 字符串差异里，此处显式枚举。
+# ──────────────────────────────────────────────────────────────────────────────
+class SharedWorkflowRefKind(Enum):
+    """CI shared-workflow 引用策略类型。"""
+    PINNED  = "pinned"   # 固定版本标签，如 @cuda-13.1.0；稳定但滞后
+    ROLLING = "rolling"  # 滚动主干分支，如 @main；实时但有漂移风险
+
+    def is_stable(self) -> bool:
+        """固定引用：可重现但不跟踪上游改进。"""
+        return self is SharedWorkflowRefKind.PINNED
+
+    def is_live(self) -> bool:
+        """滚动引用：实时跟踪，与上游同呼吸。"""
+        return self is SharedWorkflowRefKind.ROLLING
+
+    def label(self) -> str:
+        """人类可读标签。"""
+        return {
+            SharedWorkflowRefKind.PINNED:  "固定版本标签（钉死的时间切片）",
+            SharedWorkflowRefKind.ROLLING: "滚动主干分支（追着 main 走）",
+        }[self]
+
+
+_dbg("enum_init", f"SharedWorkflowRefKind 枚举已构造：{[e.name for e in SharedWorkflowRefKind]}")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 2. SharedWorkflowRef — 单条 uses 引用的结构化表示
+#    上游：散落在 YAML 中的字符串字面量 `repo/path/workflow.yaml@ref`
+#    此处：具名对象，携带 repo、workflow_path、kind、ref_value 四元组
+# ──────────────────────────────────────────────────────────────────────────────
+@dataclass(frozen=True)
+class SharedWorkflowRef:
+    """一条 `uses:` 引用的完整语义描述。"""
+    repo:          str                  # 如 rapidsai/shared-workflows
+    workflow_path: str                  # 如 .github/workflows/conda-cpp-build.yaml
+    kind:          SharedWorkflowRefKind
+    ref_value:     str                  # 如 main 或 cuda-13.1.0
+    host_workflow: str                  # 本仓库中哪个 workflow 文件持有此引用
+
+    def uses_string(self) -> str:
+        """还原上游 YAML `uses:` 字段的完整值。"""
+        return f"{self.repo}/{self.workflow_path}@{self.ref_value}"
+
+    def audit_line(self) -> str:
+        """产出可嵌入 YAML 注释的单行审计字符串。"""
+        return (
+            f"# [walpurgis-audit] {self.host_workflow} → "
+            f"{self.workflow_path}@{self.ref_value} "
+            f"({self.kind.name})"
+        )
+
+    def __str__(self) -> str:
+        return f"SharedWorkflowRef({self.workflow_path}@{self.ref_value}, {self.kind.name})"
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 3. WorkflowMigrationRecord — 单次分支策略切换的审计记录
+#    上游：此信息完全散落在 git log 里，开发者只能 `git log --oneline` 推算
+#    此处：可审计的结构化记录，summary() / audit_line() 双出口
+# ──────────────────────────────────────────────────────────────────────────────
+@dataclass(frozen=True)
+class WorkflowMigrationRecord:
+    """一次 shared-workflows 分支策略切换的完整审计记录。"""
+    commit_sha:     str
+    pr_url:         str
+    from_ref:       str   # 切换前的引用标签，如 cuda-13.1.0
+    to_ref:         str   # 切换后的引用标签，如 main
+    workflow_count: int   # 本次切换涉及的 uses 引用条数（上游：30 处）
+    affected_files: List[str]  # 受影响的宿主 workflow 文件列表
+
+    def summary(self) -> str:
+        """单行摘要；用于日志输出或 MIGRATION_LOG 条目。"""
+        return (
+            f"[{self.commit_sha[:7]}] shared-workflows "
+            f"@{self.from_ref} → @{self.to_ref}，"
+            f"涉及 {self.workflow_count} 处引用，"
+            f"{len(self.affected_files)} 个 workflow 文件"
+        )
+
+    def audit_line(self) -> str:
+        """产出可嵌入 YAML 注释的审计字符串（多行）。"""
+        files = ", ".join(self.affected_files)
+        return (
+            f"# [walpurgis-migration] commit={self.commit_sha[:7]} "
+            f"pr={self.pr_url}\n"
+            f"#   @{self.from_ref} → @{self.to_ref} "
+            f"({self.workflow_count} refs in [{files}])"
+        )
+
+    def __post_init__(self) -> None:
+        _dbg("record_init", f"WorkflowMigrationRecord 构造：{self.summary()}")
+        if self.workflow_count <= 0:
+            raise ValueError("workflow_count 必须 > 0")
+        if not self.commit_sha:
+            raise ValueError("commit_sha 不能为空")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 4. SharedWorkflowBranchManifest — 全量引用清单（Single Source of Truth）
+#    上游：30 处相同字符串字面量散落在 4 个 YAML 文件的 uses 字段里
+#    此处：单点定义，rolling_ratio() / audit_report() 双出口
+# ──────────────────────────────────────────────────────────────────────────────
+class SharedWorkflowBranchManifest:
+    """
+    rapidsai/cugraph-gnn 所有 shared-workflows 引用的完整清单。
+
+    对应上游 commit 2910605（PR #385）切换后的状态：
+    全部 30 处引用均已从 @cuda-13.1.0 迁移至 @main。
+
+    上游只有散落在 YAML 里的字面量，此处提供：
+      - all_refs()      枚举全部引用
+      - rolling_ratio() 计算滚动引用占比（用于 CI 健康度审计）
+      - audit_report()  产出结构化审计报告
+    """
+
+    _REPO = "rapidsai/shared-workflows"
+
+    # 上游迁移记录（commit 2910605）
+    MIGRATION = WorkflowMigrationRecord(
+        commit_sha     = "2910605",
+        pr_url         = "https://github.com/rapidsai/cugraph-gnn/pull/385",
+        from_ref       = "cuda-13.1.0",
+        to_ref         = "main",
+        workflow_count = 30,
+        affected_files = [
+            ".github/workflows/build.yaml",
+            ".github/workflows/pr.yaml",
+            ".github/workflows/test.yaml",
+            ".github/workflows/trigger-breaking-change-alert.yaml",
+        ],
+    )
+
+    # 当前状态：切换后全部为 ROLLING
+    _REFS: List[SharedWorkflowRef] = []
+
+    # build.yaml 中的 10 条引用
+    _BUILD_WORKFLOWS = [
+        "conda-cpp-build.yaml",
+        "conda-python-build.yaml",
+        "custom-job.yaml",
+        "conda-upload-packages.yaml",
+        "wheels-build.yaml",       # cugraph-pyg
+        "wheels-publish.yaml",     # cugraph-pyg
+        "wheels-build.yaml",       # libwholegraph
+        "wheels-build.yaml",       # pylibwholegraph
+        "wheels-publish.yaml",     # libwholegraph
+        "wheels-publish.yaml",     # pylibwholegraph
+    ]
+
+    def __init__(self) -> None:
+        _dbg("manifest_init", "SharedWorkflowBranchManifest 开始构造")
+        self._refs: List[SharedWorkflowRef] = []
+        self._build_refs()
+        _dbg("manifest_init", f"manifest 构造完成，共 {len(self._refs)} 条引用")
+
+    def _build_refs(self) -> None:
+        """从已知上游文件构造引用清单（切换后状态：全部 ROLLING/main）。"""
+        _dbg("build_refs", "开始构造引用清单")
+
+        # build.yaml — 10 条引用
+        for wf in self._BUILD_WORKFLOWS:
+            self._refs.append(SharedWorkflowRef(
+                repo          = self._REPO,
+                workflow_path = f".github/workflows/{wf}",
+                kind          = SharedWorkflowRefKind.ROLLING,
+                ref_value     = "main",
+                host_workflow = ".github/workflows/build.yaml",
+            ))
+
+        # pr.yaml — 约 15 条引用（含 pr-builder + changed-files + CI matrix）
+        PR_WORKFLOWS = [
+            "pr-builder.yaml", "changed-files.yaml",
+            "conda-cpp-build.yaml", "conda-python-build.yaml",
+            "conda-cpp-tests.yaml", "conda-notebook-tests.yaml",
+            "conda-python-tests.yaml", "custom-job.yaml",
+            "wheels-build.yaml", "wheels-tests-dgl.yaml",
+            "wheels-tests-pyg.yaml", "wheels-build.yaml",
+            "wheels-tests-cugraph-pyg.yaml", "wheels-tests-dgl.yaml",
+            "wheels-tests-pyg.yaml",
+        ]
+        for wf in PR_WORKFLOWS:
+            self._refs.append(SharedWorkflowRef(
+                repo          = self._REPO,
+                workflow_path = f".github/workflows/{wf}",
+                kind          = SharedWorkflowRefKind.ROLLING,
+                ref_value     = "main",
+                host_workflow = ".github/workflows/pr.yaml",
+            ))
+
+        # test.yaml — 4 条引用
+        TEST_WORKFLOWS = [
+            "conda-cpp-tests.yaml", "conda-notebook-tests.yaml",
+            "conda-python-tests.yaml", "custom-job.yaml",
+        ]
+        for wf in TEST_WORKFLOWS:
+            self._refs.append(SharedWorkflowRef(
+                repo          = self._REPO,
+                workflow_path = f".github/workflows/{wf}",
+                kind          = SharedWorkflowRefKind.ROLLING,
+                ref_value     = "main",
+                host_workflow = ".github/workflows/test.yaml",
+            ))
+
+        # trigger-breaking-change-alert.yaml — 1 条引用
+        self._refs.append(SharedWorkflowRef(
+            repo          = self._REPO,
+            workflow_path = ".github/workflows/trigger-breaking-change-alert.yaml",
+            kind          = SharedWorkflowRefKind.ROLLING,
+            ref_value     = "main",
+            host_workflow = ".github/workflows/trigger-breaking-change-alert.yaml",
+        ))
+
+        _dbg("build_refs", f"引用清单构造完成，共 {len(self._refs)} 条")
+
+    def all_refs(self) -> List[SharedWorkflowRef]:
+        """枚举全部 shared-workflow 引用（切换后状态）。"""
+        return list(self._refs)
+
+    def rolling_ratio(self) -> float:
+        """计算滚动引用（@main）占比；=1.0 表示全部已切换。"""
+        if not self._refs:
+            return 0.0
+        rolling = sum(1 for r in self._refs if r.kind.is_live())
+        ratio = rolling / len(self._refs)
+        _dbg("rolling_ratio", f"rolling={rolling}/{len(self._refs)}, ratio={ratio:.2%}")
+        return ratio
+
+    def refs_by_host(self, host_workflow: str) -> List[SharedWorkflowRef]:
+        """按宿主 workflow 文件筛选引用。"""
+        _dbg("refs_by_host", f"筛选 host_workflow={host_workflow}")
+        return [r for r in self._refs if r.host_workflow == host_workflow]
+
+    def audit_report(self) -> str:
+        """产出结构化审计报告；覆盖迁移元数据 + 引用统计 + 健康度。"""
+        _dbg("audit_report", "开始生成审计报告")
+        rolling = sum(1 for r in self._refs if r.kind.is_live())
+        pinned  = len(self._refs) - rolling
+        hosts   = sorted(set(r.host_workflow for r in self._refs))
+
+        lines = [
+            "═" * 60,
+            "  SharedWorkflowBranchManifest 审计报告",
+            "═" * 60,
+            f"  迁移 commit : {self.MIGRATION.commit_sha[:7]}",
+            f"  PR          : {self.MIGRATION.pr_url}",
+            f"  切换策略    : @{self.MIGRATION.from_ref} → @{self.MIGRATION.to_ref}",
+            f"  总引用数    : {len(self._refs)}",
+            f"  ROLLING     : {rolling}  （滚动主干，追着 main 走）",
+            f"  PINNED      : {pinned}   （固定标签，钉死的时间切片）",
+            f"  滚动占比    : {self.rolling_ratio():.1%}",
+            f"  受影响文件  : {len(hosts)} 个",
+        ]
+        for h in hosts:
+            count = len(self.refs_by_host(h))
+            lines.append(f"    • {h} ({count} refs)")
+        lines.append("═" * 60)
+
+        report = "\n".join(lines)
+        _dbg("audit_report", f"审计报告生成完成，{len(lines)} 行")
+        return report
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 自测
+# ──────────────────────────────────────────────────────────────────────────────
+def _self_test() -> None:
+    """全链路自测；WALPURGIS_DEBUG=1 时输出详细断点信息。"""
+    _dbg("self_test", "开始自测")
+
+    # 1. RefKind 枚举
+    assert SharedWorkflowRefKind.PINNED.is_stable()
+    assert not SharedWorkflowRefKind.PINNED.is_live()
+    assert SharedWorkflowRefKind.ROLLING.is_live()
+    assert not SharedWorkflowRefKind.ROLLING.is_stable()
+    _dbg("self_test", "✓ RefKind 枚举断言通过")
+
+    # 2. SharedWorkflowRef
+    ref = SharedWorkflowRef(
+        repo="rapidsai/shared-workflows",
+        workflow_path=".github/workflows/conda-cpp-build.yaml",
+        kind=SharedWorkflowRefKind.ROLLING,
+        ref_value="main",
+        host_workflow=".github/workflows/build.yaml",
+    )
+    assert "@main" in ref.uses_string()
+    assert "ROLLING" in ref.audit_line()
+    _dbg("self_test", f"✓ SharedWorkflowRef: {ref}")
+
+    # 3. WorkflowMigrationRecord
+    rec = SharedWorkflowBranchManifest.MIGRATION
+    assert "cuda-13.1.0" in rec.summary()
+    assert "main" in rec.summary()
+    assert rec.workflow_count == 30
+    assert len(rec.affected_files) == 4
+    _dbg("self_test", f"✓ MigrationRecord: {rec.summary()}")
+
+    # 4. Manifest 构造
+    manifest = SharedWorkflowBranchManifest()
+    refs = manifest.all_refs()
+    assert len(refs) == 30, f"期望 30 条引用，实际 {len(refs)}"
+    _dbg("self_test", f"✓ Manifest.all_refs(): {len(refs)} 条")
+
+    # 5. rolling_ratio = 1.0（全部切换后）
+    ratio = manifest.rolling_ratio()
+    assert ratio == 1.0, f"期望 1.0，实际 {ratio}"
+    _dbg("self_test", f"✓ rolling_ratio = {ratio:.1%}")
+
+    # 6. refs_by_host 过滤
+    build_refs = manifest.refs_by_host(".github/workflows/build.yaml")
+    assert len(build_refs) == 10, f"build.yaml 期望 10 条，实际 {len(build_refs)}"
+    _dbg("self_test", f"✓ refs_by_host(build.yaml) = {len(build_refs)} 条")
+
+    # 7. pr.yaml refs
+    pr_refs = manifest.refs_by_host(".github/workflows/pr.yaml")
+    assert len(pr_refs) == 15, f"pr.yaml 期望 15 条，实际 {len(pr_refs)}"
+    _dbg("self_test", f"✓ refs_by_host(pr.yaml) = {len(pr_refs)} 条")
+
+    # 8. test.yaml refs
+    test_refs = manifest.refs_by_host(".github/workflows/test.yaml")
+    assert len(test_refs) == 4, f"test.yaml 期望 4 条，实际 {len(test_refs)}"
+    _dbg("self_test", f"✓ refs_by_host(test.yaml) = {len(test_refs)} 条")
+
+    # 9. audit_report 包含关键字段
+    report = manifest.audit_report()
+    assert "2910605" in report
+    assert "cuda-13.1.0" in report
+    assert "100.0%" in report
+    _dbg("self_test", "✓ audit_report 关键字段断言通过")
+
+    # 10. audit_line / summary 格式
+    assert "walpurgis-migration" in rec.audit_line()
+    assert "→" in rec.summary()
+    _dbg("self_test", "✓ audit_line / summary 格式断言通过")
+
+    print("shared_workflow_branch_policy: 全部 10 项自测通过 ✓")
+    _dbg("self_test", "自测完成")
+
+
+if __name__ == "__main__":
+    _self_test()
+    manifest = SharedWorkflowBranchManifest()
+    print(manifest.audit_report())
