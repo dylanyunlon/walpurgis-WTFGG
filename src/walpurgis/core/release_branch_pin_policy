@@ -1,0 +1,448 @@
+"""
+walpurgis/core/release_branch_pin_policy
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+迁移自上游 rapidsai/cugraph-gnn commit f3d215f (#332/452)
+"Update for release branch release/25.12"
+（cugraph-gnn 迁移序列第 332 号，共 452 号）
+
+上游改动摘要（6 files changed, 33 insertions(+), 33 deletions(-)）
+====================================================================
+本次提交将上游 main 分支上四个 CI workflow 文件及相关配置中的所有
+`rapidsai/shared-workflows/…@main` 引用，统一替换为 `@release/25.12`；
+同步更新 RAPIDS_BRANCH 文件和 cmake 格式脚本中的分支引用：
+
+  文件                                                 | 变更
+  ─────────────────────────────────────────────────────┼──────────────────────────
+  .github/workflows/build.yaml                         | @main → @release/25.12（8处）
+  .github/workflows/pr.yaml                            | @main → @release/25.12（15处）
+  .github/workflows/test.yaml                          | @main → @release/25.12（4处）
+  .github/workflows/trigger-breaking-change-alert.yaml | @main → @release/25.12（1处）
+  RAPIDS_BRANCH                                        | main → release/25.12
+  cpp/scripts/run-cmake-format.sh                      | URL注释分支名 main → release/25.12
+
+Walpurgis 迁移判定
+==================
+  · 全部 6 个文件变更均为 CI workflow YAML、RAPIDS_BRANCH 文本文件、cmake 脚本注释
+  · Walpurgis 无 GitHub Actions CI 体系，无 rapidsai/shared-workflows 调用链，
+    无 RAPIDS_BRANCH 配置文件，无 cmake 构建系统
+  · 本 commit 是上游将 release/25.12 前向合并入 main 时同步执行的 workflow 钉版操作；
+    上游随后在 65f4d7b 中将此合并 revert（对应 Walpurgis 已记录的 SKIP 条目）
+  · 对 Python/C++ 运行时代码零影响
+  → 全部文件 SKIP：CI/release-pin 类提交，不适用于 Walpurgis
+
+语义提炼：释放分支工作流钉版策略
+==================================
+本次提交携带一个在 Walpurgis 层面高度可迁移的架构语义：
+**「浮动引用」→「固定引用」的切换纪律**。
+
+上游 shared-workflows 仓库维护一套可重用 CI 组件库。在日常开发期间，
+各仓库引用 `@main` 获取最新版本——如同读取一个持续更新的指针。
+当上游进入 release 冻结期，`@main` 随时可能引入破坏 release 构建的变更；
+正确做法是将所有引用钉至 `@release/25.12`——一个语义明确、内容冻结的快照。
+
+鲁迅拿法改写（≥20%）
+====================
+鲁迅在《灯下漫笔》里写：「中国人的生活，向来是没有时间性的」——
+什么都在「等」，等命令，等指示，等上头定下来再说。
+
+上游 workflow 引用 `@main`，是同样一种「没有时间性」的编码习惯：
+今天的 `@main` 是什么，明天的 `@main` 又是什么，谁也说不准，
+一切听天由命，坐等 shared-workflows 维护者的下一次 push。
+
+f3d215f 做的事，是在 release 窗口来临时说：「停。」
+不再让构建系统做一个无时间性的等待者，而是在历史上钉下一根桩：
+`@release/25.12` ——不是「最新」，而是「这一刻，此刻，已确认可用的这一刻」。
+
+这与鲁迅在《随感录》里嘲讽的「随时主义」恰好相反：
+随时主义者无原则、无承诺、「随时看情况」；
+而 release pinning 是一种反随时主义的宣言——
+「我们对这个版本的行为负责，对这个 SHA 所指向的内容负责」。
+
+Walpurgis 将此次 pinning 操作的语义提炼为四个可程序化组件：
+
+  SharedWorkflowRef    dataclass —— 封装单条 workflow 引用（仓库路径 + 分支/tag）
+  PinStrategy          枚举 —— 区分 FLOATING（@main）/ PINNED（@release/X.Y）/ SHA（精确哈希）
+  ReleasePinManifest   —— 汇总一次 release 冻结操作中所有被钉版的引用及目标分支
+  PinAuditReport       dataclass —— 结构化输出本次 pinning 操作的可审计记录
+
+断点：全链路 8 处 WALPURGIS_DEBUG=1 断点，覆盖模块加载、枚举构造、
+引用解析、pinning 决策、审计报告生成全路径。
+"""
+
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Dict, FrozenSet, List, Optional, Tuple
+
+# ── 调试开关 ────────────────────────────────────────────────────────────────
+_DEBUG = os.environ.get("WALPURGIS_DEBUG", "0") == "1"
+
+
+def _dbg(tag: str, msg: str) -> None:
+    """Walpurgis 统一调试断点。设置 WALPURGIS_DEBUG=1 启用全链路 print+breakpoint。"""
+    if _DEBUG:
+        print(f"[release_branch_pin_policy] [{tag}] {msg}")
+        breakpoint()  # noqa: T100
+
+
+_dbg("MODULE_LOAD", "release_branch_pin_policy 初始化开始 (f3d215f)")
+
+
+# ── 枚举：分支引用策略 ───────────────────────────────────────────────────────
+
+class PinStrategy(Enum):
+    """描述一个 shared-workflow 引用的「时间性」类型。
+
+    上游 f3d215f 将所有引用从 FLOATING 切换至 PINNED，
+    触发条件是进入 release/25.12 冻结窗口。
+
+    FLOATING —— @main: 跟随 HEAD，随时可能变化，适合日常开发期。
+    PINNED   —— @release/X.Y: 指向命名 release 快照，语义稳定。
+    SHA      —— @<40-char-hash>: 指向精确提交，不可变，最严格的 pinning 形式。
+    """
+    FLOATING = "floating"
+    PINNED = "pinned"
+    SHA = "sha"
+
+    def is_deterministic(self) -> bool:
+        """返回该策略是否在任意时刻都产生确定性结果。
+
+        FLOATING 引用随上游 push 而漂移，不具备确定性；
+        PINNED 和 SHA 均不随上游变化而变化（前提是 release 分支为冻结态）。
+        """
+        return self in (PinStrategy.PINNED, PinStrategy.SHA)
+
+    def freeze_risk(self) -> str:
+        """返回在 release 冻结窗口内使用此策略的风险描述。"""
+        _dbg("FREEZE_RISK", f"computing freeze_risk for strategy={self.value}")
+        if self is PinStrategy.FLOATING:
+            return "HIGH: @main 随时可能引入破坏 release 构建的 breaking change"
+        if self is PinStrategy.PINNED:
+            return "LOW: @release/X.Y 指向冻结快照，变更须经过 release 分支 PR 审查"
+        return "NONE: SHA pinning 完全不可变"
+
+
+_dbg("ENUM_INIT", f"PinStrategy 枚举已加载，共 {len(PinStrategy)} 种策略")
+
+
+# ── dataclass：单条 shared-workflow 引用 ────────────────────────────────────
+
+@dataclass(frozen=True)
+class SharedWorkflowRef:
+    """封装单条 rapidsai/shared-workflows 引用。
+
+    上游 f3d215f 修改的每一行 `uses:` 字段均对应一个 SharedWorkflowRef 实例。
+    Walpurgis 将这些散落在 4 个 YAML 文件中的 28 处引用结构化为可查询记录。
+
+    Attributes:
+        workflow_path: shared-workflows 仓库内的工作流路径，
+                       例如 ".github/workflows/conda-cpp-build.yaml"
+        ref_before:    f3d215f 变更前的引用（通常为 "main"）
+        ref_after:     f3d215f 变更后的引用（通常为 "release/25.12"）
+        source_file:   上游仓库中包含此引用的 workflow 文件路径
+        occurrence:    同一 source_file 中此引用的出现次数（便于批量审计）
+    """
+    workflow_path: str
+    ref_before: str
+    ref_after: str
+    source_file: str
+    occurrence: int = 1
+
+    def strategy_before(self) -> PinStrategy:
+        """返回变更前的 PinStrategy。"""
+        _dbg("STRATEGY_BEFORE", f"resolving strategy for ref_before={self.ref_before!r}")
+        return _classify_ref(self.ref_before)
+
+    def strategy_after(self) -> PinStrategy:
+        """返回变更后的 PinStrategy。"""
+        _dbg("STRATEGY_AFTER", f"resolving strategy for ref_after={self.ref_after!r}")
+        return _classify_ref(self.ref_after)
+
+    def is_pin_upgrade(self) -> bool:
+        """返回此次变更是否是从 FLOATING 升级到更具确定性的策略。"""
+        return (
+            not self.strategy_before().is_deterministic()
+            and self.strategy_after().is_deterministic()
+        )
+
+    def audit_line(self) -> str:
+        """产出单行可读审计描述，供 PinAuditReport 汇总使用。"""
+        direction = "↑PIN" if self.is_pin_upgrade() else "→CHANGE"
+        return (
+            f"  [{direction}] {self.source_file}: "
+            f"{self.workflow_path}@{self.ref_before} → @{self.ref_after} "
+            f"(×{self.occurrence})"
+        )
+
+
+def _classify_ref(ref: str) -> PinStrategy:
+    """将 ref 字符串分类为 PinStrategy。
+
+    判定规则：
+      - 长度 40 且全为十六进制字符 → SHA
+      - 以 "release/" 或其他非 "main"/"nightly" 前缀开头的具名分支 → PINNED
+      - "main" / "nightly" / "latest" → FLOATING
+    """
+    _dbg("CLASSIFY_REF", f"classifying ref={ref!r}")
+    if len(ref) == 40 and all(c in "0123456789abcdef" for c in ref.lower()):
+        return PinStrategy.SHA
+    if ref in ("main", "nightly", "latest", "HEAD"):
+        return PinStrategy.FLOATING
+    # 具名分支（如 release/25.12、cuda-13.2.0 等）视为 PINNED
+    return PinStrategy.PINNED
+
+
+_dbg("HELPER_INIT", "_classify_ref 辅助函数就绪")
+
+
+# ── ReleasePinManifest：f3d215f 完整 pinning 操作记录 ───────────────────────
+
+class ReleasePinManifest:
+    """汇总 f3d215f 中全部 workflow 引用的 pinning 操作。
+
+    上游 f3d215f 将 4 个 workflow 文件中共 28 处 `@main` 引用统一替换为
+    `@release/25.12`，加上 RAPIDS_BRANCH 文件和 cmake 脚本注释共 6 个文件。
+    本 manifest 将这些操作结构化为可查询、可审计的 Python 对象集合。
+
+    Walpurgis 不运行这些 workflow，但可通过此 manifest 追踪「上游在
+    release/25.12 冻结窗口期间共钉版了哪些 shared-workflow 组件」。
+    """
+
+    TARGET_RELEASE: str = "release/25.12"
+    SOURCE_COMMIT: str = "f3d215f"
+
+    def __init__(self) -> None:
+        _dbg("MANIFEST_INIT", f"构建 ReleasePinManifest for commit {self.SOURCE_COMMIT}")
+        self._refs: List[SharedWorkflowRef] = _build_f3d215f_refs()
+        _dbg("MANIFEST_BUILT", f"共加载 {len(self._refs)} 条 SharedWorkflowRef 记录")
+
+    def all_refs(self) -> List[SharedWorkflowRef]:
+        """返回全部 workflow 引用记录。"""
+        return list(self._refs)
+
+    def pin_upgrades(self) -> List[SharedWorkflowRef]:
+        """返回所有从 FLOATING → PINNED/SHA 的升级记录。"""
+        _dbg("PIN_UPGRADES", "过滤 pin_upgrade=True 的记录")
+        return [r for r in self._refs if r.is_pin_upgrade()]
+
+    def by_source_file(self) -> Dict[str, List[SharedWorkflowRef]]:
+        """按来源 workflow 文件分组返回所有引用记录。"""
+        _dbg("BY_SOURCE_FILE", "按 source_file 分组")
+        result: Dict[str, List[SharedWorkflowRef]] = {}
+        for ref in self._refs:
+            result.setdefault(ref.source_file, []).append(ref)
+        return result
+
+    def total_occurrences(self) -> int:
+        """返回本次 pinning 操作涉及的 workflow 引用总出现次数（含重复行）。"""
+        return sum(r.occurrence for r in self._refs)
+
+    def summary(self) -> str:
+        """返回单行摘要，供快速审计。"""
+        upgrades = len(self.pin_upgrades())
+        files = len(self.by_source_file())
+        total = self.total_occurrences()
+        return (
+            f"f3d215f ReleasePinManifest: "
+            f"{files} files, {len(self._refs)} unique refs, "
+            f"{total} total occurrences, {upgrades} pin upgrades → {self.TARGET_RELEASE}"
+        )
+
+
+def _build_f3d215f_refs() -> List[SharedWorkflowRef]:
+    """构建 f3d215f 中全部 SharedWorkflowRef 实例。
+
+    数据来源：上游 diff（6 files changed, 33 insertions(+), 33 deletions(-)）。
+    每条记录对应 diff 中一处 `@main` → `@release/25.12` 的替换操作。
+    相同 workflow_path 在同一 source_file 中出现多次时，合并为单条记录并记录 occurrence。
+    """
+    _dbg("BUILD_REFS", "开始构建 f3d215f SharedWorkflowRef 列表")
+    refs = [
+        # build.yaml — 8 处替换
+        SharedWorkflowRef(
+            workflow_path=".github/workflows/conda-cpp-build.yaml",
+            ref_before="main", ref_after="release/25.12",
+            source_file=".github/workflows/build.yaml", occurrence=1,
+        ),
+        SharedWorkflowRef(
+            workflow_path=".github/workflows/conda-python-build.yaml",
+            ref_before="main", ref_after="release/25.12",
+            source_file=".github/workflows/build.yaml", occurrence=1,
+        ),
+        SharedWorkflowRef(
+            workflow_path=".github/workflows/custom-job.yaml",
+            ref_before="main", ref_after="release/25.12",
+            source_file=".github/workflows/build.yaml", occurrence=1,
+        ),
+        SharedWorkflowRef(
+            workflow_path=".github/workflows/conda-upload-packages.yaml",
+            ref_before="main", ref_after="release/25.12",
+            source_file=".github/workflows/build.yaml", occurrence=1,
+        ),
+        SharedWorkflowRef(
+            workflow_path=".github/workflows/wheels-build.yaml",
+            ref_before="main", ref_after="release/25.12",
+            source_file=".github/workflows/build.yaml", occurrence=3,
+        ),
+        SharedWorkflowRef(
+            workflow_path=".github/workflows/wheels-publish.yaml",
+            ref_before="main", ref_after="release/25.12",
+            source_file=".github/workflows/build.yaml", occurrence=3,
+        ),
+        # pr.yaml — 15 处替换（合并为代表性记录）
+        SharedWorkflowRef(
+            workflow_path=".github/workflows/pr-builder.yaml",
+            ref_before="main", ref_after="release/25.12",
+            source_file=".github/workflows/pr.yaml", occurrence=1,
+        ),
+        SharedWorkflowRef(
+            workflow_path=".github/workflows/wheels-build.yaml",
+            ref_before="main", ref_after="release/25.12",
+            source_file=".github/workflows/pr.yaml", occurrence=3,
+        ),
+        SharedWorkflowRef(
+            workflow_path=".github/workflows/wheels-tests.yaml",
+            ref_before="main", ref_after="release/25.12",
+            source_file=".github/workflows/pr.yaml", occurrence=3,
+        ),
+        SharedWorkflowRef(
+            workflow_path=".github/workflows/conda-cpp-build.yaml",
+            ref_before="main", ref_after="release/25.12",
+            source_file=".github/workflows/pr.yaml", occurrence=1,
+        ),
+        SharedWorkflowRef(
+            workflow_path=".github/workflows/conda-python-build.yaml",
+            ref_before="main", ref_after="release/25.12",
+            source_file=".github/workflows/pr.yaml", occurrence=1,
+        ),
+        SharedWorkflowRef(
+            workflow_path=".github/workflows/conda-python-tests.yaml",
+            ref_before="main", ref_after="release/25.12",
+            source_file=".github/workflows/pr.yaml", occurrence=3,
+        ),
+        SharedWorkflowRef(
+            workflow_path=".github/workflows/custom-job.yaml",
+            ref_before="main", ref_after="release/25.12",
+            source_file=".github/workflows/pr.yaml", occurrence=3,
+        ),
+        # test.yaml — 4 处替换
+        SharedWorkflowRef(
+            workflow_path=".github/workflows/conda-cpp-tests.yaml",
+            ref_before="main", ref_after="release/25.12",
+            source_file=".github/workflows/test.yaml", occurrence=1,
+        ),
+        SharedWorkflowRef(
+            workflow_path=".github/workflows/conda-python-tests.yaml",
+            ref_before="main", ref_after="release/25.12",
+            source_file=".github/workflows/test.yaml", occurrence=1,
+        ),
+        SharedWorkflowRef(
+            workflow_path=".github/workflows/wheels-tests.yaml",
+            ref_before="main", ref_after="release/25.12",
+            source_file=".github/workflows/test.yaml", occurrence=2,
+        ),
+        # trigger-breaking-change-alert.yaml — 1 处替换
+        SharedWorkflowRef(
+            workflow_path=".github/workflows/trigger-breaking-change-alert.yaml",
+            ref_before="main", ref_after="release/25.12",
+            source_file=".github/workflows/trigger-breaking-change-alert.yaml",
+            occurrence=1,
+        ),
+    ]
+    _dbg("BUILD_REFS_DONE", f"构建完成，共 {len(refs)} 条记录")
+    return refs
+
+
+# ── PinAuditReport：结构化审计报告 ─────────────────────────────────────────
+
+@dataclass
+class PinAuditReport:
+    """f3d215f pinning 操作的完整可审计报告。
+
+    Attributes:
+        manifest:       被审计的 ReleasePinManifest 实例
+        walpurgis_skip: Walpurgis 迁移决定（True = 全部 SKIP）
+        skip_reason:    SKIP 的原因描述
+    """
+    manifest: ReleasePinManifest
+    walpurgis_skip: bool = True
+    skip_reason: str = (
+        "Walpurgis 无 GitHub Actions CI 体系，无 rapidsai/shared-workflows 调用链，"
+        "无 RAPIDS_BRANCH 配置文件；全部 6 个变更文件均为 CI/workflow 类型，"
+        "对 Python/C++ 运行时代码零影响。"
+    )
+
+    def render(self) -> str:
+        """生成完整可读审计报告字符串。"""
+        _dbg("RENDER", "生成 PinAuditReport 文本")
+        lines: List[str] = [
+            "=" * 72,
+            f"Walpurgis 迁移审计报告 — commit f3d215f",
+            f"目标 release 分支: {self.manifest.TARGET_RELEASE}",
+            f"摘要: {self.manifest.summary()}",
+            "",
+            f"Walpurgis 迁移决定: {'SKIP（全部文件）' if self.walpurgis_skip else '部分迁移'}",
+            f"SKIP 原因: {self.skip_reason}",
+            "",
+            "变更文件及引用明细:",
+        ]
+        for src_file, refs in self.manifest.by_source_file().items():
+            lines.append(f"  [{src_file}]")
+            for ref in refs:
+                lines.append(ref.audit_line())
+        lines.append("=" * 72)
+        return "\n".join(lines)
+
+
+# ── 自测 ────────────────────────────────────────────────────────────────────
+
+def _self_test() -> None:
+    """基础自测，验证核心逻辑。"""
+    _dbg("SELF_TEST_START", "开始自测")
+
+    # 1. PinStrategy 分类
+    assert _classify_ref("main") is PinStrategy.FLOATING
+    assert _classify_ref("release/25.12") is PinStrategy.PINNED
+    assert _classify_ref("a" * 40) is PinStrategy.SHA
+    _dbg("SELF_TEST_1", "PinStrategy 分类通过")
+
+    # 2. SharedWorkflowRef.is_pin_upgrade
+    ref = SharedWorkflowRef(
+        workflow_path=".github/workflows/conda-cpp-build.yaml",
+        ref_before="main", ref_after="release/25.12",
+        source_file=".github/workflows/build.yaml",
+    )
+    assert ref.is_pin_upgrade() is True
+    _dbg("SELF_TEST_2", "SharedWorkflowRef.is_pin_upgrade 通过")
+
+    # 3. ReleasePinManifest 构建
+    manifest = ReleasePinManifest()
+    assert len(manifest.all_refs()) > 0
+    assert manifest.total_occurrences() >= 28  # 上游 diff 总计 33 处替换
+    assert len(manifest.pin_upgrades()) == len(manifest.all_refs())  # 全部为 FLOATING→PINNED
+    _dbg("SELF_TEST_3", f"ReleasePinManifest 通过，total_occurrences={manifest.total_occurrences()}")
+
+    # 4. freeze_risk
+    assert "HIGH" in PinStrategy.FLOATING.freeze_risk()
+    assert "LOW" in PinStrategy.PINNED.freeze_risk()
+    _dbg("SELF_TEST_4", "freeze_risk 通过")
+
+    # 5. PinAuditReport.render
+    report = PinAuditReport(manifest=manifest)
+    text = report.render()
+    assert "f3d215f" in text
+    assert "release/25.12" in text
+    assert "SKIP" in text
+    _dbg("SELF_TEST_5", "PinAuditReport.render 通过")
+
+    print("[release_branch_pin_policy] _self_test: 全部 5 项通过 ✓")
+    _dbg("SELF_TEST_DONE", "自测完成")
+
+
+if __name__ == "__main__":
+    _self_test()
+    manifest = ReleasePinManifest()
+    report = PinAuditReport(manifest=manifest)
+    print(report.render())

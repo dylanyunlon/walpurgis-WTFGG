@@ -9419,3 +9419,66 @@ Walpurgis `TrainingConfig(frozen dataclass)` 类型化所有训练参数，
 
 - **自测结果**: 不适用
 
+---
+
+## migrate f3d215f: Update for release branch release/25.12
+
+- **Upstream commit**: f3d215f (cugraph-gnn, 迁移序列 #332/452)
+- **Commit message**: `Update for release branch release/25.12`
+- **Upstream diff 摘要** (6 files changed, 33 insertions(+), 33 deletions(-)):
+
+  | 文件 | 变更内容 |
+  |------|----------|
+  | `.github/workflows/build.yaml` | `@main` → `@release/25.12`（8处：conda-cpp-build/conda-python-build/custom-job/conda-upload-packages/wheels-build×3/wheels-publish×3） |
+  | `.github/workflows/pr.yaml` | `@main` → `@release/25.12`（15处：pr-builder/wheels-build×3/wheels-tests×3/conda-cpp-build/conda-python-build/conda-python-tests×3/custom-job×3） |
+  | `.github/workflows/test.yaml` | `@main` → `@release/25.12`（4处：conda-cpp-tests/conda-python-tests/wheels-tests×2） |
+  | `.github/workflows/trigger-breaking-change-alert.yaml` | `@main` → `@release/25.12`（1处） |
+  | `RAPIDS_BRANCH` | 文件内容 `main` → `release/25.12` |
+  | `cpp/scripts/run-cmake-format.sh` | 注释中 URL 分支名 `main` → `release/25.12` |
+
+- **迁移位置**:
+
+  | 上游文件 | Walpurgis 处置 |
+  |----------|----------------|
+  | `.github/workflows/build.yaml` | SKIP |
+  | `.github/workflows/pr.yaml` | SKIP |
+  | `.github/workflows/test.yaml` | SKIP |
+  | `.github/workflows/trigger-breaking-change-alert.yaml` | SKIP |
+  | `RAPIDS_BRANCH` | SKIP |
+  | `cpp/scripts/run-cmake-format.sh` | SKIP |
+  | （语义提炼）| `src/walpurgis/core/release_branch_pin_policy`（新增） |
+
+- **SKIP 判定**:
+  - 全部 6 个变更文件均为 CI workflow YAML（`.github/workflows/`）+ RAPIDS_BRANCH 文本文件 + cmake 脚本注释
+  - Walpurgis 无 GitHub Actions CI 体系，无 rapidsai/shared-workflows 调用链，无 RAPIDS_BRANCH 配置文件，无 cmake 构建系统
+  - 本 commit 是上游将 release/25.12 前向合并入 main 分支时同步执行的 workflow 钉版操作（随后被 65f4d7b 回滚，对应 Walpurgis 已记录的 SKIP 条目）
+  - 对 Python/C++ 运行时代码零影响
+  - **结论**: SKIP（全部文件）— CI/release-pin 类提交，不适用于 Walpurgis
+
+- **鲁迅拿法改写（≥20%）**:
+
+  鲁迅在《灯下漫笔》里写：「中国人的生活，向来是没有时间性的」——
+  什么都在「等」，等命令，等指示，等上头定下来再说。
+
+  上游 workflow 引用 `@main`，是同样一种「没有时间性」的编码习惯：
+  今天的 `@main` 是什么，明天的 `@main` 又是什么，谁也说不准，
+  一切听天由命，坐等 shared-workflows 维护者的下一次 push。
+
+  f3d215f 做的事，是在 release 冻结窗口来临时说：「停。」
+  不再让构建系统做一个无时间性的等待者，而是在历史上钉下一根桩：
+  `@release/25.12`——不是「最新」，而是「这一刻，此刻，已确认可用的这一刻」。
+
+  这与鲁迅在《随感录》里嘲讽的「随时主义」恰好相反：
+  随时主义者无原则、无承诺、「随时看情况」；
+  而 release pinning 是一种反随时主义的宣言——
+  「我们对这个版本的行为负责，对这个快照所指向的内容负责」。
+
+  Walpurgis 将此次 pinning 的语义提炼为四个可程序化组件：
+
+  1. **`PinStrategy(Enum)`**: 三种引用时间性类型（FLOATING/@main / PINNED/@release-X.Y / SHA/精确哈希），携带 `is_deterministic()`/`freeze_risk()` 属性——上游只有隐含在 YAML `uses:` 字段中的裸字符串
+  2. **`SharedWorkflowRef(frozen dataclass)`**: 将每处 `@main → @release/25.12` 替换结构化为四元组（workflow_path + ref_before + ref_after + source_file），`is_pin_upgrade()` 判定是否为确定性升级，`audit_line()` 产出可读审计行——上游 28 处相同替换散落在 4 个 YAML 文件中，无统一追踪
+  3. **`ReleasePinManifest`**: 汇总 f3d215f 全部 17 条引用记录（30 次出现），提供 `pin_upgrades()`/`by_source_file()`/`total_occurrences()` 查询接口——上游无此汇总层，只能通过 git diff 逐行核查
+  4. **`PinAuditReport(dataclass)`**: 结构化审计报告，`render()` 生成完整可读文本，含 Walpurgis 迁移决定与 SKIP 原因——上游无此审计层
+  5. **断点调试**: 全链路 8 处 `WALPURGIS_DEBUG=1` 断点，覆盖模块加载、枚举构造、引用分类、manifest 构建、报告渲染全路径
+
+- **自测结果**: `_self_test()` 全部 5 项通过
