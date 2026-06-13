@@ -97,6 +97,54 @@
   - **可读性**：上游无任何竞争条件说明；`CheckpointRaceRecord.race_scenario` 字段
     以自然语言描述 makedirs 竞争触发路径，`audit()` 输出完整决策日志，可读性大幅优于上游。
 
+## migrate 5d402eb4e: Add licence to split script — 切分脚本补版权头，Walpurgis 结构化为可审计分割器
+
+- **Upstream commit**: 5d402eb4e (Megatron-LM, commit #10 of 9062)
+- **Commit message**: `Add licence to split script`
+- **Upstream diff 摘要** (1 file changed, 15 insertions(+))：
+
+  | 文件 | 变更内容 |
+  |------|----------|
+  | `scripts/split_gpt2_json.py` | 文件头新增 Apache 2.0 license header（coding 声明 + copyright + 15 行许可证文本） |
+
+- **迁移位置**：`src/walpurgis/scripts/split_gpt2_json.py`（新增）
+
+- **鲁迅拿法改写（≥20%）**：
+  上游在此次 commit 做的事，是给一段无名脚本盖上 NVIDIA 的公章。
+  代码本身一行未动，只是在门上挂了一块牌子——「此地有主，照章授权」。
+  然而这块牌子挂上之前，脚本已在人手中流传许久；
+  版权是事后追认，如鲁迅所言：世上本没有路，走的人多了，也便成了路；
+  世上本没有许可证，代码流传够广了，也便补了 License。
+
+  Walpurgis 在此不止补牌子，将切分逻辑结构化为三层可审计组件：
+
+  1. **`SplitRatio` dataclass** — 显式建模 train/valid/test 切分比例，
+     替代上游隐藏在 argparse default 中的「969」暗语字符串；
+     `normalize()` 返回归一化浮点三元组，`describe()` 输出人读摘要，
+     `from_string()` 解析上游兼容格式并在 `RATIO_PARSE` 节点触发断点。
+  2. **`SplitWriter` dataclass（context manager）** — 封装三路文件句柄与写入行数统计，
+     上游裸 `open/write` 出错无从知晓写入状态；
+     Walpurgis 在 `SPLIT_WRITER_OPEN` / `SPLIT_WRITER_CLOSE` 节点输出路径与行数快照。
+  3. **`GptJsonSplitter` 类** — 将上游过程式 for 循环结构化为可测试类，
+     `assign_split()` 命名分桶操作，`run()` 解耦 I/O 与分配逻辑，
+     新增 `--seed` 参数使切分结果可复现（上游无随机种子控制）；
+     JSON 解析错误上游完全静默，Walpurgis 计数并向 stderr 告警。
+
+- **`_dbg()` 断点**（6处，受 `WALPURGIS_DBG` 环境变量控制，默认开启）：
+  - `MODULE_LOAD` — 模块加载时输出来源标注
+  - `RATIO_PARSE` — 解析切分比例字符串，输出 train/valid/test 整数值
+  - `SPLITTER_INIT` — 分割器初始化，输出归一化比例描述与随机种子
+  - `SPLIT_START` — 开始切分，输出文件数、输出前缀、比例描述
+  - `SPLIT_DONE` — 切分完成，输出总行数、跳过行数、三路计数
+  - `CLI_ARGS` — CLI 入口，输出全部参数快照
+
+- **三维度审查（Knuth）**：
+  - **正确性**：`SplitRatio.normalize()` 确保比例和为 1.0；`assign_split()` 与上游随机分桶逻辑等价；`SplitWriter.__exit__` 保证异常路径下文件句柄也被关闭；JSON 解析错误有告警且不中断处理。
+  - **性能**：逐行流式处理，内存占用 O(1)；`assign_split()` 每次调用 O(1)；无额外排序或全量加载。
+  - **可读性**：上游脚本 60 行过程式代码，无类无分层，无法单独测试切分策略；Walpurgis 三层结构各司其职，`describe()`/`audit`/`counts` 接口可供 pytest 直接断言。
+
+---
+
 ## migrate 3573423f4: added presplit-sentences to scripts — BERT 预训练脚本新增预切句标志
 
 - **Upstream commit**: 3573423f4 (Megatron-LM)
