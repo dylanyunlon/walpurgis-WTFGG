@@ -227,7 +227,7 @@ def _sanitize_file_list(file_list) -> List[str]:
     _dbg(
         "_sanitize_file_list",
         f"规范化完毕: {len(sanitized)} 条路径, "
-        (repr(sanitized[0]) if sanitized else '(空)'),
+        + (repr(sanitized[0]) if sanitized else "(空)"),
     )
     return sanitized
 

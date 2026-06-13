@@ -65,8 +65,10 @@ def symmetric_message_passing_adj(adj):
 def transition_matrix(adj):
     adj = sp.coo_matrix(adj)
     rowsum = np.array(adj.sum(1)).flatten()
-    d_inv = np.power(rowsum, -1).flatten()
-    d_inv[np.isinf(d_inv)] = 0.
-    d_mat= sp.diags(d_inv)
+    # Guard: zero rowsum → d_inv=0 (isolated node, no outgoing edges)
+    d_inv = np.zeros_like(rowsum, dtype=np.float64)
+    nonzero = rowsum > 0
+    d_inv[nonzero] = 1.0 / rowsum[nonzero]
+    d_mat= sp.diags(d_inv, dtype=np.float64)
     P = d_mat.dot(adj).astype(np.float32).todense()
     return P
