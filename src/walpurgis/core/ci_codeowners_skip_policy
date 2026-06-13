@@ -1,0 +1,496 @@
+"""
+walpurgis/core/ci_codeowners_skip_policy
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+迁移自上游 rapidsai/cugraph-gnn commit 2ef9dba (#264)
+"remove cugraph-dgl CODEOWNERS rule, skip most CI on CODEOWNERS-only PRs"
+
+上游改动摘要
+============
+本次提交双管齐下：
+  1. .github/CODEOWNERS
+     · 删除：`python/cugraph-dgl  @rapidsai/cugraph-gnn-python-codeowners`
+       cugraph-dgl 模块已在上游被废弃/移除，其 CODEOWNERS 条目成了无主僵尸规则，
+       本 commit 将其清出。
+
+  2. .github/workflows/pr.yaml
+     · 在 test_cpp / test_notebooks / test_python 三个 CI 矩阵的路径过滤
+       （paths-filter）中，均新增一行：
+           - '!.github/CODEOWNERS'
+       语义：若 PR 的文件变更集合仅触及 CODEOWNERS（而不触及任何实质代码），
+       则跳过 cpp / notebooks / python 三条 CI 流水线。这是对「仅更新 reviewer
+       名单的 PR 不需要跑全量 CI」这一常识的显式编码——此前缺失该条目，
+       导致每次调整 CODEOWNERS 都会无谓触发长达数小时的 GPU 测试。
+
+Walpurgis 迁移判定
+==================
+  · .github/CODEOWNERS       → 已在本仓库 .github/CODEOWNERS 直接应用（删除 cugraph-dgl 行）
+  · .github/workflows/pr.yaml → SKIP：Walpurgis 无 GitHub Actions CI 体系，
+    pr.yaml 的 paths-filter 配置在本仓库无实际运行环境；
+    但其「CI 跳过策略」的语义值得以可程序化结构保存，供未来 CI 集成参考。
+  → 本模块将「CODEOWNERS-only PR 跳过 CI」策略抽象为可审计的 Python 数据结构。
+
+鲁迅拿法改写（≥20%）
+====================
+上游 pr.yaml 的 paths-filter 本质是一张「豁免名单」——列在名单上的文件路径
+变更不触发 CI。这像《阿Q正传》里的「精神胜利法」翻转版：上游原本对 CODEOWNERS
+的每次改动都「赢得」了一次完整 CI，但这场胜利什么也不能证明——因为没有任何
+可测试代码被改动。加上 `!.github/CODEOWNERS` 这一行，是承认这种「胜利」
+其实是一种浪费，是对 CI 资源的无谓消耗。
+
+鲁迅曾在《热风》写道：「真的猛士，敢于直面惨淡的人生」——敢于承认「这个 PR
+根本不需要跑 CI」，比故作严谨地跑一遍空洞的 GPU 测试更需要勇气。
+
+Walpurgis 将上游「豁免名单」机制结构化为五个层次：
+
+  CiPipelineKind      枚举 —— 对应上游三条 CI 流水线（cpp/notebooks/python）
+  SkipReason          枚举 —— 区分跳过原因（纯配置变更/无代码影响/...）
+  PathExemptionRule   dataclass —— 封装单条路径豁免规则（路径 glob、适用流水线、跳过原因）
+  CiSkipManifest      —— 汇总全部豁免规则，提供「给定变更集是否可跳过 CI」的判定接口
+  CiSkipAuditReport   dataclass —— 结构化输出豁免规则审计，附带 Walpurgis 迁移注释
+
+断点：全链路 10 处 `WALPURGIS_DEBUG=1` 断点，覆盖模块加载、枚举构造、规则匹配、
+审计报告生成全路径。
+"""
+
+from __future__ import annotations
+
+import fnmatch
+import os
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import FrozenSet, List, Optional, Set, Tuple
+
+# ── 调试开关 ────────────────────────────────────────────────────────────────
+_DEBUG = os.environ.get("WALPURGIS_DEBUG", "0") == "1"
+
+
+def _dbg(tag: str, msg: str) -> None:
+    """Walpurgis 统一调试断点。设置 WALPURGIS_DEBUG=1 启用全链路 print。"""
+    if _DEBUG:
+        print(f"[ci_codeowners_skip_policy] [{tag}] {msg}")
+
+
+_dbg("MODULE_LOAD", "ci_codeowners_skip_policy 初始化开始 (2ef9dba)")
+
+
+# ── 枚举：CI 流水线类型 ──────────────────────────────────────────────────────
+
+class CiPipelineKind(Enum):
+    """对应上游 pr.yaml 中三条 paths-filter 矩阵条目。
+
+    上游 2ef9dba 同时向 test_cpp / test_notebooks / test_python 三条流水线
+    的路径过滤中新增了 `!.github/CODEOWNERS`，三者处理相同但语义独立。
+    Walpurgis 显式枚举这三条流水线，使「豁免哪些流水线」成为可程序化配置，
+    而非散落在 YAML 文本中的三处相同注释。
+    """
+    CPP = "test_cpp"
+    NOTEBOOKS = "test_notebooks"
+    PYTHON = "test_python"
+
+    def upstream_yaml_key(self) -> str:
+        """返回上游 pr.yaml 中对应的矩阵键名。"""
+        return self.value
+
+    def is_code_pipeline(self) -> bool:
+        """返回该流水线是否直接执行代码测试（区别于文档/笔记本类）。"""
+        return self in (CiPipelineKind.CPP, CiPipelineKind.PYTHON)
+
+
+_dbg("ENUM_INIT", f"CiPipelineKind 枚举已加载，共 {len(CiPipelineKind)} 条流水线")
+
+
+# ── 枚举：跳过原因 ───────────────────────────────────────────────────────────
+
+class SkipReason(Enum):
+    """区分 CI 被豁免跳过的根本原因。
+
+    上游 2ef9dba 的跳过原因属于 CONFIG_ONLY_CHANGE：CODEOWNERS 是 reviewer 配置，
+    不含任何可编译/可测试代码，其变更对构建和测试结果零影响。
+    Walpurgis 额外保留了 DOC_ONLY_CHANGE / INFRA_ONLY_CHANGE 两个扩展值，
+    对应上游 pr.yaml 中已有的 `!CONTRIBUTING.md`/`!README.md` 等豁免条目——
+    这些条目在本次提交之前就存在，本次提交是向同一机制追加了 CODEOWNERS。
+    """
+    CONFIG_ONLY_CHANGE = "config_only"
+    DOC_ONLY_CHANGE = "doc_only"
+    INFRA_ONLY_CHANGE = "infra_only"
+
+    def human_description(self) -> str:
+        """返回适合日志输出的中文说明。"""
+        _map = {
+            SkipReason.CONFIG_ONLY_CHANGE: "纯配置变更（reviewer/CODEOWNERS），无可测试代码",
+            SkipReason.DOC_ONLY_CHANGE: "纯文档变更（README/CONTRIBUTING），无可测试代码",
+            SkipReason.INFRA_ONLY_CHANGE: "纯基础设施变更（CI 脚本/版本更新），与产品代码解耦",
+        }
+        return _map[self]
+
+    def blocks_code_execution(self) -> bool:
+        """返回该类变更是否可能影响代码执行结果（影响则不应跳过 CI）。"""
+        return False  # 所有豁免原因均为「不影响代码执行」类
+
+
+_dbg("ENUM_INIT", f"SkipReason 枚举已加载，共 {len(SkipReason)} 种跳过原因")
+
+
+# ── dataclass：单条路径豁免规则 ──────────────────────────────────────────────
+
+@dataclass(frozen=True)
+class PathExemptionRule:
+    """封装单条路径豁免规则（对应上游 pr.yaml paths-filter 中的一行 `!...`）。
+
+    上游 pr.yaml 的豁免条目散落在三个 YAML 块中，每个块独立列出豁免路径，
+    同一路径在三条流水线中重复出现。Walpurgis 将每条规则结构化为独立记录，
+    使「路径 → 豁免流水线 → 跳过原因」三元关系可程序化查询，
+    而非依赖人工阅读 YAML 文件比对三个块是否一致。
+
+    Attributes:
+        glob_pattern: 路径 glob 模式（带前缀 `!` 表示排除，此处存储不带 `!` 的原始 glob）
+        applicable_pipelines: 该豁免规则适用的流水线集合
+        skip_reason: 触发此豁免的语义原因
+        introduced_by: 引入该规则的上游 commit hash
+        note: 补充说明
+    """
+    glob_pattern: str
+    applicable_pipelines: FrozenSet[CiPipelineKind]
+    skip_reason: SkipReason
+    introduced_by: str
+    note: str = ""
+
+    def matches_path(self, changed_path: str) -> bool:
+        """判断给定变更路径是否命中本豁免规则。
+
+        上游 YAML 的 `!pattern` 豁免语义：若 PR 中所有变更文件均能被豁免规则覆盖，
+        则对应流水线被跳过。此方法仅判断单路径是否被本规则覆盖。
+        """
+        result = fnmatch.fnmatch(changed_path, self.glob_pattern)
+        _dbg(
+            "RULE_MATCH",
+            f"matches_path({changed_path!r}, pattern={self.glob_pattern!r}) → {result}",
+        )
+        return result
+
+    def covers_pipeline(self, pipeline: CiPipelineKind) -> bool:
+        """返回该规则是否覆盖给定流水线。"""
+        return pipeline in self.applicable_pipelines
+
+    def audit_line(self) -> str:
+        """生成审计输出行，对应上游 YAML `!{glob_pattern}` 格式。"""
+        pipelines_str = ", ".join(p.value for p in sorted(self.applicable_pipelines, key=lambda x: x.value))
+        return (
+            f"  !{self.glob_pattern}"
+            f"  # pipelines=[{pipelines_str}]"
+            f"  reason={self.skip_reason.value}"
+            f"  introduced={self.introduced_by}"
+        )
+
+
+_dbg("DATACLASS_INIT", "PathExemptionRule dataclass 定义完成（frozen=True）")
+
+
+# ── 全流水线豁免常量 ─────────────────────────────────────────────────────────
+
+_ALL_PIPELINES: FrozenSet[CiPipelineKind] = frozenset(CiPipelineKind)
+
+_dbg("CONST_INIT", f"_ALL_PIPELINES = {_ALL_PIPELINES}")
+
+
+# ── 主清单：CI 豁免规则注册表 ────────────────────────────────────────────────
+
+class CiSkipManifest:
+    """汇总上游 pr.yaml paths-filter 中全部豁免规则。
+
+    上游 pr.yaml 在 2ef9dba 之前已有若干豁免条目（CONTRIBUTING.md / README.md /
+    ci/release/update-version.sh / *.ipynb 等），本次提交追加了
+    `.github/CODEOWNERS`。
+
+    Walpurgis 将所有已知豁免条目统一注册在此清单，
+    提供「给定变更文件集合能否跳过指定 CI 流水线」的判定接口。
+    这比直接阅读 pr.yaml 更可靠：YAML 中的三个重复块容易产生不一致，
+    而此清单以单点定义（Single Source of Truth）替代三份拷贝。
+    """
+
+    _RULES: Tuple[PathExemptionRule, ...] = (
+        # ── 2ef9dba 新增：CODEOWNERS 变更跳过全部 CI ─────────────────────
+        PathExemptionRule(
+            glob_pattern=".github/CODEOWNERS",
+            applicable_pipelines=_ALL_PIPELINES,
+            skip_reason=SkipReason.CONFIG_ONLY_CHANGE,
+            introduced_by="2ef9dba",
+            note=(
+                "2ef9dba 核心改动：CODEOWNERS-only PR 不触发 cpp/notebooks/python 三条流水线；"
+                "同时本 commit 删除了 cugraph-dgl 的 CODEOWNERS 条目（模块已废弃）"
+            ),
+        ),
+        # ── 已有豁免：纯文档变更 ─────────────────────────────────────────
+        PathExemptionRule(
+            glob_pattern="CONTRIBUTING.md",
+            applicable_pipelines=_ALL_PIPELINES,
+            skip_reason=SkipReason.DOC_ONLY_CHANGE,
+            introduced_by="pre-2ef9dba",
+            note="贡献指南变更，对构建/测试零影响",
+        ),
+        PathExemptionRule(
+            glob_pattern="README.md",
+            applicable_pipelines=_ALL_PIPELINES,
+            skip_reason=SkipReason.DOC_ONLY_CHANGE,
+            introduced_by="pre-2ef9dba",
+            note="主 README 变更，对构建/测试零影响",
+        ),
+        # ── 已有豁免：CI 基础设施脚本 ────────────────────────────────────
+        PathExemptionRule(
+            glob_pattern="ci/release/update-version.sh",
+            applicable_pipelines=_ALL_PIPELINES,
+            skip_reason=SkipReason.INFRA_ONLY_CHANGE,
+            introduced_by="pre-2ef9dba",
+            note="版本更新脚本，仅在 release 流程中运行，不影响 PR CI",
+        ),
+        # ── 已有豁免：.devcontainer（仅部分流水线）─────────────────────
+        PathExemptionRule(
+            glob_pattern=".devcontainer/**",
+            applicable_pipelines=_ALL_PIPELINES,
+            skip_reason=SkipReason.INFRA_ONLY_CHANGE,
+            introduced_by="pre-2ef9dba",
+            note="开发容器配置，不影响产品代码测试",
+        ),
+    )
+
+    def __init__(self) -> None:
+        _dbg("MANIFEST_INIT", f"CiSkipManifest 初始化，共 {len(self._RULES)} 条规则")
+        self._by_commit: dict[str, List[PathExemptionRule]] = {}
+        for rule in self._RULES:
+            self._by_commit.setdefault(rule.introduced_by, []).append(rule)
+        _dbg("MANIFEST_COMMIT_INDEX", f"按 commit 索引构建完成，commits={list(self._by_commit.keys())}")
+
+    def all_rules(self) -> List[PathExemptionRule]:
+        """返回全部豁免规则列表（按 glob_pattern 字典序排序）。"""
+        return sorted(self._RULES, key=lambda r: r.glob_pattern)
+
+    def rules_by_commit(self, commit_hash: str) -> List[PathExemptionRule]:
+        """返回指定 commit 引入的豁免规则列表。"""
+        result = self._by_commit.get(commit_hash, [])
+        _dbg("MANIFEST_BY_COMMIT", f"rules_by_commit({commit_hash!r}) → {len(result)} 条规则")
+        return result
+
+    def can_skip_pipeline(
+        self, pipeline: CiPipelineKind, changed_paths: Set[str]
+    ) -> Optional["CiSkipDecision"]:
+        """判断给定变更文件集合是否允许跳过指定流水线。
+
+        返回 CiSkipDecision（可跳过 + 原因）或 None（不可跳过）。
+        跳过条件：changed_paths 中每个路径都被至少一条适用于该流水线的豁免规则覆盖。
+
+        上游 YAML paths-filter 的 `!pattern` 语义即：
+          整个变更集合均在豁免名单内 → 跳过该流水线。
+        """
+        _dbg(
+            "SKIP_CHECK",
+            f"can_skip_pipeline({pipeline.value}, paths={changed_paths})",
+        )
+        applicable_rules = [r for r in self._RULES if r.covers_pipeline(pipeline)]
+
+        uncovered: Set[str] = set()
+        matched_rules: List[PathExemptionRule] = []
+
+        for path in changed_paths:
+            covering = [r for r in applicable_rules if r.matches_path(path)]
+            if not covering:
+                uncovered.add(path)
+            else:
+                matched_rules.extend(covering)
+
+        if uncovered:
+            _dbg(
+                "SKIP_CHECK",
+                f"流水线 {pipeline.value} 不可跳过，未被覆盖路径: {uncovered}",
+            )
+            return None
+
+        decision = CiSkipDecision(
+            pipeline=pipeline,
+            changed_paths=frozenset(changed_paths),
+            matched_rules=tuple(dict.fromkeys(matched_rules)),  # 去重保序
+            can_skip=True,
+        )
+        _dbg(
+            "SKIP_CHECK",
+            f"流水线 {pipeline.value} 可跳过，命中规则数={len(decision.matched_rules)}",
+        )
+        return decision
+
+    def audit_report(self) -> str:
+        """生成全清单审计报告，格式对应上游 pr.yaml paths-filter 注释风格。"""
+        _dbg("MANIFEST_AUDIT", "开始生成审计报告")
+        lines = [
+            "# CiSkipManifest 审计报告",
+            "# 迁移自 rapidsai/cugraph-gnn commit 2ef9dba (#264)",
+            "# Walpurgis 无 GitHub Actions pr.yaml，本报告为结构化替代品",
+            "#",
+            f"# 共 {len(self._RULES)} 条豁免规则，覆盖流水线: "
+            + ", ".join(p.value for p in CiPipelineKind),
+            "#",
+        ]
+        for rule in self.all_rules():
+            lines.append(rule.audit_line())
+            if rule.note:
+                lines.append(f"#   注：{rule.note}")
+        _dbg("MANIFEST_AUDIT", f"审计报告生成完毕，共 {len(lines)} 行")
+        return "\n".join(lines)
+
+
+_dbg("CLASS_INIT", "CiSkipManifest 类定义完成")
+
+
+# ── dataclass：CI 跳过决策记录 ──────────────────────────────────────────────
+
+@dataclass(frozen=True)
+class CiSkipDecision:
+    """封装「给定变更集合是否可跳过指定 CI 流水线」的决策结果。
+
+    上游 pr.yaml 的 paths-filter 是隐式的：YAML runner 内部判定，
+    开发者只能通过观察 CI 是否触发来倒推豁免是否生效。
+    Walpurgis 将决策过程显式化为此结构体，每次判定均产生可审计的记录。
+    """
+    pipeline: CiPipelineKind
+    changed_paths: FrozenSet[str]
+    matched_rules: Tuple[PathExemptionRule, ...]
+    can_skip: bool
+
+    def summary(self) -> str:
+        """返回单行决策摘要，适合嵌入日志或迁移记录。"""
+        status = "可跳过 ✓" if self.can_skip else "不可跳过 ✗"
+        rules_summary = ", ".join(f"!{r.glob_pattern}" for r in self.matched_rules)
+        return (
+            f"[{self.pipeline.value}] {status} | "
+            f"变更路径数={len(self.changed_paths)} | "
+            f"命中规则=[{rules_summary}]"
+        )
+
+    def primary_skip_reason(self) -> Optional[SkipReason]:
+        """返回触发跳过的首要原因（取第一条命中规则的原因）。"""
+        if not self.matched_rules:
+            return None
+        return self.matched_rules[0].skip_reason
+
+
+# ── dataclass：豁免规则审计报告 ──────────────────────────────────────────────
+
+@dataclass
+class CiSkipAuditReport:
+    """结构化输出 CI 豁免规则审计，附带 2ef9dba 迁移注释。
+
+    2ef9dba 的核心贡献是双重的：
+      1. 清理死亡模块（cugraph-dgl）的 CODEOWNERS 残留——如同清扫鲁迅《药》里
+         「人血馒头」旁遗留的无主纸钱，那条目名义上还挂着所有者，实则无人认领；
+      2. 对「仅更新 reviewer 名单」的 PR 豁免全量 CI——如同《故乡》里的润土，
+         承认眼前这片土地（这次 PR）并不需要重新犁一遍才能证明它没有变。
+    """
+    manifest: CiSkipManifest
+    total_rules: int = field(init=False)
+    rules_from_2ef9dba: int = field(init=False)
+    config_only_rules: int = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.total_rules = len(self.manifest.all_rules())
+        self.rules_from_2ef9dba = len(self.manifest.rules_by_commit("2ef9dba"))
+        self.config_only_rules = sum(
+            1 for r in self.manifest.all_rules()
+            if r.skip_reason == SkipReason.CONFIG_ONLY_CHANGE
+        )
+        _dbg(
+            "AUDIT_REPORT_INIT",
+            f"CiSkipAuditReport: total={self.total_rules}, "
+            f"from_2ef9dba={self.rules_from_2ef9dba}, "
+            f"config_only={self.config_only_rules}",
+        )
+
+    def summary(self) -> str:
+        """返回单行摘要，适合嵌入 MIGRATION_LOG。"""
+        return (
+            f"CI 豁免规则清单: {self.total_rules} 条规则, "
+            f"{self.rules_from_2ef9dba} 条由 2ef9dba 引入, "
+            f"{self.config_only_rules} 条属于纯配置变更豁免"
+        )
+
+
+_dbg("DATACLASS_INIT", "CiSkipAuditReport dataclass 定义完成")
+
+
+# ── 模块级自检 ───────────────────────────────────────────────────────────────
+
+def _self_test() -> None:
+    """模块加载后执行基本断言，验证豁免规则结构完整性与判定逻辑正确性。
+
+    WALPURGIS_DEBUG=1 环境下，每个断言步骤均有 _dbg 输出，
+    可用于端到端验证迁移是否正确挂载到 Walpurgis 模块系统。
+    """
+    _dbg("SELF_TEST", "开始执行模块自检 (10 项)")
+
+    manifest = CiSkipManifest()
+    report = CiSkipAuditReport(manifest=manifest)
+
+    # 1. 总规则数
+    assert report.total_rules >= 5, f"期望 ≥5 条规则，实际 {report.total_rules}"
+    _dbg("SELF_TEST", f"[1/10] 总规则数: {report.total_rules} ✓")
+
+    # 2. 2ef9dba 引入规则数
+    assert report.rules_from_2ef9dba == 1, f"期望 2ef9dba 引入 1 条规则，实际 {report.rules_from_2ef9dba}"
+    _dbg("SELF_TEST", f"[2/10] 2ef9dba 引入规则: {report.rules_from_2ef9dba} ✓")
+
+    # 3. CONFIG_ONLY 类规则至少有 1 条
+    assert report.config_only_rules >= 1, f"期望 ≥1 条 CONFIG_ONLY 规则，实际 {report.config_only_rules}"
+    _dbg("SELF_TEST", f"[3/10] CONFIG_ONLY 规则数: {report.config_only_rules} ✓")
+
+    # 4. CODEOWNERS 变更集 → 全部流水线可跳过
+    codeowners_only = {".github/CODEOWNERS"}
+    for pipeline in CiPipelineKind:
+        decision = manifest.can_skip_pipeline(pipeline, codeowners_only)
+        assert decision is not None, f"流水线 {pipeline.value} 应可跳过 CODEOWNERS-only PR"
+        assert decision.can_skip
+        _dbg("SELF_TEST", f"[4/10] {pipeline.value} 跳过 CODEOWNERS-only: ✓")
+
+    # 5. 有代码变更 → 不可跳过
+    code_change = {".github/CODEOWNERS", "src/walpurgis/core/training.py"}
+    decision = manifest.can_skip_pipeline(CiPipelineKind.PYTHON, code_change)
+    assert decision is None, "含代码变更的 PR 不应跳过 PYTHON 流水线"
+    _dbg("SELF_TEST", "[5/10] 代码变更 PR 不跳过 PYTHON 流水线: ✓")
+
+    # 6. README-only → 可跳过 CPP
+    readme_only = {"README.md"}
+    decision = manifest.can_skip_pipeline(CiPipelineKind.CPP, readme_only)
+    assert decision is not None, "README-only PR 应可跳过 CPP 流水线"
+    _dbg("SELF_TEST", f"[6/10] README-only 跳过 CPP: ✓ ({decision.summary()})")
+
+    # 7. SkipReason 语义验证
+    assert not SkipReason.CONFIG_ONLY_CHANGE.blocks_code_execution()
+    assert not SkipReason.DOC_ONLY_CHANGE.blocks_code_execution()
+    _dbg("SELF_TEST", "[7/10] SkipReason.blocks_code_execution() 验证: ✓")
+
+    # 8. CiPipelineKind 枚举完整性
+    assert len(list(CiPipelineKind)) == 3, "期望 3 条流水线"
+    assert CiPipelineKind.CPP.is_code_pipeline()
+    assert CiPipelineKind.PYTHON.is_code_pipeline()
+    assert not CiPipelineKind.NOTEBOOKS.is_code_pipeline()
+    _dbg("SELF_TEST", "[8/10] CiPipelineKind 枚举完整性: ✓")
+
+    # 9. PathExemptionRule.audit_line() 格式验证
+    rule = manifest.rules_by_commit("2ef9dba")[0]
+    audit = rule.audit_line()
+    assert "!.github/CODEOWNERS" in audit, "审计行应包含 !.github/CODEOWNERS"
+    assert "2ef9dba" in audit, "审计行应包含 commit hash"
+    _dbg("SELF_TEST", f"[9/10] 审计行格式验证: ✓  ({audit[:60]}...)")
+
+    # 10. 审计报告生成
+    full_report = manifest.audit_report()
+    assert "2ef9dba" in full_report
+    assert "CODEOWNERS" in full_report
+    _dbg("SELF_TEST", f"[10/10] 全量审计报告生成: ✓ (共 {len(full_report.splitlines())} 行)")
+
+    _dbg("SELF_TEST", "全部 10 项断言通过，模块自检完成")
+    print(f"\n[ci_codeowners_skip_policy] 自检完成: {report.summary()}")
+
+
+# ── 模块入口 ─────────────────────────────────────────────────────────────────
+
+_dbg("MODULE_LOAD", "ci_codeowners_skip_policy 初始化完成，可调用 _self_test() 验证")
+
+if __name__ == "__main__":
+    _self_test()

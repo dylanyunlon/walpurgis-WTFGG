@@ -1,6 +1,13 @@
 # Walpurgis CODEOWNERS
 # 此文件由迁移流水线维护，对应上游 rapidsai/cugraph-gnn 各提交的 .github/CODEOWNERS。
 # 迁移来源：commit d097572 (#149) — add cugraph-notebook-codeowners to CODEOWNERS
+# 更新记录：commit 2ef9dba (#264) — remove cugraph-dgl CODEOWNERS rule
 
 # notebooks code owners
 *.ipynb @rapidsai/cugraph-notebook-codeowners
+
+# python code owners
+# python/cugraph-dgl  @rapidsai/cugraph-gnn-python-codeowners  ← 已由 2ef9dba 移除
+python/cugraph-pyg            @rapidsai/cugraph-gnn-python-codeowners
+python/pylibwholegraph        @rapidsai/wholegraph-python-codeowners
+mg_utils/                     @rapidsai/cugraph-gnn-python-codeowners
