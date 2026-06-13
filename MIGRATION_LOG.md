@@ -9737,3 +9737,39 @@ Walpurgis `TrainingConfig(frozen dataclass)` 类型化所有训练参数，
 - **自测结果**: N/A（无新增代码）
 
 ---
+
+## migrate 9646134: Remove alpha specs from non-RAPIDS dependencies (#363)
+
+- **Commit**: `9646134`
+- **Commit message**: `Remove alpha specs from non-RAPIDS dependencies (#363)`
+- **序号**: 348/452（cugraph-gnn 迁移序列）
+
+- **上游 diff 摘要**:
+  共 14 个文件，37 行改动，全部属于版本约束字符串的纯符号清理：
+  - `conda/environments/all_cuda-{129,130}_arch-{aarch64,x86_64}.yaml` × 4：
+    `cython>=3.0.0,<3.2.0a0` → `<3.2.0`；`numpy>=1.23,<3.0a0` → `<3.0`；
+    `pytest<9.0.0a0` → `<9.0.0`；`rapids-build-backend>=0.4.0,<0.5.0.dev0` → `<0.5.0`
+  - `conda/recipes/cugraph-pyg/recipe.yaml`、`conda/recipes/pylibwholegraph/recipe.yaml`：同类字符串去除 `a0`/`.dev0`
+  - `dependencies.yaml`：同上
+  - `python/cugraph-pyg/pyproject.toml`、`python/libwholegraph/pyproject.toml`、`python/pylibwholegraph/pyproject.toml`：PEP 440 版本上界去除预发布标记
+  - 4 个 cugraph-pyg dev conda yaml：`rapids-build-backend<0.5.0.dev0` → `<0.5.0`
+  变更语义：将非 RAPIDS 依赖的上界从预发布约束（`a0`/`.dev0`）改为稳定版约束，
+  允许安装正式发布版而非仅限 alpha 通道包。
+
+- **迁移决策**: SKIP
+
+- **SKIP 理由**:
+  本 commit 涉及的全部 14 个文件（conda 环境 yaml、conda recipe yaml、
+  pyproject.toml、dependencies.yaml）在 walpurgis 项目中均不存在对应实体。
+  Walpurgis 无独立的 conda packaging 基础设施，亦无 cugraph-pyg / pylibwholegraph /
+  libwholegraph 子包的 pyproject.toml。版本约束清理属于上游打包流水线内务，
+  对 walpurgis 的模型训练逻辑、调度器、数据流水线无任何影响面。
+  无可迁移的逻辑、接口或配置。
+
+- **鲁迅拿法改写**: 无可迁移内容，SKIP 豁免改写要求。
+
+- **_dbg() 断点**: 无可迁移文件，SKIP 豁免断点要求。
+
+- **自测结果**: N/A（无新增代码）
+
+---
