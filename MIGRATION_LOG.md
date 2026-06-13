@@ -1,4 +1,63 @@
-## migrate cbd8c054e: refactored for code reuse — 语料类重构消除重复
+## migrate 34be7dd33: refacotred for code reuse — BERT/GPT-2 训练循环统一化 + 语料类扩展
+
+- **Upstream commit**: 34be7dd33 (Megatron-LM, commit #26/9062)
+- **Commit message**: `refacotred for code reuse`
+- **Upstream diff 摘要** (5 files changed, 207 insertions(+), 133 deletions(-))：
+
+  | 文件 | 变更内容 |
+  |------|----------|
+  | `megatron/data_utils/corpora.py` | 新增 `roberta`/`BooksCorpus` 类；`wikipedia` PATH 改绝对路径；`webtext` 移除；`NAMED_CORPORA` 意外丢失 |
+  | `megatron/training.py` | `train()`/`evaluate()` 抽取公共循环；`print_datetime()` 新增；数据提供者接口规范化 |
+  | `megatron/utils.py` | `print_datetime()` / `reduce_losses()` 新增 |
+  | `pretrain_bert.py` | 共享 training.train() 入口；导入路径统一 |
+  | `pretrain_gpt2.py` | 同上 |
+
+- **迁移位置**：
+  - `megatron/data_utils/corpora.py` → `src/walpurgis/datasets/corpora.py`（新建）
+  - `megatron/training.py` → `src/walpurgis/core/pretrain_engine.py`（追加 EvaluationResult/TrainingSession/DataProviderSpec/_log_datetime）
+  - `megatron/utils.py` → `src/walpurgis/utils/__init__.py`（追加 log_datetime_util/format_loss_dict/DistributedLossReducer）
+
+- **鲁迅拿法改写（≥20%）**：
+  鲁迅在《药》里写华老栓与夏四奶奶，两家人，两个儿子，
+  两条不同的路，却在同一个清明，带着同一种悲痛来到同一片坟地。
+  pretrain_bert.py 和 pretrain_gpt2.py 也是如此——
+  两个预训练脚本，两套几乎相同的训练循环，各自重复着对方刚说过的话，
+  却互不相认，直到这次 refactor 才被迫站到同一片代码里来。
+
+  corpora.py 里的三个语料类（wikipedia、roberta、BooksCorpus）同样如此：
+  三个 `__init__`，三段 `if not kwargs: kwargs = {}`，三次 `super().__init__(PATH, **kwargs)`——
+  同一个故事，讲了三遍，换个主角名字，没有人意识到祥林嫂每次都在讲同一件事。
+
+  Walpurgis 做五处结构化改写：
+
+  1. **`_CorpusBase` 抽象基类** — 消除三个语料类中完全相同的 __init__ 重复，
+     子类只需声明 PATH/LABEL_KEY/_name，底座处理公共逻辑。
+
+  2. **PATH 双模式验证** — 上游从 `os.path.exists` 切换为占位符字符串检查，
+     Walpurgis `_validate_path()` 同时做两项检查，`WALPURGIS_SKIP_PATH_CHECK=1` 旁路用于测试。
+
+  3. **`NAMED_CORPORA` 注册表恢复** — 上游 34be7dd33 新增三类但意外丢失注册表，
+     Walpurgis 恢复并扩展，`get_corpus(name)` 工厂函数消除调用方 if/elif 链。
+
+  4. **`TrainingSession` + `EvaluationResult` dataclass** — 上游 train()/evaluate() 接受/返回散参数，
+     Walpurgis 封装为 frozen/可变 dataclass，类型显式，`__post_init__` 验证，`advance()` 方法审计迭代。
+
+  5. **`DistributedLossReducer`** — 上游 `reduce_losses()` 裸函数直调 mpu/dist，
+     Walpurgis 封装为类，world_size 可注入，单机场景跳过 all_reduce，单元测试无需 GPU。
+
+- **全链路 `_dbg()` 断点**：
+  - `corpora.py`：`CORPUS_INIT_ENTER`、`CORPUS_PATH_OK/MISSING/SKIP`、`CORPUS_KWARGS`、`CORPUS_INIT_DONE`、`GET_CORPUS_ENTER/DISPATCH/DONE`、`NAMED_CORPORA_REGISTERED`
+  - `pretrain_engine.py`：`LOG_DATETIME`、`EVAL_RESULT_INIT`、`TRAINING_SESSION_INIT`、`SESSION_ADVANCE`、`DATA_PROVIDER_SPEC_INIT`、`DATA_PROVIDER_GET_DATASETS/DONE`、`REFACTOR_CODE_REUSE_LOADED`
+  - `utils/__init__.py`：`LOG_DATETIME_ENTER/DONE`、`FORMAT_LOSS_DICT/DONE`、`LOSS_REDUCER_INIT`、`REDUCE_MEAN_ENTER/SINGLE_NODE/DONE/ERROR`
+
+- **三维度审查（Knuth）**：
+  - **正确性**：`_CorpusBase` 的 `kwargs.setdefault("text_key","text")` 与上游语义等价；`BooksCorpus.LABEL_KEY="path"` 保留 label_key 注入；`EvaluationResult.ppl` = exp(loss) 与上游打印逻辑一致；`DistributedLossReducer.reduce_mean` world_size=1 时跳过 all_reduce，与裸 all_reduce+/world_size 数值等价。
+  - **性能**：`_dbg` 在 `WALPURGIS_DEBUG=0`（默认）时短路，零额外开销；`_validate_path` 仅在 `__init__` 调用一次；`format_loss_dict` 为纯字符串操作，O(n_losses)。
+  - **可维护性**：`NAMED_CORPORA` 注册表使新增 corpus 只需一行；`DataProviderSpec.for_bert()/for_gpt2()` 工厂方法使 BERT/GPT-2 分发显式化；`DistributedLossReducer(world_size=1)` 注入使 reducer 可在无 GPU CI 中测试。
+
+---
+
+## migrate 2e6d5ed9c: moved padding to utils — vocab padding 集中化
 
 - **Upstream commit**: cbd8c054e (Megatron-LM, commit #27/9062)
 - **Commit message**: `refactored for code reuse`

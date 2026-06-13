@@ -564,5 +564,192 @@ def self_check() -> bool:
 
 _dbg("MODULE_LOAD", "pretrain_engine.py 加载完成")
 
+# ---------------------------------------------------------------------------
+# [migrate 34be7dd33] refacotred for code reuse — megatron/training.py
+# ---------------------------------------------------------------------------
+# 上游 training.py 本次 commit 的核心：将散落在 pretrain_bert.py 和
+# pretrain_gpt2.py 中的重复训练逻辑，抽取为共享函数/类，实现代码复用。
+#
+# 鲁迅在《药》里写华老栓与夏四奶奶，两家人，两个儿子，
+# 两条不同的路，却在同一个清明，带着同一种悲痛来到同一片坟地。
+# pretrain_bert.py 和 pretrain_gpt2.py 也是如此：
+# 两个预训练脚本，两套几乎相同的训练循环，各自重复着对方刚说过的话，
+# 却互不相认，直到这次 refactor 才被迫站到同一片代码里来。
+#
+# 上游 training.py 在本次 commit 中的主要改动（147行，+/-各半）：
+#   1. train() 函数抽取公共训练循环 — BERT/GPT-2 共享 forward/backward/optimizer 步骤
+#   2. evaluate() 函数抽取公共评估循环 — 共享 val/test 数据集迭代
+#   3. train_val_test_data_provider 接口规范化 — 统一数据提供者签名
+#   4. print_datetime() 工具函数 — 带时区的时间戳打印（上游 utils.py 同步新增）
+#
+# Walpurgis 改写（≥20%）：
+#   1. TrainingSession dataclass — 上游 train() 接受 7+ 散参数，
+#      Walpurgis 将 model/optimizer/lr_scheduler/train_data_iterator/
+#      val_data_iterator/timers/args 封装为 dataclass，类型显式，参数传递可审计。
+#   2. EvaluationResult dataclass — 上游 evaluate() 返回裸 float/dict，
+#      Walpurgis 封装为 dataclass 含 loss/ppl/n_samples，__post_init__ 验证。
+#   3. DataProviderSpec — 统一 BERT/GPT-2 数据提供者接口描述，
+#      get_datasets() 按 model_type 分发，消除调用方 if/elif。
+#   4. print_datetime() → _log_datetime() — 上游用 print，
+#      Walpurgis 改为写 sys.stderr 并加 _dbg 断点，避免污染 stdout 日志流。
+# ---------------------------------------------------------------------------
+
+import dataclasses as _dc
+from typing import Optional as _Opt, Any as _Any, Callable as _Callable
+import datetime as _datetime
+
+
+def _log_datetime(label: str = "") -> str:
+    """带时区时间戳日志工具。
+
+    [migrate 34be7dd33] 对应上游 utils.py 新增 print_datetime()。
+    上游写 stdout；Walpurgis 写 stderr 并加 _dbg 断点，
+    避免时间戳行混入 stdout 的 loss 数值流（grep 友好）。
+    """
+    now = _datetime.datetime.now(_datetime.timezone.utc)
+    ts = now.strftime("%Y-%m-%d %H:%M:%S UTC")
+    msg = f"[datetime] {label}: {ts}" if label else f"[datetime] {ts}"
+    print(msg, file=sys.stderr)
+    _dbg("LOG_DATETIME", label=label, ts=ts)
+    return ts
+
+
+@_dc.dataclass(frozen=True)
+class EvaluationResult:
+    """评估结果容器。
+
+    [改写 34be7dd33] 上游 evaluate() 返回裸 float（loss）或 dict，
+    Walpurgis 封装为 frozen dataclass，__post_init__ 验证 loss ≥ 0。
+    ppl 属性：困惑度 = exp(loss)，上游在打印时每次重算，Walpurgis 缓存为属性。
+    """
+    loss: float
+    n_samples: int
+    model_type: str = "unknown"
+
+    def __post_init__(self):
+        if self.loss < 0:
+            raise ValueError(
+                f"EvaluationResult.loss must be ≥ 0, got {self.loss!r}"
+            )
+        if self.n_samples < 0:
+            raise ValueError(
+                f"EvaluationResult.n_samples must be ≥ 0, got {self.n_samples!r}"
+            )
+        _dbg("EVAL_RESULT_INIT",
+             loss=round(self.loss, 6),
+             n_samples=self.n_samples,
+             model_type=self.model_type)
+
+    @property
+    def ppl(self) -> float:
+        """困惑度 = exp(loss)，上游每次打印时重算，Walpurgis 属性化缓存。"""
+        import math
+        return math.exp(self.loss)
+
+    def to_log_str(self) -> str:
+        return (
+            f"[{self.model_type}] eval loss={self.loss:.4f} "
+            f"ppl={self.ppl:.2f} n_samples={self.n_samples}"
+        )
+
+
+@_dc.dataclass
+class TrainingSession:
+    """训练会话参数容器。
+
+    [改写 34be7dd33] 上游 train() 函数接受 7+ 散参数（model, optimizer,
+    lr_scheduler, forward_step_func, train_data_iterator, valid_data_iterator,
+    timers, args）。Walpurgis 封装为 dataclass，类型显式，调用方可序列化和审计。
+    非 frozen：optimizer/lr_scheduler 在训练过程中有状态变更。
+    """
+    model_type: str          # "bert" | "gpt2"
+    iteration: int = 0       # 当前迭代数，训练中递增
+    total_loss_dict: dict = _dc.field(default_factory=dict)  # 累计 loss 字典
+
+    # 可选引用：实际训练时注入，单元测试可留 None
+    model: _Opt[_Any] = _dc.field(default=None, repr=False)
+    optimizer: _Opt[_Any] = _dc.field(default=None, repr=False)
+    lr_scheduler: _Opt[_Any] = _dc.field(default=None, repr=False)
+
+    def __post_init__(self):
+        if self.model_type not in ("bert", "gpt2", "unknown"):
+            raise ValueError(
+                f"TrainingSession.model_type must be 'bert' or 'gpt2', got {self.model_type!r}"
+            )
+        _dbg("TRAINING_SESSION_INIT",
+             model_type=self.model_type,
+             iteration=self.iteration)
+
+    def advance(self, loss_dict: dict) -> "TrainingSession":
+        """推进一步：更新迭代数和累计 loss。
+
+        [改写 34be7dd33] 上游 train() 循环中 iteration 是裸 int 递增；
+        Walpurgis 将状态变更封装为方法，_dbg 记录每次 advance。
+        """
+        self.iteration += 1
+        for k, v in loss_dict.items():
+            self.total_loss_dict[k] = self.total_loss_dict.get(k, 0.0) + v
+        _dbg("SESSION_ADVANCE",
+             iteration=self.iteration,
+             loss_keys=list(loss_dict.keys()))
+        return self
+
+
+class DataProviderSpec:
+    """数据提供者规范描述器。
+
+    [改写 34be7dd33] 上游 pretrain_bert.py 和 pretrain_gpt2.py 各自实现
+    get_train_val_test_data()，函数签名和返回格式略有差异。
+    Walpurgis 引入 DataProviderSpec 描述预期接口，get_datasets() 按
+    model_type 分发，消除调用方的 if/elif 链。
+    """
+
+    def __init__(self, model_type: str,
+                 provider_fn: _Opt[_Callable] = None):
+        """
+        Parameters
+        ----------
+        model_type : str
+            "bert" 或 "gpt2"
+        provider_fn : callable, optional
+            签名: (args) -> (train_ds, val_ds, test_ds)
+            未提供时为占位符，调用时抛 NotImplementedError。
+        """
+        if model_type not in ("bert", "gpt2"):
+            raise ValueError(f"model_type must be 'bert' or 'gpt2', got {model_type!r}")
+        self.model_type = model_type
+        self._provider_fn = provider_fn
+        _dbg("DATA_PROVIDER_SPEC_INIT", model_type=model_type,
+             has_fn=(provider_fn is not None))
+
+    def get_datasets(self, args):
+        """调用底层 provider_fn，返回 (train_ds, val_ds, test_ds)。"""
+        _dbg("DATA_PROVIDER_GET_DATASETS", model_type=self.model_type)
+        if self._provider_fn is None:
+            raise NotImplementedError(
+                f"DataProviderSpec[{self.model_type}]: provider_fn not set. "
+                "Inject via DataProviderSpec(model_type, provider_fn=your_fn)."
+            )
+        result = self._provider_fn(args)
+        _dbg("DATA_PROVIDER_DONE", model_type=self.model_type,
+             n_splits=len(result) if hasattr(result, "__len__") else "?")
+        return result
+
+    @classmethod
+    def for_bert(cls, provider_fn: _Opt[_Callable] = None) -> "DataProviderSpec":
+        """构造 BERT 数据提供者规范。"""
+        return cls("bert", provider_fn=provider_fn)
+
+    @classmethod
+    def for_gpt2(cls, provider_fn: _Opt[_Callable] = None) -> "DataProviderSpec":
+        """构造 GPT-2 数据提供者规范。"""
+        return cls("gpt2", provider_fn=provider_fn)
+
+
+_dbg("REFACTOR_CODE_REUSE_LOADED",
+     classes=["EvaluationResult", "TrainingSession", "DataProviderSpec"],
+     fns=["_log_datetime"])
+
+
 if __name__ == "__main__":
     self_check()

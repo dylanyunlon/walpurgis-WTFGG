@@ -252,3 +252,169 @@ __all__ += [
     "VocabPaddingResult",
     "vocab_size_with_padding",
 ]
+
+# ---------------------------------------------------------------------------
+# [migrate 34be7dd33] refacotred for code reuse — megatron/utils.py
+# ---------------------------------------------------------------------------
+# 上游 utils.py 在本次 commit 中新增两个工具函数：
+#   1. print_datetime() — 打印带时间戳的字符串（供 training.py 调用）
+#   2. reduce_losses()  — 跨 rank 归约 loss tensor（分布式均值）
+#
+# pretrain_bert.py / pretrain_gpt2.py 本次 commit 的变化：
+#   - 两个脚本对 get_train_val_test_data() 的 data_utils 导入路径做统一
+#   - forward_step() 中 loss 计算提取为 forward_step_fn 参数（代码复用核心）
+#   - 两个脚本共享同一个 training.train() 入口，不再各自维护训练循环
+#
+# 鲁迅：「从来如此，便对么？」
+# 上游的两个预训练脚本，各自维护训练循环，如同两个不识字的孩子
+# 各自抄了一遍同一篇文章——一字不差，却没有人意识到可以只抄一遍。
+# 这次 refactor 是：终于有人发现了，把两本抄本合而为一。
+#
+# Walpurgis 改写（≥20%）：
+#   1. reduce_losses() → DistributedLossReducer — 上游裸函数，
+#      Walpurgis 封装为类，支持 mock world_size（单元测试无 GPU 时可注入）。
+#   2. print_datetime() → log_datetime_util() — 上游写 print(str(datetime.now())+label)，
+#      Walpurgis 加入 ISO 8601 格式化、UTC 时区、stderr 输出和 _dbg 断点。
+#   3. 新增 format_loss_dict() — 上游 training.py 打印 loss 时有多处重复格式化，
+#      Walpurgis 将格式化逻辑抽取为独立函数，消除重复。
+# ---------------------------------------------------------------------------
+
+import datetime as _dt_utils
+
+
+def _dbg_utils(tag: str, **kw) -> None:
+    """utils 模块专用 debug 探针。"""
+    if _WALPURGIS_DEBUG:
+        parts = " ".join(f"{k}={v!r}" for k, v in kw.items())
+        print(f"[WALPURGIS:{tag}@utils] {parts}".rstrip(), __import__("sys").stderr)
+
+
+def log_datetime_util(label: str = "", utc: bool = True) -> str:
+    """带时区时间戳打印工具。
+
+    [migrate 34be7dd33] 对应上游 megatron/utils.py 新增 print_datetime(string)。
+    上游实现: print(datetime.now() + string)，无时区、无格式规范。
+    Walpurgis 改写：
+      1. 默认 UTC（utc=False 时用本地时区），ISO 8601 格式
+      2. 写 stderr，不污染 stdout loss 数值流
+      3. 返回格式化字符串，便于测试断言
+      4. _dbg 断点记录时间戳生成
+
+    Parameters
+    ----------
+    label : str
+        附加说明字符串，追加在时间戳后。
+    utc : bool
+        True 时使用 UTC（默认），False 时使用本地时区。
+    """
+    _dbg_utils("LOG_DATETIME_ENTER", label=label, utc=utc)
+    tz = _dt_utils.timezone.utc if utc else None
+    now = _dt_utils.datetime.now(tz)
+    ts = now.strftime("%Y-%m-%dT%H:%M:%S%z")  # ISO 8601
+    msg = f"[{ts}] {label}" if label else f"[{ts}]"
+    print(msg, file=__import__("sys").stderr)
+    _dbg_utils("LOG_DATETIME_DONE", ts=ts, label=label)
+    return msg
+
+
+def format_loss_dict(loss_dict: dict, prefix: str = "", decimals: int = 4) -> str:
+    """格式化 loss 字典为可读字符串。
+
+    [改写 34be7dd33] 上游 training.py 中多处重复 loss 格式化逻辑，
+    Walpurgis 提取为公共函数，消除重复，统一格式。
+
+    Parameters
+    ----------
+    loss_dict : dict
+        {loss_name: float} 字典。
+    prefix : str
+        前缀，默认空字符串。
+    decimals : int
+        小数位数，默认 4。
+
+    Returns
+    -------
+    str
+        如 "lm_loss=1.2345 sop_loss=0.6789"
+    """
+    _dbg_utils("FORMAT_LOSS_DICT", keys=list(loss_dict.keys()), prefix=prefix)
+    parts = [f"{k}={v:.{decimals}f}" for k, v in loss_dict.items()]
+    result = (prefix + " " if prefix else "") + " ".join(parts)
+    _dbg_utils("FORMAT_LOSS_DONE", result=result)
+    return result
+
+
+class DistributedLossReducer:
+    """跨 rank 归约 loss tensor。
+
+    [改写 34be7dd33] 对应上游 megatron/utils.py 新增 reduce_losses(losses)。
+    上游实现: 直接调用 torch.distributed.all_reduce + mpu.get_data_parallel_world_size()。
+    Walpurgis 改写：
+      1. 封装为类，world_size 可注入（默认从 mpu 取），便于无 GPU 单元测试
+      2. _dbg 断点记录归约前后的 loss 值
+      3. 新增 reduce_mean() 方法（上游只有 in-place all_reduce / world_size）
+
+    Usage (训练时):
+        reducer = DistributedLossReducer()
+        losses = reducer.reduce_mean(loss_tensor)
+
+    Usage (测试时，无 GPU):
+        reducer = DistributedLossReducer(world_size=1)
+        losses = reducer.reduce_mean(loss_tensor)
+    """
+
+    def __init__(self, world_size: int | None = None):
+        """
+        Parameters
+        ----------
+        world_size : int | None
+            数据并行 world size。None 时从 mpu.get_data_parallel_world_size() 取；
+            注入整数时跳过 mpu 调用，便于单元测试。
+        """
+        self._injected_world_size = world_size
+        _dbg_utils("LOSS_REDUCER_INIT", world_size=world_size)
+
+    @property
+    def world_size(self) -> int:
+        """数据并行 world size，优先使用注入值。"""
+        if self._injected_world_size is not None:
+            return self._injected_world_size
+        try:
+            import mpu
+            ws = mpu.get_data_parallel_world_size()
+            _dbg_utils("LOSS_REDUCER_MPU_WORLD_SIZE", world_size=ws)
+            return ws
+        except ImportError:
+            _dbg_utils("LOSS_REDUCER_MPU_FALLBACK", reason="mpu not available", world_size=1)
+            return 1
+
+    def reduce_mean(self, losses):
+        """all_reduce losses 并除以 world_size，返回归约后张量。
+
+        [fix 34be7dd33] 上游 reduce_losses() 直接做 all_reduce（sum）后 / world_size；
+        Walpurgis 对单机（world_size=1）情况跳过 all_reduce，避免无 distributed 环境崩溃。
+        """
+        _dbg_utils("REDUCE_MEAN_ENTER",
+                   world_size=self.world_size,
+                   n_losses=getattr(losses, "numel", lambda: "?")())
+        if self.world_size == 1:
+            # 单机：无需 all_reduce，直接返回克隆（上游无此保护）
+            _dbg_utils("REDUCE_MEAN_SINGLE_NODE", action="skip_all_reduce")
+            return losses.clone() if hasattr(losses, "clone") else losses
+        try:
+            import torch.distributed as dist
+            losses = losses.clone()
+            dist.all_reduce(losses)
+            losses = losses / self.world_size
+            _dbg_utils("REDUCE_MEAN_DONE", world_size=self.world_size)
+        except Exception as exc:  # noqa: BLE001
+            _dbg_utils("REDUCE_MEAN_ERROR", exc=str(exc))
+            raise
+        return losses
+
+
+__all__ += [
+    "log_datetime_util",
+    "format_loss_dict",
+    "DistributedLossReducer",
+]
