@@ -1,4 +1,29 @@
 
+## migrate 3573423f4: added presplit-sentences to scripts — BERT 预训练脚本新增预切句标志
+
+- **Upstream commit**: 3573423f4 (Megatron-LM)
+- **Commit message**: `added presplit-sentences to scripts`
+- **Upstream diff 摘要** (3 files changed, 3 insertions(+))：
+
+  | 文件 | 变更内容 |
+  |------|----------|
+  | `scripts/pretrain_bert.sh` | 新增 `--presplit-sentences` 参数 |
+  | `scripts/pretrain_bert_distributed.sh` | 新增 `--presplit-sentences` 参数 |
+  | `scripts/pretrain_bert_sentencepiece.sh` | 新增 `--presplit-sentences` 参数 |
+
+- **迁移位置**：`src/walpurgis/scripts/pretrain_bert.sh`、`pretrain_bert_distributed.sh`、`pretrain_bert_sentencepiece.sh`（新增目录 `src/walpurgis/scripts/`）
+
+- **鲁迅拿法改写（≥20%）**：
+  原脚本是一纸告示，参数罗列，无人解释为何如此。`--presplit-sentences` 一行加上去，亦无注释，
+  如同在铁屋子里开了一扇窗，却不告诉人窗外是何物。
+  Walpurgis 将每个参数显式命名为有意义的 shell 变量（`PRESPLIT_SENTENCES`、`TOKENIZER_MODEL_PATH` 等），
+  新增运行前自检（词表/SP模型存在性检查），分布式版本将 `DISTRIBUTED_ARGS` 从裸字符串改为数组，
+  SentencePiece 版本补全了与 WordPiece 路径的语义差异注释。
+
+- **`_dbg()` 断点**：每个脚本均含 `_dbg()` 函数，在 `CONFIG_LOADED`、`PREFLIGHT_DONE`、`TRAINING_LAUNCHED` 三个节点输出参数快照，受 `WALPURGIS_DBG` 环境变量控制（默认开启，生产设 0 关闭）。
+
+---
+
 ## migrate 26c7d07: [SKIP] remove docs support in build.sh, other small cleanup — 全部 CI 脚本，Walpurgis 无 RAPIDS CI 体系
 
 - **Upstream commit**: 26c7d07cb89185beffa542dc269fa50a39fdb175 (James Lamb, 2024-10-21)
