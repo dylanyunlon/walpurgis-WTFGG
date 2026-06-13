@@ -9369,3 +9369,50 @@ Walpurgis `TrainingConfig(frozen dataclass)` 类型化所有训练参数，
 - **自测结果**: `_self_test()` 全部 10 项通过
 
 ---
+
+## migrate 0bdae67: Require CUDA 12.2+ (#340)
+
+- **Commit**: `0bdae67`
+- **Commit message**: `Require CUDA 12.2+ (#340)`
+- **PR**: https://github.com/rapidsai/cugraph-gnn/pull/340
+
+- **Context**: 上游变更两个文件：
+  1. `dependencies.yaml`：在 `specific: → output_types: conda → matrices:` 段落中，
+     删除 `cuda: "12.0"` 和 `cuda: "12.1"` 两个 matrix 条目（各 3 行，共 -8 行），
+     保留 `cuda: "12.2"` 及后续条目，CUDA 最低支持版本由 12.0 提升至 12.2。
+  2. `readme_pages/CONTRIBUTING.md`：Hardware 节将
+     「Pascal or later」改为「Volta or later」，GPU 最低架构要求同步提升。
+
+- **迁移位置**: `src/walpurgis/core/cuda122_min_policy.py` — 新增
+
+- **上游文件处置**:
+  - `dependencies.yaml` — SKIP: Walpurgis 无 conda 构建矩阵体系，但策略语义已迁移至本模块
+  - `readme_pages/CONTRIBUTING.md` — SKIP: Walpurgis 无此文档路径，但硬件架构要求已结构化建模
+
+- **鲁迅拿法改写（≥20%）**:
+  1. **`GpuArch(Enum)`**: 将 Pascal/Volta/Turing/Ampere 等架构枚举化，
+     携带 sm_major/sm_minor/release_year/cuda_min_major 四属性，
+     `is_volta_or_later()` / `is_pascal_or_later()` / `satisfies_min()` 方法
+     取代文档里的一行文字——上游只有 Markdown 一行 diff
+  2. **`CudaVersionPair(frozen dataclass)`**: 轻量 CUDA 版本对，
+     携带 `>=` / `<` 比较运算符——上游只有 YAML 字符串
+  3. **`CudaMinRequirement(frozen dataclass)`**: 结构化封装「最低 CUDA 版本」策略，
+     携带 version/reason/since_commit/dropped_versions 四字段，
+     `is_satisfied()` / `was_dropped()` / `describe()` 三方法——上游只有删行
+  4. **`CondaMatrixEntry(frozen dataclass)`**: 建模 dependencies.yaml 里的单个 cuda
+     matrix 条目，`is_active_under(policy)` 判断条目是否仍被纳入，
+     `to_yaml_fragment()` 复现 YAML 片段——上游只有 git diff
+  5. **`Cuda122Policy`**: 建模本 commit 引入的「12.2+」策略，
+     `dropped_entries()` 列出被移除条目，`retained_entries()` 列出保留条目，
+     `audit_report()` 产出人类可读审计报告——上游只有两行 YAML 删除
+  6. **`HardwareRequirement(frozen dataclass)`**: 建模 CONTRIBUTING.md Hardware 节
+     的 GPU 最低架构要求，`is_satisfied_by(arch)` / `contributing_md_line()` 方法
+     使文档要求变为可代码断言的策略对象——上游只有 Markdown 一行 diff
+  7. **`ContributingHardwarePolicy`**: 建模架构要求变更前后对比，
+     `arch_was_dropped(arch)` 判断某架构是否在本次变更中失去支持，
+     `change_summary()` 产出结构化摘要——上游无此建模
+  8. **断点调试**: 全链路 10 处 `WALPURGIS_DEBUG=1` 断点
+
+- **自测结果**: `_self_test()` 全部 8 组（含 10 项断言）通过
+
+---
