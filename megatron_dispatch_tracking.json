@@ -1,9 +1,30 @@
 {
-  "megatron_00001": {
-    "conv_id": "6fc7c3b9-41c8-43d9-9fc2-ee73631e244f",
-    "hash": "18a2f5562",
-    "subject": "Add code owners for optimizer-related files (#5297)",
-    "dispatched_at": "2026-06-13 01:50:03",
-    "status": "completed"
+  "1": {
+    "conv": "c8abaad9-bec5-438c-b1db-d870db1b67a8",
+    "hash": "66719e973",
+    "subj": "Faster dataloader merge (#1)",
+    "status": "firing"
+  },
+  "2": {
+    "hash": "d08783338",
+    "status": "error_429"
+  },
+  "3": {
+    "conv": "22f116bd-2507-4e90-9241-0cfb5cafcca5",
+    "hash": "3573423f4",
+    "subj": "added presplit-sentences to scripts",
+    "status": "firing"
+  },
+  "4": {
+    "conv": "7e508ffa-285f-486b-b445-dab9ec529ca2",
+    "hash": "0399d32c7",
+    "subj": "fixed save race condition",
+    "status": "firing"
+  },
+  "5": {
+    "conv": "308706c6-57cb-41b2-8b02-c1939ae409ec",
+    "hash": "abe36e2e5",
+    "subj": "large update including model parallelism and gpt2",
+    "status": "firing"
   }
 }
