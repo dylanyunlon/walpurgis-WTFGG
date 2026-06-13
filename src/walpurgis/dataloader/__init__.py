@@ -1,11 +1,13 @@
 from .dataloader import DataLoader
-# f4ca484 迁移新增：DGL DataLoader (非 dask 路径) 和 DaskDataLoader
+# f4ca484 迁移新增：DGL DataLoader (非 dask 路径)
+# 61a370e REMOVED: DaskDataLoader — cuGraph-DGL Dask API 已删除
+#   上游 PR #199 Remove Dask API from cuGraph-DGL 删除了:
+#     - cugraph_dgl/dataloading/dask_dataloader.py (321行)
+#     - dataloading/__init__.py 中的 DaskDataLoader 导出
+#   walpurgis 对应: dask_dataloader.py 降级为墓碑模块，不再从 __init__ 导出
 from .dgl_dataloader import DataLoader as DGLDataLoader
-from .dask_dataloader import (
-    DaskDataLoader,
-    create_batch_df,
-    get_batch_id_series,
-)
+# DaskDataLoader 已在 61a370e 中随 Dask API 一并移除
+# 若需迁移路径请参见 src/walpurgis/dataloader/dask_dataloader.py 中的迁移指引
 from .edge_input_id import (
     EdgeInputIdError,
     validate_edges_shape,

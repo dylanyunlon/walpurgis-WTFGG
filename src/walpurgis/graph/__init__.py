@@ -32,6 +32,7 @@ from walpurgis.graph.graph import Graph, HOMOGENEOUS_NODE_TYPE, HOMOGENEOUS_EDGE
 from walpurgis.graph.features import WholeFeatureStore
 from walpurgis.graph.convert import (
     graph_from_heterograph,
+    cugraph_storage_from_heterograph,  # 61a370e 墓碑函数：调用即 RuntimeError
 )
 
 _dbg_import(
@@ -46,4 +47,5 @@ __all__ = [
     "HOMOGENEOUS_EDGE_TYPE",
     "WholeFeatureStore",
     "graph_from_heterograph",
+    "cugraph_storage_from_heterograph",  # 61a370e 墓碑：RuntimeError on call
 ]

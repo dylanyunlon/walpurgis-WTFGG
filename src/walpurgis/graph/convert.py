@@ -160,3 +160,51 @@ def graph_from_heterograph(
 
 # 向后兼容别名（与上游 cugraph_dgl 命名对齐）
 cugraph_dgl_graph_from_heterograph = graph_from_heterograph
+
+# ── 61a370e: cugraph_storage_from_heterograph 墓碑 ───────────────────────────
+#
+# 上游 61a370e (Remove Dask API from cuGraph-DGL, PR #199) 从 convert.py 删除了:
+#
+#   def cugraph_storage_from_heterograph(g: dgl.DGLGraph, single_gpu: bool = True):
+#       num_nodes_dict = {ntype: g.num_nodes(ntype) for ntype in g.ntypes}
+#       edges_dict = get_edges_dict_from_dgl_HeteroGraph(g, single_gpu)
+#       gs = CuGraphStorage(data_dict=edges_dict, num_nodes_dict=num_nodes_dict,
+#                           single_gpu=single_gpu, idtype=g.idtype)
+#       add_ndata_from_dgl_HeteroGraph(gs, g)
+#       add_edata_from_dgl_HeteroGraph(gs, g)
+#       return gs
+#
+# Walpurgis 处置：
+#   - cugraph_storage_from_heterograph 从未迁移（f4ca484 迁移时即 SKIP）
+#     因为 CuGraphStorage 自身从未迁移（依赖 dask_cudf，不属于 walpurgis 架构）
+#   - 此处提供显式 RuntimeError 墓碑函数，比「AttributeError: 不存在」更友好
+#   - 详见 src/walpurgis/core/dgl_dask_removal.py
+
+
+def cugraph_storage_from_heterograph(*args, **kwargs) -> None:
+    """
+    cugraph_storage_from_heterograph 墓碑函数（61a370e）。
+
+    上游此函数将 dgl.DGLGraph 转换为 CuGraphStorage。
+    因 CuGraphStorage 整体基于 dask_cudf，从未迁移到 walpurgis。
+    上游 61a370e 删除了此函数，walpurgis 提供此墓碑避免静默 AttributeError。
+
+    断点: cugraph_storage_from_heterograph 调用检测
+    """
+    _dbg(
+        "cugraph_storage_from_heterograph",
+        f"检测到对已删除函数的调用。"
+        f"args={[type(a).__name__ for a in args]}",
+    )
+    raise RuntimeError(
+        "cugraph_storage_from_heterograph 已在 commit 61a370e 中从上游删除，\n"
+        "且从未迁移到 walpurgis（依赖 CuGraphStorage / dask_cudf）。\n"
+        "\n"
+        "替代（walpurgis 原生接口）:\n"
+        "  from walpurgis.graph import graph_from_heterograph\n"
+        "  wg = graph_from_heterograph(dgl_g, single_gpu=True)\n"
+        "\n"
+        "graph_from_heterograph 返回 walpurgis.graph.Graph，\n"
+        "支持同构/异构图，节点/边特征均可迁移。\n"
+        "详见: src/walpurgis/graph/convert.py"
+    )

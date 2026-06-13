@@ -9320,3 +9320,116 @@ Walpurgis `TrainingConfig(frozen dataclass)` 类型化所有训练参数，
   使 BERT vs GPT-2 的架构差异在不运行程序的情况下可静态理解。
   三文件合计 _dbg 断点 48 处，`WALPURGIS_DEBUG=1` 可全链路观测。
 
+
+## migrate 61a370e: Remove Dask API from cuGraph-DGL (#199)
+
+- **Upstream commit**: 61a370e (cugraph-gnn, commit #211/452)
+- **PR**: #199 Remove Dask API from cuGraph-DGL
+- **规模**: 15 files changed, 6 insertions(+), 2634 deletions(-)
+
+### Upstream diff 摘要
+
+上游 PR #199 彻底清除了 cuGraph-DGL 的 Dask API 层，涉及三个核心组件：
+
+**删除文件（10个）：**
+
+| 文件 | 行数 | 内容 |
+|---|---|---|
+| `cugraph_dgl/cugraph_storage.py` | 714 | CuGraphStorage 完整实现（DGL-compatible 图存储，底层 cuDF/dask_cudf） |
+| `cugraph_dgl/dataloading/dask_dataloader.py` | 321 | DaskDataLoader（基于 BulkSampler 的大规模批量采样） |
+| `tests/dataloading/test_dask_dataloader.py` | 153 | DaskDataLoader 单 GPU 测试 |
+| `tests/dataloading/test_dask_dataloader_mg.py` | 121 | DaskDataLoader 多 GPU 测试 |
+| `tests/dataloading/test_dataset.py` | 128 | BulkSamplerDataset 测试 |
+| `tests/test_cugraph_storage.py` | 150 | CuGraphStorage 完整测试套件 |
+| `examples/dataset_from_disk_cudf.ipynb` | 269 | cuDF 磁盘数据集示例 |
+| `examples/graphsage/node-classification.py` | 270 | GraphSAGE 节点分类示例 |
+| `examples/multi_trainer_MG_example/model.py` | 145 | 多训练器示例模型 |
+| `examples/multi_trainer_MG_example/workflow.py` | 244 | 多训练器示例流程 |
+
+**修改文件（5个）：**
+
+- `cugraph_dgl/__init__.py`（-12行）：删除 `CuGraphStorage` wrapper 函数 + `DEPRECATED__CuGraphStorage` 导入 + `cugraph_storage_from_heterograph` 导入
+- `cugraph_dgl/convert.py`（-25行）：删除 `cugraph_storage_from_heterograph` 函数体 + `CuGraphStorage` import + `cugraph_conversion_utils` imports
+- `cugraph_dgl/dataloading/__init__.py`（-12+6行）：删除 `DaskDataLoader` 导出
+- `tests/dataloading/test_from_dgl_heterograph.py`（-37+行）：移除所有 CuGraphStorage 相关断言
+- `cugraph_dgl/tests/utils.py`（-39+行）：清理 dask_cudf 工具函数
+
+### Diff 逐行分析
+
+**`__init__.py`：**
+删除了两件事：
+1. `from cugraph_dgl.cugraph_storage import CuGraphStorage as DEPRECATED__CuGraphStorage`
+2. `CuGraphStorage(*args, **kwargs)` wrapper 函数（FutureWarning → 实例化 DEPRECATED__CuGraphStorage）
+3. `cugraph_storage_from_heterograph` 从 convert 的导入
+
+**`convert.py`：**
+删除了 `cugraph_storage_from_heterograph` 函数（25行）：将 `dgl.DGLGraph` 转换为 `CuGraphStorage` 的工厂。
+同时删除其依赖的三个 import：`CuGraphStorage`、`get_edges_dict_from_dgl_HeteroGraph`、`add_ndata/edata_from_dgl_HeteroGraph`。
+
+**`dataloading/__init__.py`：**
+删除 `DaskDataLoader` 的导出（以及整个 `dask_dataloader.py` 模块）。
+diff 显示 `12 +-`：删除 `DaskDataLoader` import 行，余下行不变。
+
+### Walpurgis 文件处置
+
+| 上游文件 | Walpurgis 处置 | 产出文件 |
+|---|---|---|
+| `cugraph_dgl/cugraph_storage.py`（删除） | SKIP — 未迁移（依赖 dask_cudf）；`CuGraphStorageGrave` 墓碑记录 | `src/walpurgis/core/dgl_dask_removal.py` |
+| `cugraph_dgl/dataloading/dask_dataloader.py`（删除） | 改写为墓碑模块（`_DaskDataLoaderTombstone` + `TombstoneRegistry`） | `src/walpurgis/dataloader/dask_dataloader.py`（墓碑版） |
+| `cugraph_dgl/dataloading/__init__.py`（修改） | 移除 `DaskDataLoader` 导出 | `src/walpurgis/dataloader/__init__.py` |
+| `cugraph_dgl/convert.py`（修改） | 新增 `cugraph_storage_from_heterograph` 墓碑函数（RuntimeError） | `src/walpurgis/graph/convert.py` |
+| `cugraph_dgl/__init__.py`（修改） | 已由 `dgl_deprecation.py`（fb8296e commit）处理；本次不需额外操作 | `src/walpurgis/core/dgl_deprecation.py`（已有） |
+| 4 个测试文件（删除） | SKIP — 逆向墓碑测试（验证 API 不可用） | `src/walpurgis/tests/sampler/test_dask_storage_tombstone.py` |
+| `test_from_dgl_heterograph.py`（修改） | 已有 `tests/graph/test_graph.py`，storage 相关断言从未迁移 | SKIP |
+| 4 个示例文件（删除） | SKIP — 示例未迁移到 walpurgis | — |
+
+### Walpurgis 改写细节（鲁迅拿法 20%）
+
+**`src/walpurgis/dataloader/dask_dataloader.py`（墓碑改写）：**
+上游是「git rm」；Walpurgis 改为结构化墓碑。
+`DaskRemovalRecord(frozen dataclass)` 记录 commit hash、删除行数、10 个被删文件清单、迁移建议。
+`_DaskDataLoaderTombstone` 实例化立即 `RuntimeError` + 迁移路径（比 `ImportError` 更友好）。
+`TombstoneRegistry` 集中管理所有已死的 Dask API 入口，可供 pytest 查询。
+`create_batch_df`、`get_batch_id_series` 均以墓碑函数替代。
+_dbg 断点 6 处：模块加载、DaskDataLoader 实例化、两个辅助函数调用、Registry 查询、self_check。
+
+**`src/walpurgis/core/dgl_dask_removal.py`（新建）：**
+专注于 CuGraphStorage 层面的删除记录。
+`StorageRemovalSpec(frozen dataclass)` 文档化删除的类/函数名、行数、公开方法清单、迁移目标。
+`CuGraphStorageGrave` 是比 `dgl_deprecation.py::CuGraphStorageCompat` 更强硬的墓碑：
+  Compat 语义是「有兼容层，谨慎可用」；Grave 语义是「坟墓，什么都没有了」。
+`cugraph_storage_from_heterograph` 墓碑函数（RuntimeError + 迁移路径）。
+`DaskApiInventory` 枚举全部被删 API 名称 + 测试文件 + 示例文件，可供审计使用。
+_dbg 断点 6 处。
+
+**`src/walpurgis/graph/convert.py`（追加）：**
+末尾添加 `cugraph_storage_from_heterograph` 墓碑函数，标注 SKIP 原因（从未迁移，依赖 CuGraphStorage）。
+
+**`src/walpurgis/tests/sampler/test_dask_storage_tombstone.py`（新建）：**
+「逆向测试」——验证被删除的 API 确实不可用（RuntimeError），而不是静默失效。
+4 个 `SkipRecord` 记录每个测试文件的删除理由和 walpurgis 等价路径。
+6 个 pytest 测试：
+  `test_dask_api_inventory_complete`、`test_cugraph_storage_raises_runtime_error`、
+  `test_cugraph_storage_from_heterograph_raises_runtime_error`、
+  `test_dask_dataloader_raises_runtime_error`、
+  `test_skip_records_complete`、`test_graph_from_heterograph_still_works`、
+  `test_storage_removal_spec_self_check`。
+
+### SKIP 汇总
+
+| SKIP 项目 | 理由 |
+|---|---|
+| `cugraph_storage.py` 实现迁移 | 依赖 dask_cudf + RAPIDS 图存储后端，与 walpurgis 架构不兼容；已有 walpurgis.graph.Graph 替代 |
+| `test_dataset.py`（HeteroBulkSamplerDataset） | 测试对象随 cugraph_storage.py 一同删除，walpurgis 无对应实现 |
+| 4 个示例文件 | 示例文件未纳入 walpurgis 迁移范围 |
+| `test_from_dgl_heterograph.py` storage 断言 | 从未迁移到 walpurgis，test_graph.py 覆盖非 storage 部分 |
+| `utils.py` dask 工具函数清理 | 工具函数依赖 dask_cudf，不在迁移范围 |
+
+### 三维度审查（Knuth）
+
+- **正确性**：`StorageRemovalSpec.self_check()` 和 `DaskApiInventory.self_check()` 断言删除规模精确匹配 diff（714行/4测试文件/4示例文件）。`TombstoneRegistry.self_check()` 验证所有 5 个死亡 API 均已注册。逆向测试确认每个墓碑均正确抛出 RuntimeError（不是 AttributeError 或静默失效）。
+
+- **性能**：墓碑模块的唯一性能影响是 `RuntimeError` 构造（仅在误用时发生）。正常路径（`DataLoader`、`DGLDataLoader`、`graph_from_heterograph`）完全不经过任何墓碑代码。`_dbg` 断点在 `WALPURGIS_DEBUG=0`（默认）时为零开销。
+
+- **可读性**：鲁迅式「留下墓志铭」代替上游的「git rm」。每个死亡 API 都有：RuntimeError 消息含 commit hash、迁移路径、等价接口。`SkipRecord` 使「为什么不迁移」从注释升为可查询的结构化数据。`CuGraphStorageGrave` vs `CuGraphStorageCompat` 的命名区分「死亡」与「兼容」两种状态，使代码库的历史层次清晰可见。全链路 _dbg 断点 18 处（跨 3 个文件），`WALPURGIS_DEBUG=1` 可追踪任何误用调用的完整路径。
+
