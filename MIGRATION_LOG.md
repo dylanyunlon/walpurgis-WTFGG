@@ -441,6 +441,59 @@
   - **可读性**：上游无任何竞争条件说明；`CheckpointRaceRecord.race_scenario` 字段
     以自然语言描述 makedirs 竞争触发路径，`audit()` 输出完整决策日志，可读性大幅优于上游。
 
+## migrate a1d04b793: Updating public repo with latest changes — 训练参数/LR调度/GPT2建模/数据工具全面扩展
+
+- **Upstream commit**: a1d04b793 (Megatron-LM, commit #9 of 9062)
+- **Commit message**: `Updating public repo with latest changes`
+- **Upstream diff 摘要** (21 files changed, 888 insertions(+), 184 deletions(-))：
+
+  | 上游文件 | 变更内容 |
+  |---------|---------|
+  | `arguments.py` | 新增8个训练参数：tensorboard-dir, eod-mask-loss, min-lr, override-lr-scheduler, use-checkpoint-lr-scheduler, DDP-impl, adlr-autoresume, adlr-autoresume-interval |
+  | `learning_rates.py` | AnnealingLR 新增 min_lr 裁断、override/checkpoint-lr-scheduler 控制路径，+68行 |
+  | `model/gpt2_modeling.py` | GPT2Model 新增 token_type_ids、eod_mask_loss，+42行 |
+  | `mpu/transformer.py` | LayerNorm bias=False，attention dropout 移至 softmax 之后，+50行 |
+  | `pretrain_bert.py` + `pretrain_gpt2.py` | TensorBoard/autoresume/DDP-impl，+234行 |
+  | `data_utils/*` | make_data_loader、GPT2Dataset reset_attention_mask、off-by-one fix |
+  | `generate_samples.py` + `evaluate_gpt2.py` | 批量→socket服务器，ppl评估，+376行 |
+  | `utils.py` | checkpoint命名、print_rank_0、report_memory、params_in_M，+56行 |
+  | `scripts/*` | generate_text.sh更新，4个新脚本 |
+
+- **迁移位置**：
+
+  | 上游路径 | Walpurgis 目标 |
+  |---------|---------------|
+  | `arguments.py` (delta) | `src/walpurgis/core/megatron_args_a1d04b793.py` |
+  | `learning_rates.py` | `src/walpurgis/scheduler/lr_scheduler.py` |
+  | `model/gpt2_modeling.py` | `src/walpurgis/models/gpt2_modeling.py` |
+  | `mpu/transformer.py` | `src/walpurgis/models/mpu_transformer.py` |
+  | `pretrain_gpt2.py` + `pretrain_bert.py` | `src/walpurgis/core/pretrain_gpt2.py` |
+  | `data_utils/*` | `src/walpurgis/dataloader/megatron_data_utils.py` |
+  | `utils.py` (delta) | `src/walpurgis/utils/megatron_utils.py` |
+  | `generate_samples.py` + `evaluate_gpt2.py` | `src/walpurgis/core/generate_samples.py` |
+  | `scripts/run_gpt2_eval.py` | `src/walpurgis/scripts/run_gpt2_eval.py` |
+  | `scripts/split_gpt2_json.py` | `src/walpurgis/scripts/split_gpt2_json.py` |
+  | `scripts/generate_text.sh` | `src/walpurgis/scripts/generate_text.sh` |
+  | 空文件 stubs | `src/walpurgis/scripts/pretrain_gpt2.sh` 等3个 |
+
+- **鲁迅拿法改写（≥20%）**：
+  上游这次 commit 是一次"大规模告示发布"：888 行新增遍布 21 个文件，每处都悄悄地加，
+  没有一处解释为什么加、加了之后和原来的什么关系。
+  `--override-lr-scheduler` 与 `--use-checkpoint-lr-scheduler` 互斥，上游不检查；
+  `min_lr` 裁断不记录；`eod_mask_loss` 经三个函数传递，从未说清形状。
+  `generate_samples.py` 从离线批量改为 socket 服务器，状态机用布尔标志管。
+  Walpurgis 原则：**每一个隐式约束变为显式代码；每一个静默失败变为有名有姓的错误。**
+
+  改写点：`ArgGroupSpec`注册表、`LRPhase`枚举+触底计数、`EodLossMasker`+`AttentionMaskBuilder`
+  独立单元、`LayerNormNoBias`+`ScaledDotProductAttentionWDP`语义显式化、
+  `BatchBuilder`/`TensorBoardHook`/`AutoResumeGuard`解耦、
+  `LazyTokenLoader` off-by-one文档化、`ServerState`枚举状态机、
+  `SplitConfig(seed)`可复现切割+manifest.json、`generate_text.sh` GPU自感知+端口检测。
+
+- **`_dbg()` 断点**：所有迁移文件均含 `_dbg()` 函数，受 `WALPURGIS_DEBUG=1` 控制，共 50+ 断点节点。
+
+---
+
 ## migrate 3573423f4: added presplit-sentences to scripts — BERT 预训练脚本新增预切句标志
 
 - **Upstream commit**: 3573423f4 (Megatron-LM)

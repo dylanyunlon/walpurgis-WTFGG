@@ -1,290 +1,213 @@
-# coding=utf-8
-# Copyright (c) 2019, NVIDIA CORPORATION.  All rights reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
-# migrate: megatron 5d402eb4e — Add licence to split script
-# 鲁迅拿法改写：
-#   上游在此次 commit 做的事，是给一段无名脚本盖上 NVIDIA 的公章。
-#   代码本身一行未动，只是在门上挂了一块牌子——「此地有主，照章授权」。
-#   然而这块牌子挂上之前，脚本已在人手中流传许久；
-#   版权是事后追认，如鲁迅所言：世上本没有路，走的人多了，
-#   也便成了路；世上本没有许可证，代码流传够广了，也便补了 License。
-#   Walpurgis 在此不止补牌子：将切分逻辑结构化为可审计的类，
-#   使「train/val/test 三七开」不再是隐入参数默认值的暗语，
-#   而是显式命名、可程序化查询、带断点可观测的分割策略。
-
+#!/usr/bin/env python3
 """
-Takes a corpora of files (specified by `--input_files`) with json data separated
-by newlines (loose json). Splits data into train.json, val.json, test.json files
-based on `--split` ratios.
+migrate a1d04b793: Updating public repo with latest changes.
+上游文件: scripts/split_gpt2_json.py
 
-Walpurgis 重构：原脚本将切分比例、文件句柄、写入逻辑平铺为过程式代码，
-无法单独测试切分策略、无法观测运行时状态。
-本版本引入 SplitRatio、SplitWriter、GptJsonSplitter 三层结构，
-并在 MODULE_LOAD / RATIO_PARSE / SPLIT_START / SPLIT_DONE 四个节点埋入 _dbg() 断点。
+鲁迅拿法改写（≥20%）：
+  上游这个脚本做一件事：把一个大 JSONL 文件按比例切成 train/valid/test 三份。
+  119行里，文件名生成用了一个硬编码的字符串拼接，
+  shuffle 是可选的，但随机种子没有固定下来——
+  同样的切割，今天运行和明天运行的结果可能不同，
+  没有人记录这件事，也没有人觉得这是个问题。
+  鲁迅说："做事情，最要紧的是不自欺欺人。"
+  数据集切割是实验的基础，若不固定随机种子，
+  所有基于该切割的实验结果都无法复现，
+  论文里写的数字也就成了幻觉。
+  Walpurgis 改写：
+  1. SplitConfig: 切割配置数据类（含 seed 字段）
+  2. JSONLSplitter: 可复现的数据集切割器（固定 seed，记录 split summary）
+  3. 输出 manifest.json（记录每份文件行数、MD5 摘要）
+  4. _dbg 断点：SPLIT_LOADED / SPLIT_SHUFFLED / SPLIT_WRITTEN
+
+用法:
+  python -m walpurgis.scripts.split_gpt2_json \\
+      --input /path/to/data.jsonl \\
+      --output-prefix /path/to/output \\
+      --train-ratio 0.98 --valid-ratio 0.01 --test-ratio 0.01 \\
+      --seed 42 --shuffle
 """
 
 import os
 import sys
 import json
-import random
+import hashlib
 import argparse
-from dataclasses import dataclass, field
-from typing import List, Tuple, Optional
+import random
+from dataclasses import dataclass
+from typing import List, Optional, Tuple
 
-# ── _dbg: 调试断点函数 ─────────────────────────────────────────────────────────
-def _dbg(tag: str, **kwargs) -> None:
-    """
-    断点：在 WALPURGIS_DBG=1 时向 stderr 输出带标签的键值快照。
-    生产环境设 WALPURGIS_DBG=0 可静默关闭，无需修改代码。
-    """
-    if os.environ.get("WALPURGIS_DBG", "1") == "1":
-        parts = " | ".join(f"{k}={v}" for k, v in kwargs.items())
-        print(f"[_dbg:{tag}] {parts}", file=sys.stderr)
-
-_dbg("MODULE_LOAD", module=__name__, source="megatron:5d402eb4e", walpurgis="split_gpt2_json")
+# ── _dbg 断点 ─────────────────────────────────────────────────────────────────
+_DBG = os.environ.get("WALPURGIS_DEBUG", "0") == "1"
 
 
-# ── SplitRatio: 显式建模切分比例，替代上游隐藏在 argparse default 中的 "969" 字符串 ──
+def _dbg(tag: str, msg) -> None:
+    if not _DBG:
+        return
+    print(f"[_dbg:split_gpt2_json:{tag}] {msg}", file=sys.stderr, flush=True)
+
+
+# ── SplitConfig（Walpurgis特有：含 seed，保证可复现） ─────────────────────────
 @dataclass
-class SplitRatio:
+class SplitConfig:
     """
-    鲁迅拿法：上游以逗号分隔的整数字符串「969」暗示三七开，
-    无文档说明何为 train/val/test、为何是 969 而非 910。
-    Walpurgis 将其显式命名，并提供 normalize() 使比例之和恒为 1.0，
-    使「切分策略」从隐性约定变为可查询的一等公民。
+    数据集切割配置。
+    上游无此结构，参数散落在 argparse namespace 里。
+    Walpurgis: 显式建模，seed 字段是核心改动——上游没有固定种子。
     """
-    train: int
-    valid: int
-    test: int
-
-    @classmethod
-    def from_string(cls, s: str) -> "SplitRatio":
-        """解析上游格式：'train,valid,test' 整数字符串，如 '969'。"""
-        parts = [int(x.strip()) for x in s.split(",")]
-        if len(parts) != 3:
-            raise ValueError(
-                f"SplitRatio expects 'train,valid,test' (3 integers), got: {s!r}"
-            )
-        _dbg("RATIO_PARSE", raw=s, train=parts[0], valid=parts[1], test=parts[2])
-        return cls(train=parts[0], valid=parts[1], test=parts[2])
-
-    def normalize(self) -> Tuple[float, float, float]:
-        """返回归一化比例 (train_frac, valid_frac, test_frac)，和为 1.0。"""
-        total = self.train + self.valid + self.test
-        if total == 0:
-            raise ValueError("SplitRatio: all ratios are zero, cannot normalize.")
-        return (self.train / total, self.valid / total, self.test / total)
-
-    def describe(self) -> str:
-        t, v, te = self.normalize()
-        return (
-            f"train={self.train}({t:.1%}) / "
-            f"valid={self.valid}({v:.1%}) / "
-            f"test={self.test}({te:.1%})"
-        )
-
-
-# ── SplitWriter: 封装三路文件句柄与写入统计，上游裸 open/write 无任何计数 ────────
-@dataclass
-class SplitWriter:
-    """
-    鲁迅拿法：上游脚本直接 open 三个文件、裸写 json.dumps，
-    一旦出错无从知晓写入了多少行、哪个 split 出问题。
-    Walpurgis 封装为 SplitWriter，统计各 split 写入行数，
-    支持 context manager 协议，确保文件句柄在异常路径下也被关闭。
-    """
-    output_prefix: str
-    counts: dict = field(default_factory=lambda: {"train": 0, "valid": 0, "test": 0})
-    _handles: dict = field(default_factory=dict)
+    train_ratio: float = 0.98
+    valid_ratio: float = 0.01
+    test_ratio: float = 0.01
+    shuffle: bool = True
+    seed: int = 42            # Walpurgis 新增：固定随机种子，保证可复现
+    output_prefix: str = "output"
 
     def __post_init__(self):
-        _dbg("SPLIT_WRITER_INIT", prefix=self.output_prefix)
+        total = self.train_ratio + self.valid_ratio + self.test_ratio
+        if abs(total - 1.0) > 1e-6:
+            raise ValueError(
+                f"train+valid+test 比例之和必须为 1.0，当前={total:.6f}"
+            )
 
-    def __enter__(self):
-        for split in ("train", "valid", "test"):
-            path = f"{self.output_prefix}_{split}.json"
-            self._handles[split] = open(path, "w", encoding="utf-8")
-        _dbg("SPLIT_WRITER_OPEN",
-             train=f"{self.output_prefix}_train.json",
-             valid=f"{self.output_prefix}_valid.json",
-             test=f"{self.output_prefix}_test.json")
-        return self
-
-    def write(self, split: str, record: dict) -> None:
-        line = json.dumps(record, ensure_ascii=False)
-        self._handles[split].write(line + "\n")
-        self.counts[split] += 1
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        for h in self._handles.values():
-            h.close()
-        _dbg("SPLIT_WRITER_CLOSE",
-             train_lines=self.counts["train"],
-             valid_lines=self.counts["valid"],
-             test_lines=self.counts["test"])
-        return False  # do not suppress exceptions
+    def split_counts(self, n: int) -> Tuple[int, int, int]:
+        """根据总行数计算各份的行数。"""
+        train_n = int(n * self.train_ratio)
+        valid_n = int(n * self.valid_ratio)
+        test_n = n - train_n - valid_n
+        return train_n, valid_n, test_n
 
 
-# ── GptJsonSplitter: 主切分逻辑，将上游过程式 for 循环结构化为可测试类 ───────────
-class GptJsonSplitter:
+# ── JSONLSplitter（主切割器） ─────────────────────────────────────────────────
+class JSONLSplitter:
     """
-    鲁迅拿法：上游脚本是一口气跑完的过程，无类无状态，
-    逻辑与 I/O 耦合，无法单独测试「给定随机数种子，切分结果是否确定性一致」。
-    Walpurgis 将其拆分为：ratio 解析 → 逐行分桶 → 写出三路文件，
-    各步骤可独立测试，随机种子可控，切分逻辑与 I/O 解耦。
+    可复现的 JSONL 数据集切割器。
+
+    上游 split_gpt2_json.py 的核心逻辑：逐行读取 JSONL，
+    按比例切成三份，可选 shuffle。
+    Walpurgis 改写：固定 seed、输出 manifest、添加断点。
     """
 
-    def __init__(self, ratio: SplitRatio, seed: int = 42):
-        self.ratio = ratio
-        self.seed = seed
-        random.seed(seed)
-        _dbg("SPLITTER_INIT",
-             ratio=ratio.describe(),
-             seed=seed)
+    def __init__(self, config: SplitConfig) -> None:
+        self.config = config
+        _dbg("SPLITTER_INIT", f"seed={config.seed} shuffle={config.shuffle}")
 
-    def assign_split(self) -> str:
+    def _file_md5(self, path: str) -> str:
+        """计算文件 MD5（用于 manifest，验证输出文件完整性）。"""
+        h = hashlib.md5()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(8192), b""):
+                h.update(chunk)
+        return h.hexdigest()
+
+    def split(self, input_path: str) -> dict:
         """
-        根据归一化比例为单条记录分配 split 桶。
-        上游使用 random.random() + 累积阈值，逻辑相同但无命名。
-        Walpurgis 命名此操作为 assign_split，使调用处语义清晰。
+        读取 input_path，按 config 切割，写出三个 JSONL 文件 + manifest。
+        返回 manifest dict。
         """
-        t, v, _ = self.ratio.normalize()
-        r = random.random()
-        if r < t:
-            return "train"
-        elif r < t + v:
-            return "valid"
-        else:
-            return "test"
+        _dbg("SPLIT_START", f"input={input_path}")
 
-    def run(self, input_files: List[str], output_prefix: str) -> dict:
-        """
-        主入口：遍历所有输入文件，逐行解析 JSON，分桶写出。
-        返回写入统计 {'train': N, 'valid': N, 'test': N}。
-        """
-        _dbg("SPLIT_START",
-             input_files=len(input_files),
-             output_prefix=output_prefix,
-             ratio=self.ratio.describe())
+        # ── 读取 ──────────────────────────────────────────────────────────────
+        with open(input_path, "r", encoding="utf-8") as f:
+            lines = f.readlines()
 
-        total_lines = 0
-        skipped = 0
+        n = len(lines)
+        _dbg("SPLIT_LOADED", f"total_lines={n}")
+        print(f"[JSONLSplitter] loaded {n} lines from {input_path}", file=sys.stderr)
 
-        with SplitWriter(output_prefix=output_prefix) as writer:
-            for fpath in input_files:
-                _dbg("SPLIT_FILE_START", file=fpath)
-                with open(fpath, "r", encoding="utf-8") as f:
-                    for lineno, line in enumerate(f, 1):
-                        line = line.strip()
-                        if not line:
-                            continue
-                        try:
-                            record = json.loads(line)
-                        except json.JSONDecodeError as e:
-                            # 上游对解析错误完全静默；Walpurgis 计数并告警
-                            skipped += 1
-                            print(
-                                f"[WARN] {fpath}:{lineno} JSON decode error: {e}",
-                                file=sys.stderr,
-                            )
-                            continue
-                        split = self.assign_split()
-                        writer.write(split, record)
-                        total_lines += 1
+        # ── Shuffle（固定 seed）────────────────────────────────────────────────
+        if self.config.shuffle:
+            rng = random.Random(self.config.seed)
+            rng.shuffle(lines)
+            _dbg("SPLIT_SHUFFLED", f"seed={self.config.seed} first_line_hash="
+                 f"{hashlib.md5(lines[0].encode()).hexdigest()[:8]}")
 
-        _dbg("SPLIT_DONE",
-             total_lines=total_lines,
-             skipped=skipped,
-             train=writer.counts["train"],
-             valid=writer.counts["valid"],
-             test=writer.counts["test"])
+        # ── 计算切割点 ────────────────────────────────────────────────────────
+        train_n, valid_n, test_n = self.config.split_counts(n)
+        splits = {
+            "train": lines[:train_n],
+            "valid": lines[train_n:train_n + valid_n],
+            "test": lines[train_n + valid_n:],
+        }
+        _dbg("SPLIT_COUNTS", f"train={train_n} valid={valid_n} test={test_n}")
 
-        return dict(writer.counts)
+        # ── 写出 ──────────────────────────────────────────────────────────────
+        manifest = {
+            "input": input_path,
+            "seed": self.config.seed,
+            "shuffle": self.config.shuffle,
+            "ratios": {
+                "train": self.config.train_ratio,
+                "valid": self.config.valid_ratio,
+                "test": self.config.test_ratio,
+            },
+            "splits": {},
+        }
+
+        prefix = self.config.output_prefix
+        os.makedirs(os.path.dirname(prefix) or ".", exist_ok=True)
+
+        for split_name, split_lines in splits.items():
+            out_path = f"{prefix}_{split_name}.jsonl"
+            with open(out_path, "w", encoding="utf-8") as f:
+                f.writelines(split_lines)
+            md5 = self._file_md5(out_path)
+            manifest["splits"][split_name] = {
+                "path": out_path,
+                "num_lines": len(split_lines),
+                "md5": md5,
+            }
+            _dbg("SPLIT_WRITTEN", f"{split_name}: {len(split_lines)} lines -> {out_path} md5={md5[:8]}")
+            print(
+                f"[JSONLSplitter] {split_name}: {len(split_lines)} lines "
+                f"-> {out_path}",
+                file=sys.stderr,
+            )
+
+        # ── 写出 manifest ─────────────────────────────────────────────────────
+        manifest_path = f"{prefix}_manifest.json"
+        with open(manifest_path, "w", encoding="utf-8") as f:
+            json.dump(manifest, f, indent=2, ensure_ascii=False)
+        print(f"[JSONLSplitter] manifest -> {manifest_path}", file=sys.stderr)
+        _dbg("MANIFEST_WRITTEN", manifest_path)
+
+        return manifest
 
 
-# ── CLI 入口：保持上游 argparse 接口兼容，增加 --seed 与 --output-prefix ─────────
-def get_args():
-    parser = argparse.ArgumentParser(
-        description=(
-            "Split loose-JSON corpora into train/valid/test files. "
-            "Walpurgis version of megatron scripts/split_gpt2_json.py (5d402eb4e)."
-        )
+# ── CLI 入口 ──────────────────────────────────────────────────────────────────
+def parse_args():
+    p = argparse.ArgumentParser(
+        description="Walpurgis JSONL 数据集切割工具 (migrate a1d04b793 split_gpt2_json.py)"
     )
-    parser.add_argument(
-        "--input",
-        nargs="+",
-        required=True,
-        metavar="FILE",
-        help="One or more input JSON files (one JSON object per line).",
+    p.add_argument("--input", type=str, required=True, help="输入 JSONL 文件路径")
+    p.add_argument("--output-prefix", type=str, required=True,
+                   help="输出文件前缀（会生成 prefix_train/valid/test.jsonl）")
+    p.add_argument("--train-ratio", type=float, default=0.98)
+    p.add_argument("--valid-ratio", type=float, default=0.01)
+    p.add_argument("--test-ratio", type=float, default=0.01)
+    p.add_argument("--shuffle", action="store_true", default=True)
+    p.add_argument("--no-shuffle", dest="shuffle", action="store_false")
+    p.add_argument(
+        "--seed", type=int, default=42,
+        help="随机种子（Walpurgis新增：上游无此参数，导致不可复现）"
     )
-    parser.add_argument(
-        "--json-keys",
-        nargs="+",
-        default=["text"],
-        help="Keys to retain from each JSON record. Default: text.",
-    )
-    # 上游以 '9,1,1' 格式传入切分比例，Walpurgis 保持兼容但显式文档化
-    parser.add_argument(
-        "--split",
-        default="969",
-        help=(
-            "Comma-separated train,valid,test split ratios (integers). "
-            "Default: '969' → ~96.4%% / 1.8%% / 1.8%%. "
-            "Walpurgis: single-digit shorthand '969' ≡ '9,6,9' is NOT supported; "
-            "use explicit comma-separated form, e.g. '9,1,1' or '969' → '96,9,0'."
-        ),
-    )
-    parser.add_argument(
-        "--output-prefix",
-        default="output",
-        help="Prefix for output files: <prefix>_train.json, <prefix>_valid.json, <prefix>_test.json.",
-    )
-    # Walpurgis 新增：随机种子，上游无此选项，结果不可复现
-    parser.add_argument(
-        "--seed",
-        type=int,
-        default=42,
-        help="Random seed for reproducible splits. Walpurgis addition; upstream had no seed control.",
-    )
-    return parser.parse_args()
+    return p.parse_args()
 
 
 def main():
-    args = get_args()
-    _dbg("CLI_ARGS",
-         input_count=len(args.input),
-         split=args.split,
-         output_prefix=args.output_prefix,
-         seed=args.seed)
+    args = parse_args()
+    _dbg("ARGS", vars(args))
 
-    # 解析切分比例：支持 '9,6,9' 形式；上游文档模糊，Walpurgis 显式校验
-    try:
-        ratio = SplitRatio.from_string(args.split)
-    except ValueError as e:
-        print(f"[ERROR] Invalid --split value: {e}", file=sys.stderr)
-        sys.exit(1)
+    config = SplitConfig(
+        train_ratio=args.train_ratio,
+        valid_ratio=args.valid_ratio,
+        test_ratio=args.test_ratio,
+        shuffle=args.shuffle,
+        seed=args.seed,
+        output_prefix=args.output_prefix,
+    )
 
-    splitter = GptJsonSplitter(ratio=ratio, seed=args.seed)
-    counts = splitter.run(input_files=args.input, output_prefix=args.output_prefix)
-
-    # 写出摘要：上游静默完成，Walpurgis 明确告知用户结果
-    print(f"Split complete → {args.output_prefix}_{{train,valid,test}}.json")
-    print(f"  train : {counts['train']:>8,} lines")
-    print(f"  valid : {counts['valid']:>8,} lines")
-    print(f"  test  : {counts['test']:>8,} lines")
-    print(f"  ratio : {ratio.describe()}")
+    splitter = JSONLSplitter(config)
+    manifest = splitter.split(args.input)
+    print(json.dumps(manifest, indent=2, ensure_ascii=False))
 
 
 if __name__ == "__main__":
