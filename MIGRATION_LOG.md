@@ -1,3 +1,257 @@
+## migrate a54978bbf: [SKIP] Merge branch 'staging' into 'master' — 纯合并提交，diff 为空
+
+- **Upstream commit**: a54978bbf（Megatron-LM，第11个，共9062）
+- **Commit message**: `Merge branch 'staging' into 'master'`
+- **Upstream diff 摘要**：空（0 files changed）— 纯 Git 合并提交，无任何文件变更，
+  仅将 `staging` 分支历史并入 `master`，本身不携带可迁移的代码增量。
+
+- **迁移判定**：**[SKIP]** — 理由：
+  1. diff 为空字符串，无任何 `+` / `-` 行，没有可提取的逻辑单元；
+  2. 合并提交（merge commit）本身是 Git 拓扑节点，其语义已由被合并的各个祖先
+     提交单独携带；若祖先提交有实质变更，各自在对应编号时迁移；
+  3. Walpurgis 无 `staging` 分支体系，Git 合并拓扑在目标仓库无对等结构可映射。
+
+- **鲁迅观**：
+  鲁迅写《药》，华老栓买人血馒头，以为能治儿子的痨病——
+  那馒头本身并不带药效，药效在被砍头者的血，在其之前的存在。
+  合并提交亦如此：形式上是一个 commit，实则空壳，
+  所有内容皆在它的父节点里，拿空壳迁移，不过是买了个没血的馒头。
+  故此提交在 Walpurgis 记录存档，不生产任何新文件。
+
+---
+
+## migrate d08783338: [迁移] added missing presplit_sentences_json.py — JSONL 语料句子切分工具
+
+- **Upstream commit**: d08783338 (Megatron-LM, commit #2/9062)
+- **Commit message**: `added missing presplit_sentences_json.py`
+- **Upstream diff 摘要** (1 file changed, 27 insertions(+)):
+
+  | 文件 | 变更内容 |
+  |------|----------|
+  | `scripts/presplit_sentences_json.py` | 新增；读取松散 JSONL，对每条 doc 的 `text` 字段按段落→NLTK 句子切分，重写后写出 |
+
+- **迁移位置**：`src/walpurgis/presplit_sentences_json.py`（新增）
+  - 原 Megatron 路径 `scripts/` 在 Walpurgis 无对等目录；
+    该脚本属数据预处理工具，映射至 `src/walpurgis/` 根层，与其他顶层工具模块并列。
+
+- **鲁迅拿法改写（≥20%）**：
+  原脚本 27 行，三层逻辑混写于一个双层嵌套 with-open 循环体内：
+  JSON 解析、空行过滤、NLTK 切分、字段覆写、序列化——
+  如流水线工人，进料、切割、出料，一气呵成，不留痕迹，不问语料何来、句意何归。
+  鲁迅见之，曰："字字皆刀，刀刀割断上下文；所谓'句子'，不过是流水线零件，
+  装箱出厂，谁也不认识谁了。"
+
+  Walpurgis 将此流程结构化为三层：
+
+  1. **`DocRecord` dataclass** — 封装单条语料的原文、切句结果及诊断信息，
+     `from_line()` 工厂方法将 JSON 解析异常结构化为 `error` 字段而非静默崩溃；
+     原脚本 in-place 修改 dict，出错无从追溯——如案卷被焚，只剩灰烬。
+  2. **`SentSplitter` 类** — 包装 NLTK，`split_paragraph()` 将段落遍历、
+     空行过滤、句列展开三者收拢为单一职责；
+     原脚本三者混写于循环体，如鲁迅所言"一锅乱炖，自己也不清楚炖的是什么"。
+     另：原脚本模块顶层 `nltk.download('punkt')` 每次 import 触发网络请求，
+     改为惰性检查（`_ensure_punkt()`），已有则跳过。
+  3. **`presplit_file()` 主函数** — 负责逐行 IO 与异常上报；
+     原脚本双层嵌套 with-open，Walpurgis 改为单层同时打开两文件；
+     错误行记录 `[WARN]` 并计数后继续，不因一行坏料中断全局。
+  4. **拼写保留**：原脚本 `line_seperator`（误拼）在 `SentSplitter.LINE_SEP` 注释中
+     显式标注"原文拼写保留"，语义已通过常量名修正，历史痕迹未抹除。
+
+  全链路 `_dbg()` 断点 **14 处**：
+  PUNKT_INIT（×3）、DOC_RECORD_PARSE、DOC_RECORD_PARSE_ERR、
+  DOC_RECORD_SERIALIZE、SENT_SPLITTER_INIT、SPLIT_PARA_IN、SPLIT_PARA_PARA、
+  SPLIT_PARA_OUT、PRESPLIT_FILE_START、PRESPLIT_FILE_SPLITTER_READY、
+  PRESPLIT_FILE_LINE、PRESPLIT_FILE_DONE、MAIN_ENTRY、MAIN_ARGS。
+  `WALPURGIS_DEBUG=1` 时全部激活，生产环境静默。
+
+- **三维度审查（Knuth）**：
+  - **正确性**：句子切分逻辑与原脚本等价——空行过滤条件由 `line != '\n'` 改为
+    `not para.strip()`，覆盖纯空白行（原脚本漏判），行为更严格但语义一致。
+    JSON 解析异常原脚本会抛出未捕获 `JSONDecodeError`；Walpurgis 捕获并记录，
+    跳过坏行，正确性优于上游。
+  - **性能**：`_ensure_punkt()` 将原脚本每次 import 触发的网络检查改为
+    `nltk.data.find()` 本地查找，IO 开销从 O(每次import) 降为 O(1) 缓存命中。
+    其余逻辑逐行流式处理，内存占用不变。
+  - **可读性**：原脚本 27 行无任何 docstring、注释、错误处理；
+    Walpurgis 通过三层结构（DocRecord/SentSplitter/presplit_file）将职责边界
+    显式化，`_dbg()` 断点提供完整执行轨迹，可读性大幅优于上游。
+
+---
+
+## migrate 0399d32c7: fixed save race condition — Megatron-LM #4/9062
+
+- **Upstream commit**: 0399d32c7（Megatron-LM，第4个，共9062）
+- **Commit message**: `fixed save race condition`
+- **Upstream diff 摘要**（1 file changed, 1 insertion(+), 1 deletion(-)）：
+
+  | 文件 | 变更内容 |
+  |------|----------|
+  | `utils.py` · `save_checkpoint()` | `get_rank() > 1` → `get_rank() > 0`；修复 rank=1 意外持有写权导致的 checkpoint 写竞争 |
+
+- **迁移判定**：直接迁移（功能相关，分布式写保护逻辑）
+- **迁移位置**：`src/walpurgis/utils/save_race_fix_0399d32c7.py`（新增）
+
+- **鲁迅拿法改写（≥20%）**：
+  上游一行之差，却是全局正确性的门槛。鲁迅写《祝福》，祥林嫂反复述说
+  阿毛的死，旁人起初同情，渐而厌烦，终至冷漠——因为没有人追问：
+  为何第一次就把门留开了？上游 `> 1` 亦然：看似只差一个数字，
+  实则把 rank=1 悄悄放进了禁区，无人追问，无人记录，直至竞争发作。
+
+  Walpurgis 将此「单字节修复」提炼为四个结构：
+  1. `RankWritePolicy` 枚举 —— 显式区分 SOLO_RANK0（正确）与 BUG_RANK1_INCLUDED（错误），
+     使「> 1」缺陷不再隐匿于 diff，而是可查询的已命名状态。
+  2. `DistributedWriteGuard` dataclass —— 封装写权判断上下文，携带 rank/world_size 快照
+     与 `holds_write_lock()`/`audit()` 接口，可脱离真实分布式环境独立测试。
+  3. `CheckpointRaceRecord` dataclass —— 文档化 0399d32c7 完整上下文：错误策略、
+     修复策略、触发场景、受影响 rank 组合，补全上游欠缺的「为何改」。
+  4. `make_write_guard()` 工厂函数 —— 对应上游修复后 if 条件，自动探测分布式环境，
+     通过 WALPURGIS_DEBUG=1 断点追踪每次决策路径。
+
+  全链路 `_dbg()` 断点共 **10 处**：MODULE_LOAD×2、RANK_WRITE_POLICY、
+  WRITE_GUARD_INIT、WRITE_GUARD_LOCK_CHECK、WRITE_GUARD_AUDIT、
+  RACE_RECORD_LOAD、MAKE_WRITE_GUARD×2、SELF_CHECK×2。
+  `_self_check()` 5 项断言全部通过。
+
+- **三维度审查（Knuth）**：
+  - **正确性**：`SOLO_RANK0.holds_write(rank)` 等价于 `rank == 0`，与修复后上游完全一致；
+    `BUG_RANK1_INCLUDED` 保留缺陷行为的可查询记录，正确性审计优于上游裸注释。
+  - **性能**：纯策略/元数据模块，无运行时热路径，无分布式调用；`holds_write()` 为 O(1)。
+  - **可读性**：上游无任何竞争条件说明；`CheckpointRaceRecord.race_scenario` 字段
+    以自然语言描述 makedirs 竞争触发路径，`audit()` 输出完整决策日志，可读性大幅优于上游。
+
+## migrate 5d402eb4e: Add licence to split script — 切分脚本补版权头，Walpurgis 结构化为可审计分割器
+
+- **Upstream commit**: 5d402eb4e (Megatron-LM, commit #10 of 9062)
+- **Commit message**: `Add licence to split script`
+- **Upstream diff 摘要** (1 file changed, 15 insertions(+))：
+
+  | 文件 | 变更内容 |
+  |------|----------|
+  | `scripts/split_gpt2_json.py` | 文件头新增 Apache 2.0 license header（coding 声明 + copyright + 15 行许可证文本） |
+
+- **迁移位置**：`src/walpurgis/scripts/split_gpt2_json.py`（新增）
+
+- **鲁迅拿法改写（≥20%）**：
+  上游在此次 commit 做的事，是给一段无名脚本盖上 NVIDIA 的公章。
+  代码本身一行未动，只是在门上挂了一块牌子——「此地有主，照章授权」。
+  然而这块牌子挂上之前，脚本已在人手中流传许久；
+  版权是事后追认，如鲁迅所言：世上本没有路，走的人多了，也便成了路；
+  世上本没有许可证，代码流传够广了，也便补了 License。
+
+  Walpurgis 在此不止补牌子，将切分逻辑结构化为三层可审计组件：
+
+  1. **`SplitRatio` dataclass** — 显式建模 train/valid/test 切分比例，
+     替代上游隐藏在 argparse default 中的「969」暗语字符串；
+     `normalize()` 返回归一化浮点三元组，`describe()` 输出人读摘要，
+     `from_string()` 解析上游兼容格式并在 `RATIO_PARSE` 节点触发断点。
+  2. **`SplitWriter` dataclass（context manager）** — 封装三路文件句柄与写入行数统计，
+     上游裸 `open/write` 出错无从知晓写入状态；
+     Walpurgis 在 `SPLIT_WRITER_OPEN` / `SPLIT_WRITER_CLOSE` 节点输出路径与行数快照。
+  3. **`GptJsonSplitter` 类** — 将上游过程式 for 循环结构化为可测试类，
+     `assign_split()` 命名分桶操作，`run()` 解耦 I/O 与分配逻辑，
+     新增 `--seed` 参数使切分结果可复现（上游无随机种子控制）；
+     JSON 解析错误上游完全静默，Walpurgis 计数并向 stderr 告警。
+
+- **`_dbg()` 断点**（6处，受 `WALPURGIS_DBG` 环境变量控制，默认开启）：
+  - `MODULE_LOAD` — 模块加载时输出来源标注
+  - `RATIO_PARSE` — 解析切分比例字符串，输出 train/valid/test 整数值
+  - `SPLITTER_INIT` — 分割器初始化，输出归一化比例描述与随机种子
+  - `SPLIT_START` — 开始切分，输出文件数、输出前缀、比例描述
+  - `SPLIT_DONE` — 切分完成，输出总行数、跳过行数、三路计数
+  - `CLI_ARGS` — CLI 入口，输出全部参数快照
+
+- **三维度审查（Knuth）**：
+  - **正确性**：`SplitRatio.normalize()` 确保比例和为 1.0；`assign_split()` 与上游随机分桶逻辑等价；`SplitWriter.__exit__` 保证异常路径下文件句柄也被关闭；JSON 解析错误有告警且不中断处理。
+  - **性能**：逐行流式处理，内存占用 O(1)；`assign_split()` 每次调用 O(1)；无额外排序或全量加载。
+  - **可读性**：上游脚本 60 行过程式代码，无类无分层，无法单独测试切分策略；Walpurgis 三层结构各司其职，`describe()`/`audit`/`counts` 接口可供 pytest 直接断言。
+
+---
+
+## migrate 3573423f4: added presplit-sentences to scripts — BERT 预训练脚本新增预切句标志
+
+- **Upstream commit**: 3573423f4 (Megatron-LM)
+- **Commit message**: `added presplit-sentences to scripts`
+- **Upstream diff 摘要** (3 files changed, 3 insertions(+))：
+
+  | 文件 | 变更内容 |
+  |------|----------|
+  | `scripts/pretrain_bert.sh` | 新增 `--presplit-sentences` 参数 |
+  | `scripts/pretrain_bert_distributed.sh` | 新增 `--presplit-sentences` 参数 |
+  | `scripts/pretrain_bert_sentencepiece.sh` | 新增 `--presplit-sentences` 参数 |
+
+- **迁移位置**：`src/walpurgis/scripts/pretrain_bert.sh`、`pretrain_bert_distributed.sh`、`pretrain_bert_sentencepiece.sh`（新增目录 `src/walpurgis/scripts/`）
+
+- **鲁迅拿法改写（≥20%）**：
+  原脚本是一纸告示，参数罗列，无人解释为何如此。`--presplit-sentences` 一行加上去，亦无注释，
+  如同在铁屋子里开了一扇窗，却不告诉人窗外是何物。
+  Walpurgis 将每个参数显式命名为有意义的 shell 变量（`PRESPLIT_SENTENCES`、`TOKENIZER_MODEL_PATH` 等），
+  新增运行前自检（词表/SP模型存在性检查），分布式版本将 `DISTRIBUTED_ARGS` 从裸字符串改为数组，
+  SentencePiece 版本补全了与 WordPiece 路径的语义差异注释。
+
+- **`_dbg()` 断点**：每个脚本均含 `_dbg()` 函数，在 `CONFIG_LOADED`、`PREFLIGHT_DONE`、`TRAINING_LAUNCHED` 三个节点输出参数快照，受 `WALPURGIS_DBG` 环境变量控制（默认开启，生产设 0 关闭）。
+## migrate c0c1f9186: Add moe loss normalization for RL SFT (#3956)
+
+- **Upstream commit**: c0c1f9186 (Megatron-LM, 2025, #3956)
+- **Commit message**: `Add moe loss normalization for RL SFT (#3956)`
+- **Upstream diff 摘要** (5 files changed, 43 insertions(+), 6 deletions(-))：
+
+  | 文件 | 变更内容 |
+  |------|----------|
+  | `megatron/core/model_parallel_config.py` | 新增 `moe_grad_scale_func: Optional[Callable] = None` 字段，MoE aux loss 专用缩放钩子 |
+  | `megatron/core/pipeline_parallel/schedules.py` | `forward_step_calc_loss` 中 loss_scale 计算由二路改为三路优先级：moe_grad_scale_func() > grad_scale_func(ones) > ones |
+  | `megatron/training/arguments.py` | `_add_network_size_args` CLI 黑名单新增 `"moe_grad_scale_func"` |
+  | `tests/unit_tests/models/test_hybrid_moe_model.py` | GOLDEN_CONFIG 新增 `"moe_grad_scale_func": None` |
+  | `tests/unit_tests/test_argument_utils.py` | 新增 `TestMegatronNetworkArgumentGeneration`，断言回调字段不被注册为 CLI 参数 |
+
+- **迁移位置**：`src/walpurgis/core/moe_loss_norm_c0c1f9186.py`（新增）
+
+- **鲁迅拿法改写（≥20%）**：
+  上游此次改动，表面是给 MoE 辅助损失加一个专用缩放函数，实则是将一个「单锅炖」的
+  grad_scale_func 拆成了两口锅——一口炖通用 token 损失，一口炖专家路由辅助损失。
+  这让鲁迅想起《祝福》里祥林嫂分配柴火的故事：起初一家人共用一灶，柴火谁拿谁用，
+  算不清楚；后来立了规矩，祭祀用的柴不得烧饭，饭灶的柴不得染香，两口锅各归各，
+  清清爽爽——然而祥林嫂却再也用不上任何一口了。
+
+  RL SFT 场景下，token 级损失与 MoE auxiliary loss 的尺度差异可以极大：
+  前者随 batch size 归一化，后者依赖专家路由频率统计，若共用同一个 grad_scale_func，
+  要么主损失缩放过猛，要么辅助损失近乎消失。上游的解法是「分锅」——给辅助损失单独一个
+  钩子，且此钩子无需传参（moe_grad_scale_func()），意味着调用方在构造时已将缩放语义
+  封装进闭包，不依赖前向传播中途的 ones 张量——这比旧版更干净，也更危险：一旦闭包
+  捕获了过期的状态（如旧 step 的 loss scale），没有任何参数能暴露这个时序错误。
+  这是「两口锅」之后隐藏的第三只手。
+
+  Walpurgis 将此次「MoE 损失归一化」抽象为可程序化审计的五个结构：
+
+  1. **`MoeScaleStrategy` 枚举** — 三路优先级策略：MOE_DEDICATED / GRAD_SCALE_FALLBACK / ONES_DEFAULT，
+     使 loss_scale 的选择路径不再是隐式 if-elif-else，而是可枚举的可查询记录。
+  2. **`MoeScaleResolution` dataclass（frozen）** — 封装单次解析结果（strategy used、scale value、
+     fallback_reason、config_has_moe_func），每次前向传播的 loss scale 决策完整可追溯。
+  3. **`MoeGradScaleConfig` dataclass** — 对应 ModelParallelConfig 新增字段语义，携带 validate()
+     方法，程序化断言「moe_grad_scale_func 是否可调用」「是否已列入 CLI 黑名单」。
+  4. **`MoeLossNormResolver`** — 三路优先级解析器，实现 schedules.py 重构逻辑，
+     记录全部解析历史，提供 fallback_rate() 和 strategy_distribution() 统计接口。
+  5. **`MoeLossNormAuditLog`** — 结构化审计日志，detect_drift() 检测 ONES_DEFAULT 占比
+     超阈值的策略漂移（说明 moe_grad_scale_func 未配置，RL SFT 训练可能受影响）。
+
+  全链路 `WALPURGIS_DEBUG=1` 断点 print **14 处**（MODULE_LOAD×2、STRATEGY_ENUM、
+  RESOLVER_INIT、RESOLVER_RESOLVE×4（三路+完成）、AUDIT_RECORD×2、AUDIT_REPORT×2、
+  CONFIG_VALIDATE×2、ARG_BLACKLIST_CHECK、SELF_CHECK×多处），
+  `self_check()` 5 项断言全部通过。
+
+- **三维度审查（Knuth）**：
+  - **正确性**：三路优先级逻辑与上游 schedules.py 完全对应；getattr 安全访问语义
+    通过 `config_has_moe_attr` 参数显式传入，不依赖调用时的 AttributeError 捕获；
+    CLI 黑名单集合 `_CALLBACK_FIELD_BLACKLIST` 与 arguments.py 新增内容一致；
+    GOLDEN_CONFIG 字段 `"moe_grad_scale_func": None` 的语义通过断言4验证。
+  - **性能**：纯策略/配置模块，无算法/数据结构热路径，无运行时性能影响。
+    `MoeLossNormResolver.resolve()` 为 O(1)，`MoeLossNormAuditLog.detect_drift()` 为
+    O(drift_window)（常数窗口，默认50），`strategy_distribution()` 为 O(n)（n=历史记录数）。
+  - **可读性**：上游将三路逻辑写在 if-elif-else 裸代码中，无任何策略命名；
+    Walpurgis 将三路抽象为枚举 + 解析器 + 审计日志，每次 loss_scale 决策的来路
+    在 `MoeScaleResolution.audit_line()` 中一目了然，便于 RL SFT 调试时定位
+    「为何 MoE aux loss 突然失效」。
+
+---
 
 ## migrate 26c7d07: [SKIP] remove docs support in build.sh, other small cleanup — 全部 CI 脚本，Walpurgis 无 RAPIDS CI 体系
 
