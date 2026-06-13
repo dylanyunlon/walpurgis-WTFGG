@@ -1,0 +1,112 @@
+[94ac7fe]
+
+============================================================
+  Walpurgis Training Pipeline
+  Dataset : SYNTH
+  Device  : cpu
+  Mode    : scratch
+  Debug   : False
+============================================================
+
+Loaded dataset: 0.01s
+/home/claude/walpurgis-WTFGG/src/walpurgis/utils/cal_adj.py:68: RuntimeWarning: divide by zero encountered in power
+  d_inv = np.power(rowsum, -1).flatten()
+Loaded adj: 0.00s
+[CAS:log] dir=log/2026-06-13-03:19:31
+=============== model args =================
+|          batch_size:|                  16|
+|            num_feat:|                   1|
+|          num_hidden:|                  16|
+|         node_hidden:|                   8|
+|        time_emb_dim:|                   8|
+|             dropout:|                 0.1|
+|          seq_length:|                  12|
+|                 k_t:|                   3|
+|                 k_s:|                   2|
+|                 gap:|                   3|
+|      num_modalities:|                   2|
+|    use_spatial_attn:|                True|
+|              device:|                 cpu|
+|           num_nodes:|                  10|
+|             dataset:|               SYNTH|
+--------------------------------------------
+=============== optim args =================
+|               lrate:|               0.002|
+|         print_model:|               False|
+|              wdecay:|               1e-05|
+|                 eps:|               1e-08|
+|         lr_schedule:|                True|
+|       lr_sche_steps:|           [1, 5, 8]|
+|      lr_decay_ratio:|                 0.5|
+|               if_cl:|                True|
+|           cl_epochs:|                   2|
+|      output_seq_len:|                  12|
+|         warm_epochs:|                   0|
+|              epochs:|                   3|
+|            patience:|                 100|
+|          seq_length:|                  12|
+|        cl_ramp_mode:|             sigmoid|
+|            cl_steps:|                  42|
+|          warm_steps:|                   0|
+|    _steps_per_epoch:|                  21|
+--------------------------------------------
+Model params: 648,101
+[DIAG step=0] per_horizon_MAE: h1=19.650 h2=18.569 h3=25.077 h4=18.724 h5=23.412 h6=19.499 h7=20.159 h8=24.540 h9=20.948 h10=18.933 h11=20.536 h12=21.812
+[DIAG step=0] adaptive_emb_gate=0.5740
+[DIAG step=0] adaptive_emb_norm=3.3420
+[DIAG step=0] adj_temperature=1.0020
+[DIAG step=0] depth_gates: L0=0.952 L1=0.952 L2=0.952 L3=0.953 L4=0.953
+[DIAG step=0] cascade_weights: L0=0.200 L1=0.200 L2=0.200 L3=0.200 L4=0.200
+[DIAG step=0] predict: min=39.23 max=94.67 mean=68.30 std=8.37
+[DIAG step=0] real_val: min=29.42 max=102.05 mean=66.70
+[DIAG step=0] lr=0.002000 epoch=0
+test: 18.207386016845703test: 17.131067276000977test: 13.614823341369629test: 10.89091777801513713-03-19 | Epoch 001 | Train MAE=14.5335 MAPE=0.2345 RMSE=18.2724 | Val MAE=14.9610 RMSE=15.9355 MAPE=0.1555 | LR=0.001995
+Evaluate best model on test data for horizon 1, Test MAE: 5.0666, Test RMSE: 6.6080, Test MAPE: 0.0734
+Evaluate best model on test data for horizon 2, Test MAE: 4.2626, Test RMSE: 5.3915, Test MAPE: 0.0692
+Evaluate best model on test data for horizon 3, Test MAE: 4.0721, Test RMSE: 5.1928, Test MAPE: 0.0678
+Evaluate best model on test data for horizon 4, Test MAE: 5.1771, Test RMSE: 6.5656, Test MAPE: 0.0793
+Evaluate best model on test data for horizon 5, Test MAE: 4.4252, Test RMSE: 5.5665, Test MAPE: 0.0749
+Evaluate best model on test data for horizon 6, Test MAE: 4.1702, Test RMSE: 5.2552, Test MAPE: 0.0722
+Evaluate best model on test data for horizon 7, Test MAE: 6.0016, Test RMSE: 7.3770, Test MAPE: 0.0981
+Evaluate best model on test data for horizon 8, Test MAE: 5.4455, Test RMSE: 6.6565, Test MAPE: 0.0964
+Evaluate best model on test data for horizon 9, Test MAE: 4.1064, Test RMSE: 5.1285, Test MAPE: 0.0712
+Evaluate best model on test data for horizon 10, Test MAE: 6.7546, Test RMSE: 8.2024, Test MAPE: 0.1134
+Evaluate best model on test data for horizon 11, Test MAE: 5.7153, Test RMSE: 6.9015, Test MAPE: 0.1042
+Evaluate best model on test data for horizon 12, Test MAE: 4.5703, Test RMSE: 5.7700, Test MAPE: 0.0791
+(On average over 12 horizons) Test MAE: 4.98 | Test RMSE: 6.22 | Test MAPE: 8.33% |
+test: 4.436195373535156test: 3.9106523990631104test: 3.67209529876709test: 4.75233983993530313-03-19 | Epoch 002 | Train MAE=6.2388 MAPE=0.1104 RMSE=9.0804 | Val MAE=4.1928 RMSE=5.2118 MAPE=0.0447 | LR=0.001978
+Evaluate best model on test data for horizon 1, Test MAE: 5.9232, Test RMSE: 6.9984, Test MAPE: 0.0897
+Evaluate best model on test data for horizon 2, Test MAE: 5.4129, Test RMSE: 6.4465, Test MAPE: 0.0835
+Evaluate best model on test data for horizon 3, Test MAE: 5.7057, Test RMSE: 6.8980, Test MAPE: 0.0981
+Evaluate best model on test data for horizon 4, Test MAE: 6.9577, Test RMSE: 8.2464, Test MAPE: 0.1039
+Evaluate best model on test data for horizon 5, Test MAE: 7.2327, Test RMSE: 8.3028, Test MAPE: 0.1164
+Evaluate best model on test data for horizon 6, Test MAE: 8.1034, Test RMSE: 9.3686, Test MAPE: 0.1443
+Evaluate best model on test data for horizon 7, Test MAE: 7.9676, Test RMSE: 9.3912, Test MAPE: 0.1208
+Evaluate best model on test data for horizon 8, Test MAE: 8.6026, Test RMSE: 9.6558, Test MAPE: 0.1418
+Evaluate best model on test data for horizon 9, Test MAE: 9.1902, Test RMSE: 10.3215, Test MAPE: 0.1651
+Evaluate best model on test data for horizon 10, Test MAE: 9.0019, Test RMSE: 10.5682, Test MAPE: 0.1395
+Evaluate best model on test data for horizon 11, Test MAE: 10.3920, Test RMSE: 11.3616, Test MAPE: 0.1764
+Evaluate best model on test data for horizon 12, Test MAE: 10.3574, Test RMSE: 11.3158, Test MAPE: 0.1872
+(On average over 12 horizons) Test MAE: 7.90 | Test RMSE: 9.07 | Test MAPE: 13.06% |
+[DIAG step=50] per_horizon_MAE: h1=3.467 h2=4.171 h3=4.530 h4=4.721 h5=4.822 h6=5.695 h7=5.451 h8=5.851 h9=6.448 h10=5.957 h11=7.359 h12=7.645
+test: 4.344642162322998test: 3.554290533065796test: 3.000603437423706test: 3.56446027755737313-03-19 | Epoch 003 | Train MAE=5.6836 MAPE=0.0974 RMSE=7.1792 | Val MAE=3.6160 RMSE=4.5265 MAPE=0.0382 | LR=0.001951
+Evaluate best model on test data for horizon 1, Test MAE: 4.7054, Test RMSE: 5.7945, Test MAPE: 0.0776
+Evaluate best model on test data for horizon 2, Test MAE: 6.1515, Test RMSE: 7.5929, Test MAPE: 0.1052
+Evaluate best model on test data for horizon 3, Test MAE: 6.8746, Test RMSE: 8.4689, Test MAPE: 0.1196
+Evaluate best model on test data for horizon 4, Test MAE: 5.2870, Test RMSE: 6.3107, Test MAPE: 0.0846
+Evaluate best model on test data for horizon 5, Test MAE: 6.1376, Test RMSE: 7.3344, Test MAPE: 0.1039
+Evaluate best model on test data for horizon 6, Test MAE: 6.9144, Test RMSE: 8.1744, Test MAPE: 0.1187
+Evaluate best model on test data for horizon 7, Test MAE: 5.7214, Test RMSE: 6.8593, Test MAPE: 0.0903
+Evaluate best model on test data for horizon 8, Test MAE: 6.3222, Test RMSE: 7.4151, Test MAPE: 0.1072
+Evaluate best model on test data for horizon 9, Test MAE: 7.1348, Test RMSE: 8.3068, Test MAPE: 0.1235
+Evaluate best model on test data for horizon 10, Test MAE: 6.4554, Test RMSE: 7.7544, Test MAPE: 0.1011
+Evaluate best model on test data for horizon 11, Test MAE: 6.5988, Test RMSE: 7.6936, Test MAPE: 0.1103
+Evaluate best model on test data for horizon 12, Test MAE: 7.3004, Test RMSE: 8.4107, Test MAPE: 0.1247
+(On average over 12 horizons) Test MAE: 6.30 | Test RMSE: 7.51 | Test MAPE: 10.56% |
+
+Avg Train: 5.5793s/epoch
+Avg Val  : 0.4161s/epoch
+Best Val : 3.6160
+
+[CAS] Pipeline complete. Saved: /home/claude/walpurgis-WTFGG/output/D2STGNN_SYNTH.pt
+Total time: 20.68s
