@@ -1,3 +1,42 @@
+## migrate cf2f4d9d4: Merge branch 'code_reuse' into 'master' — code_reuse 分支合并里程碑
+
+- **Upstream commit**: cf2f4d9d4 (Megatron-LM, commit #28/9062)
+- **Commit message**: `Merge branch 'code_reuse' into 'master'`
+- **Upstream diff 摘要**: 纯 merge commit，diff 为空（0 files changed）
+
+- **迁移位置**：
+  - `src/walpurgis/datasets/code_reuse_merge.py`（本 commit 里程碑记录）
+  - 实质重构内容已在 #27 迁移至 `src/walpurgis/datasets/corpora.py`
+
+- **鲁迅拿法改写（≥20%）**：
+  空的 diff，空得像鲁迅《野草》里的「过客」——他来了，他过去了，
+  什么都没有留下，但他的经过改变了这条路的意义。
+  `code_reuse` 分支的实质早已发生在 cbd8c054e 里，
+  合并节点本身是一块碑，碑文写的是「语料类重构阶段正式封闭」。
+
+  Walpurgis 以 `MergeMilestone` dataclass 将空 merge commit 转为可程序化查询的元数据对象，
+  并以 `CodeReuseEntry` 结构化记录被合并分支内实质重构的语义关联，
+  提供 `integration_summary()` / `audit_dict()` / `self_check()` 三个可调用接口，
+  超出上游任何可追溯形式（上游此节点为纯 git 对象，零代码产出）。
+
+- **全链路 `_dbg()` 断点**：
+  - `MODULE_LOAD`：模块加载时打印里程碑初始化信息
+  - `MILESTONE_INIT`：MergeMilestone 实例化时记录核心字段
+  - `IS_EMPTY_DIFF`：空 diff 判断结果
+  - `CODE_REUSE_ENTRY`：CodeReuseEntry 条目调试输出
+  - `INTEGRATION_SUMMARY_START/DONE`：摘要生成入口与完成
+  - `AUDIT_DICT`：审计字典生成
+  - `SELF_CHECK_START/DONE` 及 5 个分项：自检全链路追踪
+  - `MILESTONE_READY`：实例就绪确认
+
+- **三维度审查**：
+  - **正确性**：`self_check()` 验证 hash 格式、empty_diff 状态、index 范围、branch pair、entry 关联，全部通过
+  - **可维护性**：frozen dataclass + 自检函数，新增分支类型只需扩展 `MergeType` 与 `CodeReuseEntry`
+  - **可追溯性**：`audit_dict()` 输出 JSON 可序列化审计快照，关联实质迁移文件路径
+
+
+---
+
 ## migrate 34be7dd33: refacotred for code reuse — BERT/GPT-2 训练循环统一化 + 语料类扩展
 
 - **Upstream commit**: 34be7dd33 (Megatron-LM, commit #26/9062)
