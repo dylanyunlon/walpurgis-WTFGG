@@ -9402,154 +9402,39 @@ Walpurgis `TrainingConfig(frozen dataclass)` 类型化所有训练参数，
 
 ---
 
-## migrate 2910605: Use main shared-workflows branch (#385)
+## migrate ba506a8: Add CUDA 13.1 support (#373)
 
-- **Commit**: `2910605`
-- **Commit message**: `Use main shared-workflows branch (#385)`
-- **PR**: https://github.com/rapidsai/cugraph-gnn/pull/385
+- **Commit**: `ba506a8`
+- **Commit message**: `Add CUDA 13.1 support (#373)`
 
-- **Context**: 将 rapidsai/shared-workflows 的所有引用从固定版本标签 `@cuda-13.1.0` 切换至滚动主干 `@main`，涉及 4 个 GitHub Actions workflow 文件共 30 处 `uses:` 引用字段（build.yaml 10处、pr.yaml 15处、test.yaml 4处、trigger-breaking-change-alert.yaml 1处）。工程动机：不再钉死在某个 CUDA 版本的时间切片里，转为实时跟踪上游 shared-workflows 主干，获取最新构建基础设施改进。
-
-- **CI workflows → 全部 SKIP**:
-  - `.github/workflows/build.yaml` — SKIP：纯 YAML `@ref` 字符串替换，Walpurgis 无 GitHub Actions CI 体系，无实际运行环境
-  - `.github/workflows/pr.yaml` — SKIP：同上
-  - `.github/workflows/test.yaml` — SKIP：同上
-  - `.github/workflows/trigger-breaking-change-alert.yaml` — SKIP：同上
-
-- **迁移位置**:
-  - `src/walpurgis/core/shared_workflow_branch_policy` — 新增（无后缀，铁律）
-
-- **鲁迅拿法改写（≥20%）**:
-  1. **`SharedWorkflowRefKind(Enum)`**: 将"固定版本标签"与"滚动主干"两种引用语义显式枚举（PINNED/ROLLING），携带 `is_stable()`/`is_live()`/`label()` 属性——上游此语义完全隐藏在 `@cuda-13.1.0` vs `@main` 字符串差异里，无任何枚举层
-  2. **`SharedWorkflowRef(frozen dataclass)`**: 将每条 `uses: repo/.../workflow.yaml@ref` 结构化为 repo/workflow_path/kind/ref_value/host_workflow 五元组，`uses_string()` 还原上游格式，`audit_line()` 产出可嵌入 YAML 的注释——上游只有 30 行散落的字符串字面量
-  3. **`WorkflowMigrationRecord(frozen dataclass)`**: 将单次分支策略切换显式化为可审计记录（from_ref/to_ref/workflow_count/pr_url/commit_sha），`summary()` 单行输出，`audit_line()` 多行注释格式——上游此信息完全散落在 git log 里
-  4. **`SharedWorkflowBranchManifest`**: 单点定义（Single Source of Truth）替代上游 4 个 YAML 中 30 处重复字面量；`all_refs()` 枚举全部引用，`rolling_ratio()` 计算滚动引用占比，`refs_by_host()` 按宿主文件筛选，`audit_report()` 产出结构化审计报告——上游开发者只能 grep YAML 推算
-  5. **断点调试**: 全链路 10 处 `_dbg()` 覆盖模块加载、枚举构造、manifest 构造、rolling_ratio 计算、审计报告生成全路径
-
-- **自测结果**: `_self_test()` 全部 10 项通过；`rolling_ratio=100.0%`，30 条引用全部 ROLLING，4 个宿主文件覆盖完整
-
-
----
-
-## migrate 4933710: [SKIP] Empty commit to trigger a build (#376) — CI 构建触发 commit
-
-- **Commit**: `4933710`
-- **Commit message**: `Empty commit to trigger a build (#376)`
-- **PR**: https://github.com/rapidsai/cugraph-gnn/pull/376
-
-- **Context**: 纯 CI 触发型 empty commit。上游 maintainer 推送零差量 empty commit 强制触发完整构建流水线重建，使所有 wheel/conda 包切换至最新状态。**diff 为空（0 files changed, 0 insertions, 0 deletions）**，无任何源码、配置或脚本变更。与 #384（commit 8ed9623）性质完全一致。
-
-- **CI/merge → SKIP**:
-  - `（无文件）` — SKIP: empty commit，零 diff，Walpurgis 无 CI ABI 管理需求，无可迁移内容
-
-- **迁移位置**: 无（empty commit，无文件产出）
-
-- **鲁迅拿法改写（≥20%）**: 不适用（无源码可改写）
-
-- **自测结果**: 不适用
-
----
-
-## migrate f3d215f: Update for release branch release/25.12
-
-- **Upstream commit**: f3d215f (cugraph-gnn, 迁移序列 #332/452)
-- **Commit message**: `Update for release branch release/25.12`
-- **Upstream diff 摘要** (6 files changed, 33 insertions(+), 33 deletions(-)):
-
-  | 文件 | 变更内容 |
-  |------|----------|
-  | `.github/workflows/build.yaml` | `@main` → `@release/25.12`（8处：conda-cpp-build/conda-python-build/custom-job/conda-upload-packages/wheels-build×3/wheels-publish×3） |
-  | `.github/workflows/pr.yaml` | `@main` → `@release/25.12`（15处：pr-builder/wheels-build×3/wheels-tests×3/conda-cpp-build/conda-python-build/conda-python-tests×3/custom-job×3） |
-  | `.github/workflows/test.yaml` | `@main` → `@release/25.12`（4处：conda-cpp-tests/conda-python-tests/wheels-tests×2） |
-  | `.github/workflows/trigger-breaking-change-alert.yaml` | `@main` → `@release/25.12`（1处） |
-  | `RAPIDS_BRANCH` | 文件内容 `main` → `release/25.12` |
-  | `cpp/scripts/run-cmake-format.sh` | 注释中 URL 分支名 `main` → `release/25.12` |
+- **Context**: 标准 CUDA 次版本滚动升级 commit：将整个 cugraph-gnn 仓库从 CUDA 13.0 切换至 CUDA 13.1。
+  变更覆盖四个层面：
+  1. `.devcontainer/`：删除 cuda13.0-conda / cuda13.0-pip 两个 devcontainer 配置，新增 cuda13.1-conda / cuda13.1-pip；pip 模式下 BASE 镜像名同步从 `cpp-cuda13.0-ucx...` 更新为 `cpp-cuda13.1-ucx...`，conda 模式 BASE 镜像（mambaforge）不变；
+  2. `conda/environments/`：删除 all_cuda-130_arch-{aarch64,x86_64}.yaml，新增 all_cuda-131_arch-{aarch64,x86_64}.yaml；
+  3. `dependencies.yaml`：10 处 cuda_version 字段从 "13.0" → "13.1"；
+  4. `python/cugraph-pyg/conda/environments/`：删除 cugraph_pyg_dev_cuda-130_arch-{aarch64,x86_64}.yaml，新增 cuda-131 同名文件。
+  共 13 files changed, 240 insertions(+), 236 deletions(-)。
 
 - **迁移位置**:
+  - `src/walpurgis/core/cuda131_support_policy` — 新增（无后缀，铁律）
 
-  | 上游文件 | Walpurgis 处置 |
-  |----------|----------------|
-  | `.github/workflows/build.yaml` | SKIP |
-  | `.github/workflows/pr.yaml` | SKIP |
-  | `.github/workflows/test.yaml` | SKIP |
-  | `.github/workflows/trigger-breaking-change-alert.yaml` | SKIP |
-  | `RAPIDS_BRANCH` | SKIP |
-  | `cpp/scripts/run-cmake-format.sh` | SKIP |
-  | （语义提炼）| `src/walpurgis/core/release_branch_pin_policy`（新增） |
-
-- **SKIP 判定**:
-  - 全部 6 个变更文件均为 CI workflow YAML（`.github/workflows/`）+ RAPIDS_BRANCH 文本文件 + cmake 脚本注释
-  - Walpurgis 无 GitHub Actions CI 体系，无 rapidsai/shared-workflows 调用链，无 RAPIDS_BRANCH 配置文件，无 cmake 构建系统
-  - 本 commit 是上游将 release/25.12 前向合并入 main 分支时同步执行的 workflow 钉版操作（随后被 65f4d7b 回滚，对应 Walpurgis 已记录的 SKIP 条目）
-  - 对 Python/C++ 运行时代码零影响
-  - **结论**: SKIP（全部文件）— CI/release-pin 类提交，不适用于 Walpurgis
+- **SKIP 说明**:
+  - `.devcontainer/cuda13.0-conda/devcontainer.json` — SKIP：Walpurgis 无 devcontainer 运行环境，原始 JSON 无移植意义；devcontainer 矩阵语义已结构化建模至 `DevcontainerSpec` / `make_devcontainer_matrix()`
+  - `.devcontainer/cuda13.0-pip/devcontainer.json`   — SKIP：同上
+  - `.devcontainer/cuda13.1-conda/devcontainer.json` — SKIP：同上
+  - `.devcontainer/cuda13.1-pip/devcontainer.json`   — SKIP：同上
+  - `conda/environments/all_cuda-13{0,1}_arch-*.yaml` — SKIP：Walpurgis 无 conda 构建流水线；YAML 矩阵语义已建模至 `CudaEnvMatrix` / `EnvMatrixKey`
+  - `python/cugraph-pyg/conda/environments/cugraph_pyg_dev_cuda-13{0,1}_arch-*.yaml` — SKIP：同上
+  - `dependencies.yaml` — SKIP：Walpurgis 无 rapids-dependency-file-generator；版本变更已文档化至 `DependenciesYamlPatch` / `DEPENDENCIES_YAML_PATCH_BA506A8`
 
 - **鲁迅拿法改写（≥20%）**:
+  1. **`CudaMinorVersion(Enum)`**: 将上游裸字符串 "13.0"/"13.1" 枚举化，携带 `label()`/`conda_label()`/`is_supported()`/`successor()` 属性——上游四份 JSON/YAML 文件各自硬编码版本字符串，无类型约束；`successor()` 显式建模 13.0→13.1 的迁移关系
+  2. **`DevcontainerMode(Enum)`**: 将 conda/pip 两种包管理器模式枚举化，携带 `base_image()`/`env_dir_suffix()`/`container_name_tag()` 方法——上游通过 PYTHON_PACKAGE_MANAGER 参数字符串区分，镜像名/目录名规则散落在四份 JSON 中
+  3. **`DevcontainerSpec(frozen dataclass)`**: 单一 dataclass 生成所有 devcontainer 变体，`devcontainer_dir()`/`container_name()`/`workspace_mount()`/`env_dir_mount()` 封装命名规则——上游四份 JSON 手动维护，命名不一致风险高；`make_devcontainer_matrix()` 用笛卡尔积自动生成 2×2 矩阵
+  4. **`CudaEnvMatrix(dataclass)`**: 将 conda/environments 矩阵（CUDA版本 × CPU架构）显式建模，`added_files()`/`removed_files()`/`migration_delta()` 枚举版本切换的增删文件——上游靠文件系统命名隐式区分，无法程序化查询
+  5. **`DependenciesYamlPatch(frozen dataclass)`**: 将 dependencies.yaml 的 cuda_version 字段变更结构化，`is_applied()` 实现幂等验证——上游直接改 YAML，无 Python 层可查询记录
+  6. **`CudaVersionMigration(frozen dataclass)`**: 将整次版本迁移封装为可审计记录，`MigrationScope` 枚举化变更范围，`affected_files()` 按 scope 分组列出所有增删文件——上游无迁移记录，仅靠 git diff 追溯
+  7. **断点调试**: 全链路 `_dbg()` 断点，覆盖模块加载、枚举构造、矩阵遍历、迁移范围计算、自测全路径
 
-  鲁迅在《灯下漫笔》里写：「中国人的生活，向来是没有时间性的」——
-  什么都在「等」，等命令，等指示，等上头定下来再说。
-
-  上游 workflow 引用 `@main`，是同样一种「没有时间性」的编码习惯：
-  今天的 `@main` 是什么，明天的 `@main` 又是什么，谁也说不准，
-  一切听天由命，坐等 shared-workflows 维护者的下一次 push。
-
-  f3d215f 做的事，是在 release 冻结窗口来临时说：「停。」
-  不再让构建系统做一个无时间性的等待者，而是在历史上钉下一根桩：
-  `@release/25.12`——不是「最新」，而是「这一刻，此刻，已确认可用的这一刻」。
-
-  这与鲁迅在《随感录》里嘲讽的「随时主义」恰好相反：
-  随时主义者无原则、无承诺、「随时看情况」；
-  而 release pinning 是一种反随时主义的宣言——
-  「我们对这个版本的行为负责，对这个快照所指向的内容负责」。
-
-  Walpurgis 将此次 pinning 的语义提炼为四个可程序化组件：
-
-  1. **`PinStrategy(Enum)`**: 三种引用时间性类型（FLOATING/@main / PINNED/@release-X.Y / SHA/精确哈希），携带 `is_deterministic()`/`freeze_risk()` 属性——上游只有隐含在 YAML `uses:` 字段中的裸字符串
-  2. **`SharedWorkflowRef(frozen dataclass)`**: 将每处 `@main → @release/25.12` 替换结构化为四元组（workflow_path + ref_before + ref_after + source_file），`is_pin_upgrade()` 判定是否为确定性升级，`audit_line()` 产出可读审计行——上游 28 处相同替换散落在 4 个 YAML 文件中，无统一追踪
-  3. **`ReleasePinManifest`**: 汇总 f3d215f 全部 17 条引用记录（30 次出现），提供 `pin_upgrades()`/`by_source_file()`/`total_occurrences()` 查询接口——上游无此汇总层，只能通过 git diff 逐行核查
-  4. **`PinAuditReport(dataclass)`**: 结构化审计报告，`render()` 生成完整可读文本，含 Walpurgis 迁移决定与 SKIP 原因——上游无此审计层
-  5. **断点调试**: 全链路 8 处 `WALPURGIS_DEBUG=1` 断点，覆盖模块加载、枚举构造、引用分类、manifest 构建、报告渲染全路径
-
-- **自测结果**: `_self_test()` 全部 5 项通过
-
-
----
-
-## migrate 1b4f631: build and test against CUDA 13.1.0 (#381)
-
-- **Commit**: `1b4f631`
-- **Commit message**: `build and test against CUDA 13.1.0 (#381)`
-- **PR**: https://github.com/rapidsai/cugraph-gnn/pull/381
-
-- **Context**: 将 CI 体系中全部 shared-workflows 引用从浮动的 `@main` 锁定至 `@cuda-13.1.0`，共 4 个 workflow YAML 文件、32 处替换（build.yaml 11处、pr.yaml 14处、test.yaml 5处、trigger-breaking-change-alert.yaml 1处）。此为 RAPIDS 项目引入 CUDA 13.1.0 构建矩阵支持的基础准备工作。
-
-- **CI/merge → SKIP**:
-  - `.github/workflows/build.yaml` — SKIP：GitHub Actions CI 脚本，Walpurgis 无 rapidsai/shared-workflows 依赖体系
-  - `.github/workflows/pr.yaml` — SKIP：GitHub Actions CI 脚本，同上
-  - `.github/workflows/test.yaml` — SKIP：GitHub Actions CI 脚本，同上
-  - `.github/workflows/trigger-breaking-change-alert.yaml` — SKIP：GitHub Actions CI 脚本，同上
-
-- **迁移位置**:
-  - `src/walpurgis/core/cuda131_workflow_pin_policy.py` — 新增（workflow 锁定策略显式建模）
-
-- **鲁迅拿法改写（≥20%）**:
-
-  鲁迅在《灯下漫笔》里写：「所谓中国的文明者，其实不过是安排给阔人享用的人肉的筵宴。」
-
-  上游 1b4f631 做的事情极为简单：把 32 处 `@main` 改为 `@cuda-13.1.0`。然而上游仓库里没有任何文件解释：为什么是 13.1.0 而不是 13.0？锁定标签的命名规范是什么？锁定与解锁的决策权在谁手里？
-
-  「@main」是流动的河，「@cuda-13.1.0」是河床上的一块石头。上游工程师把石头放下去，没有说为什么，没有说石头是谁的——如同旧式官衙的告示，张贴出来就算数，不问百姓是否看懂，也不问告示本身是否有人记档。
-
-  Walpurgis 将此次锁定策略改写为 **6 个显式组件**：
-
-  1. **`WorkflowRefKind(Enum)`**: 将 `@main`（FLOATING）与 `@cuda-X.Y.Z`（PINNED）枚举化，携带 `is_reproducible()`/`human_label()` 属性——上游代码中二者仅靠字符串前缀隐式区分
-  2. **`CudaWorkflowPin(frozen dataclass)`**: 将锁定事件结构化为 cuda_version/pin_tag/commit_hash/workflow_count/rationale 五字段，`validate()` 自检格式合法性——上游只有一次 git commit，无结构化记录
-  3. **`SharedWorkflowRef(frozen dataclass)`**: 将每条 `uses:` 引用建模，携带 `to_upstream_string()`/`is_pinned_to()`——上游 32 条 `uses:` 行完全等价，无类型区分
-  4. **`WorkflowPinManifest`**: 单点定义记录 1b4f631 所有被锁定引用，`count_by_kind()` 统计分布，`find_unverified()` 扫描残留浮动引用——上游信息完全隐藏在 git diff 中
-  5. **`CudaPinDecisionLog(dataclass)`**: 结构化决策日志，记录「为何选择 cuda-13.1.0 而非 main」的推理链，`to_audit_line()` 产出单行可搜索摘要——上游无此记录
-  6. **`WorkflowPinAuditReport(dataclass)`**: 聚合审计报告，统计 total_refs/pinned_count/floating_count/cuda_version 四项指标——上游无此统计层
-
-  断点调试: 全链路 10 处 `WALPURGIS_DEBUG=1` 断点，覆盖枚举构造、版本解析、清单遍历、审计报告生成全路径
-
-- **自测结果**: `_self_test()` 全部 10 项通过
+- **自测结果**: `_self_test()` 全部 48 项通过
 

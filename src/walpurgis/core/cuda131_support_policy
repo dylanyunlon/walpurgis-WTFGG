@@ -1,0 +1,881 @@
+"""
+cuda131_support_policy — ba506a8 迁移: 从 CUDA 13.0 升级至 CUDA 13.1 的全面支持
+
+上游来源: cugraph-gnn 仓库
+commit: ba506a8
+author: PR #373 (Add CUDA 13.1 support)
+date: 2026-06
+PR: https://github.com/rapidsai/cugraph-gnn/pull/373
+
+上游变更摘要（13 files changed, 240 insertions(+), 236 deletions(-)）:
+
+  .devcontainer/:
+    - cuda13.0-conda/devcontainer.json   → 删除 (CUDA 13.0 conda devcontainer)
+    - cuda13.0-pip/devcontainer.json     → 删除 (CUDA 13.0 pip devcontainer)
+    - cuda13.1-conda/devcontainer.json   → 新增 (CUDA 13.1 conda devcontainer)
+    - cuda13.1-pip/devcontainer.json     → 新增 (CUDA 13.1 pip devcontainer)
+
+  conda/environments/:
+    - all_cuda-130_arch-aarch64.yaml     → 删除
+    - all_cuda-130_arch-x86_64.yaml      → 删除
+    - all_cuda-131_arch-aarch64.yaml     → 新增
+    - all_cuda-131_arch-x86_64.yaml      → 新增
+
+  dependencies.yaml:
+    - cuda_version 字段: "13.0" → "13.1"（10 行变更）
+
+  python/cugraph-pyg/conda/environments/:
+    - cugraph_pyg_dev_cuda-130_arch-aarch64.yaml → 删除
+    - cugraph_pyg_dev_cuda-130_arch-x86_64.yaml  → 删除
+    - cugraph_pyg_dev_cuda-131_arch-aarch64.yaml → 新增
+    - cugraph_pyg_dev_cuda-131_arch-x86_64.yaml  → 新增
+
+上游逻辑核心（以 devcontainer.json 为例，conda 模式）:
+  CUDA 字段: "13.0" → "13.1"
+  容器名称:  -cuda13.0-conda → -cuda13.1-conda
+  BASE 镜像: rapidsai/devcontainers:26.02-cpp-mambaforge（conda 模式不变）
+  BASE 镜像: rapidsai/devcontainers:26.02-cpp-cuda13.0-ucx... → cuda13.1-ucx...（pip 模式）
+  conda 目录: .conda/${name}-cuda13.0-envs → .conda/${name}-cuda13.1-envs
+  pip 目录:   .local/share/${name}-cuda13.0-venvs → .local/share/${name}-cuda13.1-venvs
+
+Walpurgis 改写 20%（鲁迅拿法）:
+1. CudaMinorVersion(Enum): 将 CUDA 次版本号枚举化，携带 is_supported()/successor()/label()
+   上游：裸字符串 "13.0" / "13.1" 散落在 JSON/YAML 文件中，无类型约束
+   改写：枚举使版本切换路径可审计、可测试，successor() 建模版本迁移关系
+
+2. DevcontainerMode(Enum): 将 conda/pip 两种包管理器模式枚举化
+   上游：通过 PYTHON_PACKAGE_MANAGER 参数字符串区分，无结构
+   改写：枚举携带 base_image_suffix()/venv_dir_prefix() 方法，封装镜像/目录命名差异
+
+3. DevcontainerSpec(frozen dataclass): 将单个 devcontainer 配置结构化
+   上游：每个 devcontainer.json 是独立 JSON 文件，手动维护四份（2 模式 × 2 CUDA 版本）
+   改写：单一 dataclass 生成所有变体，container_name()/workspace_mount()/env_dir() 封装命名规则
+
+4. CudaEnvMatrix(dataclass): 建模 conda/environments 矩阵（CUDA版本 × CPU架构）
+   上游：四个独立 YAML 文件（cuda-130/131 × aarch64/x86_64），靠文件系统命名区分
+   改写：EnvMatrixKey + CudaEnvMatrix 将矩阵显式建模，matrix_keys() 枚举所有组合
+
+5. CudaVersionMigration(frozen dataclass): 将整次版本迁移（13.0→13.1）封装为可审计记录
+   上游：无迁移记录，全靠 git diff 追溯
+   改写：MigrationScope 枚举化变更范围，CudaVersionMigration.affected_files() 列出所有受影响文件
+
+6. DependenciesYamlPatch: 文档化 dependencies.yaml 的 cuda_version 字段变更
+   上游：直接改 YAML，无 Python 层可查询记录
+   改写：dataclass 存档 before/after，patch_summary() 生成可读摘要
+
+7. 全链路 WALPURGIS_DEBUG=1 断点 print:
+   - 模块加载时的版本表初始化
+   - DevcontainerSpec 构造与命名解析
+   - CudaEnvMatrix 矩阵遍历
+   - CudaVersionMigration 迁移范围计算
+   - 自测全路径断点
+"""
+
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass, field
+from enum import Enum, unique
+from typing import Dict, FrozenSet, List, Optional, Tuple
+
+# ─────────────────────────────────────────────────────────────
+# 调试开关（与整个 Walpurgis 体系统一）
+# ─────────────────────────────────────────────────────────────
+_DEBUG = os.environ.get("WALPURGIS_DEBUG", "0") == "1"
+
+
+def _dbg(tag: str, msg: str) -> None:
+    """内部调试打印，WALPURGIS_DEBUG=1 时生效。"""
+    if _DEBUG:
+        print(f"[WPG ba506a8 {tag}] {msg}", flush=True)
+
+
+_dbg("module", "cuda131_support_policy 模块加载开始")
+
+
+# ─────────────────────────────────────────────────────────────
+# CudaMinorVersion — 上游裸字符串 "13.0"/"13.1" 的类型化替代
+# 上游: JSON/YAML 中硬编码字符串，四个文件手动维护
+# 改写: 枚举携带版本语义，successor() 建模迁移关系
+# ─────────────────────────────────────────────────────────────
+
+@unique
+class CudaMinorVersion(Enum):
+    """
+    CUDA 次版本号枚举，对应 ba506a8 迁移中 13.0 → 13.1 的切换。
+
+    CUDA_13_0  — CUDA 13.0（ba506a8 之前的版本，已废弃）
+    CUDA_13_1  — CUDA 13.1（ba506a8 引入的目标版本）
+    """
+    CUDA_13_0 = "13.0"
+    CUDA_13_1 = "13.1"
+
+    @property
+    def label(self) -> str:
+        """返回用于文件名/目录名的版本标签（如 cuda13.0）。"""
+        return f"cuda{self.value}"
+
+    @property
+    def conda_label(self) -> str:
+        """返回 conda 环境目录的版本标签（如 cuda-130）。"""
+        # "13.0" → "130", "13.1" → "131"
+        return f"cuda-{self.value.replace('.', '')}"
+
+    def is_supported(self) -> bool:
+        """ba506a8 之后，仅 CUDA_13_1 受支持。"""
+        supported = self == CudaMinorVersion.CUDA_13_1
+        _dbg("CudaMinorVersion.is_supported", f"{self.value} → {supported}")
+        return supported
+
+    def successor(self) -> Optional["CudaMinorVersion"]:
+        """
+        返回本版本的后继版本（用于建模迁移关系）。
+
+        13.0 → 13.1；13.1 无已知后继（截至 ba506a8）。
+        """
+        _SUCCESSOR: Dict[CudaMinorVersion, Optional[CudaMinorVersion]] = {
+            CudaMinorVersion.CUDA_13_0: CudaMinorVersion.CUDA_13_1,
+            CudaMinorVersion.CUDA_13_1: None,
+        }
+        result = _SUCCESSOR.get(self)
+        _dbg("CudaMinorVersion.successor", f"{self.value} → {result}")
+        return result
+
+    def __str__(self) -> str:
+        return self.value
+
+
+_dbg("module", f"CudaMinorVersion 枚举初始化完成: {[v.value for v in CudaMinorVersion]}")
+
+
+# ─────────────────────────────────────────────────────────────
+# DevcontainerMode — 包管理器模式枚举
+# 上游: PYTHON_PACKAGE_MANAGER 参数字符串 "conda"/"pip"
+# 改写: 枚举携带镜像/目录命名逻辑，消除上游四份 JSON 的命名差异
+# ─────────────────────────────────────────────────────────────
+
+@unique
+class DevcontainerMode(Enum):
+    """
+    devcontainer 包管理器模式，对应 .devcontainer/ 下 conda/pip 两个子目录。
+
+    CONDA — 使用 conda/mamba 作为包管理器
+    PIP   — 使用 pip + venv 作为包管理器
+    """
+    CONDA = "conda"
+    PIP = "pip"
+
+    def base_image(self, cuda_version: CudaMinorVersion) -> str:
+        """
+        返回对应 CUDA 版本的 BASE 镜像字符串。
+
+        上游 devcontainer.json 中 "args.BASE" 字段：
+          conda: 与 CUDA 版本无关（使用通用 mambaforge 镜像）
+          pip:   镜像名中包含 cuda 版本号，需随 CUDA 版本更新
+        """
+        _dbg("DevcontainerMode.base_image", f"mode={self.value} cuda={cuda_version.value}")
+        if self == DevcontainerMode.CONDA:
+            img = "rapidsai/devcontainers:26.02-cpp-mambaforge"
+        else:
+            # pip 模式：镜像名编码了 CUDA 版本
+            # 上游: cuda13.0-ucx1.19.0-openmpi5.0.7 → cuda13.1-ucx1.19.0-openmpi5.0.7
+            img = (
+                f"rapidsai/devcontainers:26.02-cpp-"
+                f"{cuda_version.label}-ucx1.19.0-openmpi5.0.7"
+            )
+        _dbg("DevcontainerMode.base_image", f"→ {img!r}")
+        return img
+
+    def env_dir_suffix(self, cuda_version: CudaMinorVersion, project: str = "cugraph") -> str:
+        """
+        返回环境目录后缀，供 devcontainer.json mounts 字段使用。
+
+        conda: .conda/${project}-cuda13.x-envs
+        pip:   .local/share/${project}-cuda13.x-venvs
+        """
+        _dbg("DevcontainerMode.env_dir_suffix", f"mode={self.value} cuda={cuda_version.value}")
+        if self == DevcontainerMode.CONDA:
+            suffix = f".conda/{project}-{cuda_version.label}-envs"
+        else:
+            suffix = f".local/share/{project}-{cuda_version.label}-venvs"
+        _dbg("DevcontainerMode.env_dir_suffix", f"→ {suffix!r}")
+        return suffix
+
+    def container_name_tag(self, cuda_version: CudaMinorVersion, rapids_ver: str = "26.02") -> str:
+        """
+        返回 runArgs --name 字段的版本+模式标签部分。
+
+        上游: -rapids-${basename}-26.02-cuda13.0-conda
+        改写: 封装为方法，避免各 JSON 手动拼接
+        """
+        tag = f"-rapids-${{localWorkspaceFolderBasename}}-{rapids_ver}-{cuda_version.label}-{self.value}"
+        _dbg("DevcontainerMode.container_name_tag", f"→ {tag!r}")
+        return tag
+
+
+# ─────────────────────────────────────────────────────────────
+# DevcontainerSpec — 单个 devcontainer 配置的结构化表示
+# 上游: 四份独立 JSON 文件（2 模式 × 2 CUDA 版本），手动维护
+# 改写: 单一 dataclass + 工厂方法生成所有变体，消除重复
+# ─────────────────────────────────────────────────────────────
+
+@dataclass(frozen=True)
+class DevcontainerSpec:
+    """
+    单个 devcontainer 配置的结构化表示。
+
+    对应上游 .devcontainer/{cuda_version.label}-{mode.value}/devcontainer.json。
+
+    Attributes:
+        cuda_version:  目标 CUDA 次版本
+        mode:          包管理器模式（conda/pip）
+        rapids_ver:    RAPIDS 版本字符串（devcontainer feature 版本）
+        project_name:  工作区项目名（用于挂载路径和容器命名）
+    """
+    cuda_version: CudaMinorVersion
+    mode: DevcontainerMode
+    rapids_ver: str = "26.02"
+    project_name: str = "cugraph-gnn"
+
+    @property
+    def devcontainer_dir(self) -> str:
+        """对应的 .devcontainer 子目录名（如 cuda13.1-conda）。"""
+        name = f"{self.cuda_version.label}-{self.mode.value}"
+        _dbg("DevcontainerSpec.devcontainer_dir", f"→ {name!r}")
+        return name
+
+    @property
+    def container_name(self) -> str:
+        """
+        runArgs --name 字段值（含 shell 变量引用）。
+
+        上游: "${localEnv:USER:anon}-rapids-${localWorkspaceFolderBasename}-26.02-cuda13.1-conda"
+        """
+        name = (
+            "${localEnv:USER:anon}"
+            + self.mode.container_name_tag(self.cuda_version, self.rapids_ver)
+        )
+        _dbg("DevcontainerSpec.container_name", f"→ {name!r}")
+        return name
+
+    @property
+    def base_image(self) -> str:
+        """BASE 构建参数（对应 devcontainer.json args.BASE）。"""
+        return self.mode.base_image(self.cuda_version)
+
+    @property
+    def workspace_mount(self) -> str:
+        """workspaceMount 字段（绑定挂载到 /home/coder/{project_name}）。"""
+        mount = (
+            "source=${localWorkspaceFolder},"
+            f"target=/home/coder/{self.project_name},"
+            "type=bind,consistency=consistent"
+        )
+        _dbg("DevcontainerSpec.workspace_mount", f"→ {mount!r}")
+        return mount
+
+    def env_dir_mount(self) -> str:
+        """
+        conda envs / pip venvs 挂载配置（mounts 数组中的环境目录条目）。
+
+        上游 conda 模式:
+          source=${localWorkspaceFolder}/../.conda/${localWorkspaceFolderBasename}-cuda13.1-envs
+          target=/home/coder/.conda/envs
+        上游 pip 模式:
+          source=${localWorkspaceFolder}/../.local/share/${localWorkspaceFolderBasename}-cuda13.1-venvs
+          target=/home/coder/.local/share/venvs
+        """
+        _dbg("DevcontainerSpec.env_dir_mount", f"mode={self.mode.value} cuda={self.cuda_version.value}")
+        if self.mode == DevcontainerMode.CONDA:
+            src_suffix = (
+                f"${{localWorkspaceFolder}}/../.conda/"
+                f"${{localWorkspaceFolderBasename}}-{self.cuda_version.label}-envs"
+            )
+            tgt = "/home/coder/.conda/envs"
+        else:
+            src_suffix = (
+                f"${{localWorkspaceFolder}}/../.local/share/"
+                f"${{localWorkspaceFolderBasename}}-{self.cuda_version.label}-venvs"
+            )
+            tgt = "/home/coder/.local/share/venvs"
+        mount = f"source={src_suffix},target={tgt},type=bind,consistency=consistent"
+        _dbg("DevcontainerSpec.env_dir_mount", f"→ {mount!r}")
+        return mount
+
+    def summary(self) -> str:
+        """生成该 devcontainer 配置的单行摘要，供日志/报告使用。"""
+        return (
+            f"DevcontainerSpec("
+            f"dir={self.devcontainer_dir!r}, "
+            f"cuda={self.cuda_version.value}, "
+            f"mode={self.mode.value}, "
+            f"base={self.base_image!r})"
+        )
+
+    def __str__(self) -> str:
+        return self.summary()
+
+
+def make_devcontainer_matrix(
+    cuda_versions: Tuple[CudaMinorVersion, ...] = (
+        CudaMinorVersion.CUDA_13_0,
+        CudaMinorVersion.CUDA_13_1,
+    ),
+    modes: Tuple[DevcontainerMode, ...] = (
+        DevcontainerMode.CONDA,
+        DevcontainerMode.PIP,
+    ),
+) -> List[DevcontainerSpec]:
+    """
+    生成 devcontainer 配置矩阵（CUDA 版本 × 包管理器模式）。
+
+    上游：四份手动维护的 JSON 文件
+    改写：笛卡尔积自动生成，消除手动同步风险
+
+    Args:
+        cuda_versions: 目标 CUDA 版本集合
+        modes:         包管理器模式集合
+
+    Returns:
+        DevcontainerSpec 列表，顺序为 (cuda×mode) 笛卡尔积
+    """
+    _dbg("make_devcontainer_matrix", f"cuda_versions={[v.value for v in cuda_versions]} modes={[m.value for m in modes]}")
+    specs = [
+        DevcontainerSpec(cuda_version=cv, mode=mode)
+        for cv in cuda_versions
+        for mode in modes
+    ]
+    _dbg("make_devcontainer_matrix", f"→ 生成 {len(specs)} 个 DevcontainerSpec")
+    return specs
+
+
+# ─────────────────────────────────────────────────────────────
+# EnvMatrixKey / CudaEnvMatrix — conda 环境矩阵建模
+# 上游: 四个独立 YAML 文件（cuda-130/131 × aarch64/x86_64）
+# 改写: 显式矩阵结构，matrix_keys() 枚举所有组合
+# ─────────────────────────────────────────────────────────────
+
+@unique
+class CpuArch(Enum):
+    """CPU 架构枚举，对应 conda 环境 YAML 文件名中的架构后缀。"""
+    AARCH64 = "aarch64"
+    X86_64  = "x86_64"
+
+    def __str__(self) -> str:
+        return self.value
+
+
+@dataclass(frozen=True)
+class EnvMatrixKey:
+    """
+    conda 环境矩阵的单个坐标（CUDA 版本 × CPU 架构）。
+
+    对应上游文件名格式: all_cuda-131_arch-x86_64.yaml
+    """
+    cuda_version: CudaMinorVersion
+    cpu_arch: CpuArch
+
+    @property
+    def yaml_filename(self) -> str:
+        """
+        生成对应的 conda 环境 YAML 文件名。
+
+        上游命名规则: all_cuda-{cuda_label_no_dot}_arch-{arch}.yaml
+          例: all_cuda-131_arch-x86_64.yaml
+        """
+        fname = f"all_{self.cuda_version.conda_label}_arch-{self.cpu_arch.value}.yaml"
+        _dbg("EnvMatrixKey.yaml_filename", f"→ {fname!r}")
+        return fname
+
+    @property
+    def cugraph_pyg_yaml_filename(self) -> str:
+        """
+        生成 cugraph-pyg 开发环境 YAML 文件名。
+
+        上游路径: python/cugraph-pyg/conda/environments/
+          例: cugraph_pyg_dev_cuda-131_arch-x86_64.yaml
+        """
+        fname = f"cugraph_pyg_dev_{self.cuda_version.conda_label}_arch-{self.cpu_arch.value}.yaml"
+        _dbg("EnvMatrixKey.cugraph_pyg_yaml_filename", f"→ {fname!r}")
+        return fname
+
+    def __str__(self) -> str:
+        return f"EnvMatrixKey(cuda={self.cuda_version.value}, arch={self.cpu_arch.value})"
+
+
+@dataclass
+class CudaEnvMatrix:
+    """
+    CUDA × CPU 架构环境矩阵，对应 ba506a8 新增/删除的 conda 环境 YAML 文件集合。
+
+    上游：四个独立 YAML 文件，靠文件名区分；版本切换时需手动重命名
+    改写：矩阵显式建模，added()/removed() 方法枚举版本切换的增删文件集合
+
+    Attributes:
+        supported_cuda:   当前支持的 CUDA 版本（ba506a8 后: CUDA_13_1）
+        deprecated_cuda:  已废弃的 CUDA 版本（ba506a8 后: CUDA_13_0）
+        architectures:    支持的 CPU 架构集合
+    """
+    supported_cuda: CudaMinorVersion = CudaMinorVersion.CUDA_13_1
+    deprecated_cuda: CudaMinorVersion = CudaMinorVersion.CUDA_13_0
+    architectures: Tuple[CpuArch, ...] = (CpuArch.AARCH64, CpuArch.X86_64)
+
+    def matrix_keys(self, cuda_version: Optional[CudaMinorVersion] = None) -> List[EnvMatrixKey]:
+        """
+        枚举指定 CUDA 版本的所有矩阵坐标。
+
+        Args:
+            cuda_version: 目标 CUDA 版本；None 时使用 supported_cuda
+
+        Returns:
+            EnvMatrixKey 列表（按架构排序）
+        """
+        cv = cuda_version if cuda_version is not None else self.supported_cuda
+        _dbg("CudaEnvMatrix.matrix_keys", f"cuda_version={cv.value}")
+        keys = [EnvMatrixKey(cuda_version=cv, cpu_arch=arch) for arch in self.architectures]
+        _dbg("CudaEnvMatrix.matrix_keys", f"→ {[str(k) for k in keys]}")
+        return keys
+
+    def added_files(self) -> List[str]:
+        """ba506a8 新增的 conda 环境 YAML 文件名列表（CUDA 13.1 矩阵）。"""
+        _dbg("CudaEnvMatrix.added_files", f"cuda={self.supported_cuda.value}")
+        files = [k.yaml_filename for k in self.matrix_keys(self.supported_cuda)]
+        files += [k.cugraph_pyg_yaml_filename for k in self.matrix_keys(self.supported_cuda)]
+        _dbg("CudaEnvMatrix.added_files", f"→ {files}")
+        return files
+
+    def removed_files(self) -> List[str]:
+        """ba506a8 删除的 conda 环境 YAML 文件名列表（CUDA 13.0 矩阵）。"""
+        _dbg("CudaEnvMatrix.removed_files", f"cuda={self.deprecated_cuda.value}")
+        files = [k.yaml_filename for k in self.matrix_keys(self.deprecated_cuda)]
+        files += [k.cugraph_pyg_yaml_filename for k in self.matrix_keys(self.deprecated_cuda)]
+        _dbg("CudaEnvMatrix.removed_files", f"→ {files}")
+        return files
+
+    def migration_delta(self) -> Tuple[List[str], List[str]]:
+        """
+        返回 (added, removed) 文件名元组，汇总 ba506a8 的文件级变更。
+
+        Returns:
+            (added_files, removed_files)
+        """
+        _dbg("CudaEnvMatrix.migration_delta", "计算增删文件集合")
+        added = self.added_files()
+        removed = self.removed_files()
+        _dbg("CudaEnvMatrix.migration_delta", f"added={len(added)}, removed={len(removed)}")
+        return added, removed
+
+
+# ─────────────────────────────────────────────────────────────
+# DependenciesYamlPatch — dependencies.yaml cuda_version 字段变更文档化
+# 上游: 直接修改 YAML，10 行变更，无 Python 层可查询记录
+# 改写: dataclass 存档 before/after，patch_summary() 生成可读摘要
+# ─────────────────────────────────────────────────────────────
+
+@dataclass(frozen=True)
+class DependenciesYamlPatch:
+    """
+    dependencies.yaml 的 cuda_version 字段版本升级记录。
+
+    上游 ba506a8 变更: "13.0" → "13.1"（10 处）
+    """
+    field_name: str
+    before: CudaMinorVersion
+    after: CudaMinorVersion
+    affected_lines: int
+    commit: str = "ba506a8"
+    file_path: str = "dependencies.yaml"
+
+    def patch_summary(self) -> str:
+        """生成人类可读的补丁摘要。"""
+        summary = (
+            f"[{self.commit}] {self.file_path}: "
+            f"{self.field_name}: {self.before.value!r} → {self.after.value!r} "
+            f"({self.affected_lines} 处)"
+        )
+        _dbg("DependenciesYamlPatch.patch_summary", f"→ {summary!r}")
+        return summary
+
+    def is_applied(self, yaml_content: str) -> bool:
+        """
+        检查给定的 YAML 内容是否已应用本补丁。
+
+        判断逻辑：after 版本字符串存在且 before 版本字符串不存在（或仅作为历史注释出现）。
+
+        Args:
+            yaml_content: dependencies.yaml 文件内容字符串
+
+        Returns:
+            True 如果补丁已应用
+        """
+        _dbg("DependenciesYamlPatch.is_applied", f"检查 {self.field_name} 补丁状态")
+        after_present = self.after.value in yaml_content
+        before_present = self.before.value in yaml_content
+        applied = after_present and not before_present
+        _dbg("DependenciesYamlPatch.is_applied",
+             f"after_present={after_present} before_present={before_present} → applied={applied}")
+        return applied
+
+    def __str__(self) -> str:
+        return self.patch_summary()
+
+
+# ba506a8 的 dependencies.yaml 变更记录
+DEPENDENCIES_YAML_PATCH_BA506A8 = DependenciesYamlPatch(
+    field_name="cuda_version",
+    before=CudaMinorVersion.CUDA_13_0,
+    after=CudaMinorVersion.CUDA_13_1,
+    affected_lines=10,
+)
+
+_dbg("module", f"DependenciesYamlPatch 初始化: {DEPENDENCIES_YAML_PATCH_BA506A8.patch_summary()}")
+
+
+# ─────────────────────────────────────────────────────────────
+# MigrationScope / CudaVersionMigration — 整次迁移的可审计记录
+# 上游: 无迁移记录，全靠 git diff 追溯
+# 改写: 显式化迁移范围，affected_files() 枚举所有受影响文件
+# ─────────────────────────────────────────────────────────────
+
+@unique
+class MigrationScope(Enum):
+    """
+    ba506a8 迁移涉及的变更范围分类。
+
+    DEVCONTAINER  — .devcontainer/ 下的 JSON 配置文件
+    CONDA_ENV     — conda/environments/ 下的 YAML 环境文件
+    CUGRAPH_PYG   — python/cugraph-pyg/conda/environments/ 下的 YAML 文件
+    DEPENDENCIES  — 顶层 dependencies.yaml
+    """
+    DEVCONTAINER = "devcontainer"
+    CONDA_ENV    = "conda_env"
+    CUGRAPH_PYG  = "cugraph_pyg"
+    DEPENDENCIES = "dependencies"
+
+    @property
+    def human_label(self) -> str:
+        labels = {
+            MigrationScope.DEVCONTAINER: ".devcontainer/ JSON 配置",
+            MigrationScope.CONDA_ENV:    "conda/environments/ YAML",
+            MigrationScope.CUGRAPH_PYG:  "cugraph-pyg conda/environments/ YAML",
+            MigrationScope.DEPENDENCIES: "dependencies.yaml",
+        }
+        return labels[self]
+
+
+@dataclass(frozen=True)
+class CudaVersionMigration:
+    """
+    CUDA 版本升级迁移的可审计记录，对应 ba506a8 (13.0 → 13.1)。
+
+    Attributes:
+        commit:       git commit hash
+        from_version: 迁移前 CUDA 版本
+        to_version:   迁移后 CUDA 版本
+        scopes:       本次迁移涉及的变更范围集合
+        files_changed: 总变更文件数（上游 diff 统计）
+        insertions:   新增行数
+        deletions:    删除行数
+    """
+    commit: str
+    from_version: CudaMinorVersion
+    to_version: CudaMinorVersion
+    scopes: FrozenSet[MigrationScope]
+    files_changed: int
+    insertions: int
+    deletions: int
+
+    def scope_labels(self) -> List[str]:
+        """返回所有变更范围的人类可读标签列表。"""
+        labels = [s.human_label for s in sorted(self.scopes, key=lambda s: s.value)]
+        _dbg("CudaVersionMigration.scope_labels", f"→ {labels}")
+        return labels
+
+    def affected_files(self, env_matrix: Optional[CudaEnvMatrix] = None) -> Dict[MigrationScope, Dict[str, List[str]]]:
+        """
+        枚举所有受影响的文件，按 MigrationScope 分组并区分 added/removed。
+
+        Args:
+            env_matrix: conda 环境矩阵；None 时使用默认实例
+
+        Returns:
+            {scope: {"added": [...], "removed": [...]}} 的嵌套字典
+        """
+        _dbg("CudaVersionMigration.affected_files", f"commit={self.commit}")
+        matrix = env_matrix or CudaEnvMatrix(
+            supported_cuda=self.to_version,
+            deprecated_cuda=self.from_version,
+        )
+
+        result: Dict[MigrationScope, Dict[str, List[str]]] = {}
+
+        if MigrationScope.DEVCONTAINER in self.scopes:
+            old_specs = [
+                DevcontainerSpec(cuda_version=self.from_version, mode=m)
+                for m in (DevcontainerMode.CONDA, DevcontainerMode.PIP)
+            ]
+            new_specs = [
+                DevcontainerSpec(cuda_version=self.to_version, mode=m)
+                for m in (DevcontainerMode.CONDA, DevcontainerMode.PIP)
+            ]
+            result[MigrationScope.DEVCONTAINER] = {
+                "added":   [f".devcontainer/{s.devcontainer_dir}/devcontainer.json" for s in new_specs],
+                "removed": [f".devcontainer/{s.devcontainer_dir}/devcontainer.json" for s in old_specs],
+            }
+            _dbg("CudaVersionMigration.affected_files",
+                 f"DEVCONTAINER: +{len(new_specs)} -{len(old_specs)}")
+
+        if MigrationScope.CONDA_ENV in self.scopes:
+            added_env, removed_env = matrix.migration_delta()
+            # 过滤只保留 conda/environments/ 下的文件（非 cugraph_pyg）
+            added_base = [f for f in added_env if f.startswith("all_")]
+            removed_base = [f for f in removed_env if f.startswith("all_")]
+            result[MigrationScope.CONDA_ENV] = {
+                "added":   [f"conda/environments/{f}" for f in added_base],
+                "removed": [f"conda/environments/{f}" for f in removed_base],
+            }
+            _dbg("CudaVersionMigration.affected_files",
+                 f"CONDA_ENV: +{len(added_base)} -{len(removed_base)}")
+
+        if MigrationScope.CUGRAPH_PYG in self.scopes:
+            added_pyg, removed_pyg = matrix.migration_delta()
+            added_pyg_f = [f for f in added_pyg if f.startswith("cugraph_pyg")]
+            removed_pyg_f = [f for f in removed_pyg if f.startswith("cugraph_pyg")]
+            result[MigrationScope.CUGRAPH_PYG] = {
+                "added":   [f"python/cugraph-pyg/conda/environments/{f}" for f in added_pyg_f],
+                "removed": [f"python/cugraph-pyg/conda/environments/{f}" for f in removed_pyg_f],
+            }
+            _dbg("CudaVersionMigration.affected_files",
+                 f"CUGRAPH_PYG: +{len(added_pyg_f)} -{len(removed_pyg_f)}")
+
+        if MigrationScope.DEPENDENCIES in self.scopes:
+            result[MigrationScope.DEPENDENCIES] = {
+                "added":   [],
+                "removed": [],
+                "modified": ["dependencies.yaml"],  # type: ignore[dict-item]
+            }
+            _dbg("CudaVersionMigration.affected_files", "DEPENDENCIES: 1 modified")
+
+        return result
+
+    def diff_stat_summary(self) -> str:
+        """生成与 git diff --stat 风格一致的摘要行。"""
+        summary = (
+            f"[{self.commit}] {self.from_version.value} → {self.to_version.value}: "
+            f"{self.files_changed} files changed, "
+            f"{self.insertions} insertions(+), "
+            f"{self.deletions} deletions(-)"
+        )
+        _dbg("CudaVersionMigration.diff_stat_summary", f"→ {summary!r}")
+        return summary
+
+    def __str__(self) -> str:
+        return self.diff_stat_summary()
+
+
+# ba506a8 迁移的完整记录实例
+MIGRATION_BA506A8 = CudaVersionMigration(
+    commit="ba506a8",
+    from_version=CudaMinorVersion.CUDA_13_0,
+    to_version=CudaMinorVersion.CUDA_13_1,
+    scopes=frozenset({
+        MigrationScope.DEVCONTAINER,
+        MigrationScope.CONDA_ENV,
+        MigrationScope.CUGRAPH_PYG,
+        MigrationScope.DEPENDENCIES,
+    }),
+    files_changed=13,
+    insertions=240,
+    deletions=236,
+)
+
+_dbg("module", f"MIGRATION_BA506A8 初始化: {MIGRATION_BA506A8.diff_stat_summary()}")
+
+
+# ─────────────────────────────────────────────────────────────
+# 便捷查询函数
+# ─────────────────────────────────────────────────────────────
+
+def get_current_cuda_version() -> CudaMinorVersion:
+    """
+    返回 ba506a8 之后的当前受支持 CUDA 版本。
+
+    Returns:
+        CudaMinorVersion.CUDA_13_1
+    """
+    _dbg("get_current_cuda_version", "→ CUDA_13_1")
+    return CudaMinorVersion.CUDA_13_1
+
+
+def get_deprecated_cuda_version() -> CudaMinorVersion:
+    """
+    返回 ba506a8 废弃的 CUDA 版本（已不再维护）。
+
+    Returns:
+        CudaMinorVersion.CUDA_13_0
+    """
+    _dbg("get_deprecated_cuda_version", "→ CUDA_13_0")
+    return CudaMinorVersion.CUDA_13_0
+
+
+def verify_cuda_version_in_yaml(yaml_content: str) -> List[str]:
+    """
+    验证给定 YAML 内容是否已应用 ba506a8 的 CUDA 版本升级。
+
+    Args:
+        yaml_content: 目标 YAML 文件内容字符串
+
+    Returns:
+        问题列表；列表为空表示版本已就绪
+    """
+    _dbg("verify_cuda_version_in_yaml", f"内容长度={len(yaml_content)} 字符")
+    issues: List[str] = []
+    patch = DEPENDENCIES_YAML_PATCH_BA506A8
+
+    if patch.after.value in yaml_content:
+        _dbg("verify_cuda_version_in_yaml", f"✓ {patch.after.value} 已存在")
+    elif patch.before.value in yaml_content:
+        issues.append(
+            f"[ba506a8] cuda_version 仍为旧版 {patch.before.value!r}，"
+            f"应升级至 {patch.after.value!r}"
+        )
+        _dbg("verify_cuda_version_in_yaml", f"✗ 旧版本 {patch.before.value!r} 仍存在")
+    else:
+        _dbg("verify_cuda_version_in_yaml", "? cuda_version 字段未找到，跳过")
+
+    _dbg("verify_cuda_version_in_yaml", f"验证完成，issues={issues}")
+    return issues
+
+
+_dbg("module", "cuda131_support_policy 模块加载完成")
+
+
+# ─────────────────────────────────────────────────────────────
+# 自测（python cuda131_support_policy 或 WALPURGIS_DEBUG=1 python ...）
+# ─────────────────────────────────────────────────────────────
+
+def _self_test() -> None:
+    """全路径自测，覆盖所有公开 API。"""
+    import sys
+
+    print("[cuda131_support_policy ba506a8] 自检启动")
+    passed = 0
+    total = 0
+
+    def check(name: str, condition: bool) -> None:
+        nonlocal passed, total
+        total += 1
+        status = "PASS" if condition else "FAIL"
+        print(f"  [{status}] {name}")
+        if condition:
+            passed += 1
+        else:
+            import traceback
+            traceback.print_stack()
+
+    # 1. CudaMinorVersion 基础属性
+    v130 = CudaMinorVersion.CUDA_13_0
+    v131 = CudaMinorVersion.CUDA_13_1
+    check("v130.label == 'cuda13.0'", v130.label == "cuda13.0")
+    check("v131.label == 'cuda13.1'", v131.label == "cuda13.1")
+    check("v130.conda_label == 'cuda-130'", v130.conda_label == "cuda-130")
+    check("v131.conda_label == 'cuda-131'", v131.conda_label == "cuda-131")
+    check("v130.is_supported() == False", not v130.is_supported())
+    check("v131.is_supported() == True", v131.is_supported())
+    check("v130.successor() == v131", v130.successor() == v131)
+    check("v131.successor() is None", v131.successor() is None)
+
+    # 2. DevcontainerMode
+    conda = DevcontainerMode.CONDA
+    pip   = DevcontainerMode.PIP
+    check("conda base_image 不含 cuda 版本号", "mambaforge" in conda.base_image(v131))
+    check("pip base_image 含 cuda13.1", "cuda13.1" in pip.base_image(v131))
+    check("pip base_image 含 cuda13.0 (旧版)", "cuda13.0" in pip.base_image(v130))
+    check("conda env_dir_suffix 含 cuda13.1-envs", "cuda13.1-envs" in conda.env_dir_suffix(v131))
+    check("pip env_dir_suffix 含 cuda13.1-venvs", "cuda13.1-venvs" in pip.env_dir_suffix(v131))
+
+    # 3. DevcontainerSpec
+    spec = DevcontainerSpec(cuda_version=v131, mode=conda)
+    check("devcontainer_dir == 'cuda13.1-conda'", spec.devcontainer_dir == "cuda13.1-conda")
+    check("base_image 含 mambaforge", "mambaforge" in spec.base_image)
+    check("container_name 含 cuda13.1-conda", "cuda13.1-conda" in spec.container_name)
+    check("env_dir_mount 含 cuda13.1-envs", "cuda13.1-envs" in spec.env_dir_mount())
+
+    spec_pip = DevcontainerSpec(cuda_version=v131, mode=pip)
+    check("pip devcontainer_dir == 'cuda13.1-pip'", spec_pip.devcontainer_dir == "cuda13.1-pip")
+    check("pip env_dir_mount 含 cuda13.1-venvs", "cuda13.1-venvs" in spec_pip.env_dir_mount())
+
+    # 4. make_devcontainer_matrix
+    matrix_all = make_devcontainer_matrix()
+    check("矩阵含 4 个 spec", len(matrix_all) == 4)
+    dirs = {s.devcontainer_dir for s in matrix_all}
+    check("矩阵包含 cuda13.0-conda", "cuda13.0-conda" in dirs)
+    check("矩阵包含 cuda13.1-pip",   "cuda13.1-pip"   in dirs)
+
+    matrix_131_only = make_devcontainer_matrix(
+        cuda_versions=(v131,),
+        modes=(DevcontainerMode.CONDA, DevcontainerMode.PIP),
+    )
+    check("仅 13.1 矩阵含 2 个 spec", len(matrix_131_only) == 2)
+
+    # 5. EnvMatrixKey
+    key = EnvMatrixKey(cuda_version=v131, cpu_arch=CpuArch.X86_64)
+    check("yaml_filename 正确", key.yaml_filename == "all_cuda-131_arch-x86_64.yaml")
+    check("cugraph_pyg_yaml_filename 正确", key.cugraph_pyg_yaml_filename == "cugraph_pyg_dev_cuda-131_arch-x86_64.yaml")
+
+    key_aarch = EnvMatrixKey(cuda_version=v130, cpu_arch=CpuArch.AARCH64)
+    check("aarch64 yaml_filename 正确", key_aarch.yaml_filename == "all_cuda-130_arch-aarch64.yaml")
+
+    # 6. CudaEnvMatrix
+    env_matrix = CudaEnvMatrix()
+    added, removed = env_matrix.migration_delta()
+    check("added 含 4 个文件（2 conda + 2 pyg）", len(added) == 4)
+    check("removed 含 4 个文件（2 conda + 2 pyg）", len(removed) == 4)
+    check("added 含 cuda-131", any("cuda-131" in f for f in added))
+    check("removed 含 cuda-130", any("cuda-130" in f for f in removed))
+
+    # 7. DependenciesYamlPatch
+    patch = DEPENDENCIES_YAML_PATCH_BA506A8
+    check("patch before == 13.0", patch.before == v130)
+    check("patch after == 13.1", patch.after == v131)
+    check("patch_summary 含 ba506a8", "ba506a8" in patch.patch_summary())
+    check("is_applied: 含 13.1 不含 13.0", patch.is_applied("cuda_version: 13.1"))
+    check("is_applied: 含 13.0 → False",   not patch.is_applied("cuda_version: 13.0"))
+
+    # 8. CudaVersionMigration
+    mig = MIGRATION_BA506A8
+    check("files_changed == 13", mig.files_changed == 13)
+    check("insertions == 240", mig.insertions == 240)
+    check("deletions == 236", mig.deletions == 236)
+    check("diff_stat_summary 含 13.0 → 13.1", "13.0" in mig.diff_stat_summary() and "13.1" in mig.diff_stat_summary())
+    check("4 个 scope 全覆盖", len(mig.scopes) == 4)
+
+    affected = mig.affected_files()
+    check("affected 含 DEVCONTAINER scope", MigrationScope.DEVCONTAINER in affected)
+    check("affected DEVCONTAINER added 含 cuda13.1-conda",
+          any("cuda13.1-conda" in f for f in affected[MigrationScope.DEVCONTAINER]["added"]))
+    check("affected CONDA_ENV added 含 cuda-131",
+          any("cuda-131" in f for f in affected[MigrationScope.CONDA_ENV]["added"]))
+
+    # 9. 便捷查询函数
+    check("get_current_cuda_version() == CUDA_13_1", get_current_cuda_version() == v131)
+    check("get_deprecated_cuda_version() == CUDA_13_0", get_deprecated_cuda_version() == v130)
+
+    issues = verify_cuda_version_in_yaml("cuda_version: 13.1")
+    check("verify: 已升级 → 无 issues", len(issues) == 0)
+
+    issues_old = verify_cuda_version_in_yaml("cuda_version: 13.0")
+    check("verify: 未升级 → 有 issues", len(issues_old) > 0)
+
+    # 10. 幂等性（连续调用结果一致）
+    s1 = mig.diff_stat_summary()
+    s2 = mig.diff_stat_summary()
+    check("diff_stat_summary 幂等", s1 == s2)
+
+    print(f"\n[cuda131_support_policy ba506a8] 自检完成: {passed}/{total} 通过")
+    if passed < total:
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    _self_test()
