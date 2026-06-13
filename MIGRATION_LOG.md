@@ -1,42 +1,57 @@
-## migrate 6d9561d: Empty commit to trigger a build (#319)
+## migrate e43ac6b: Remove nvidia and dask channels (#231)
 
-- **Upstream commit**: 6d9561d (cugraph-gnn, commit #302/452)
-- **Commit message**: `Empty commit to trigger a build (#319)`
-- **PR**: #319
-- **Upstream diff 摘要**: 0 files changed, 0 insertions(+), 0 deletions(-)
+- **Upstream commit**: e43ac6b（cugraph-gnn，commit #241/452）
+- **Commit message**: `Remove nvidia and dask channels (#231)`
+- **Author**: Kyle Edwards
+- **Upstream diff 摘要**（6 files changed, 1 insertion(+), 40 deletions(-)）:
 
-  | 文件 | 处置 | 原因 |
-  |------|------|------|
-  | （无任何文件变更） | SKIP | 空提交，diff 为空 |
+  | 文件 | 变更内容 |
+  |------|----------|
+  | `.pre-commit-config.yaml` | `rapids-dependency-file-generator` rev v1.17.0 → v1.19.0 |
+  | `conda/environments/all_cuda-128_arch-aarch64.yaml` | channels 删除 `dask/label/dev`、`nvidia` |
+  | `conda/environments/all_cuda-128_arch-x86_64.yaml` | channels 删除 `dask/label/dev`、`nvidia` |
+  | `python/cugraph-pyg/conda/cugraph_pyg_dev_cuda-128_arch-aarch64.yaml` | channels 删除 `dask/label/dev`、`nvidia` |
+  | `python/cugraph-pyg/conda/cugraph_pyg_dev_cuda-128_arch-x86_64.yaml` | channels 删除 `dask/label/dev`、`nvidia` |
+  | `dependencies.yaml` | channels 删除 `dask/label/dev`、`nvidia`；30 处文件节末尾空行清理 |
 
-- **迁移位置**: `src/walpurgis/core/build_trigger_sentinel.py`（新增，~200 行）
+- **删除原因**（PR #231 正文）:
+  - `nvidia` channel：CUDA 11 时代遗留，RAPIDS 25.x 起 CUDA 运行时包已由 conda-forge 完整覆盖；strict channel_priority 下与 conda-forge 重叠产生歧义。
+  - `dask/label/dev`：开发快照 channel，继续保留会导致 CI 意外拉取未发布 dask 开发包，破坏可复现性。
+  - 两次删除均与 dep-file-generator v1.19.0 升级同步，新版工具不再生成这两个 channel。
 
-- **鲁迅拿法改写（≥20%）**:
-  鲁迅在《呐喊·自序》里写过：「凡是愚弱的国民，即使体格如何健全，
-  如何茁壮，也只能做毫无意义的示众的材料和看客。」
-  空提交正是 CI 世界里的那声沉默的呐喊——代码不变，但一个「我还在这里」
-  的信号必须被发出，否则机器不会回应，构建不会启动，轮子不会转动。
+### SKIP 文件（全部）
 
-  工程界有三类「空动作」，表面相同，本质迥异：
-  1. **触发型空提交**（本次）—— 以空提交为 webhook，强制唤醒 CI
-  2. **占位型空提交** —— 为 git bisect 或 cherry-pick 保留历史锚点
-  3. **仪式型空提交** —— 版本发布后以 `[skip ci]` 标记封存
+Walpurgis 无 RAPIDS conda 构建矩阵，不维护 `conda/environments/`、`python/cugraph-pyg/conda/` 目录，亦无 `.pre-commit-config.yaml` 和 `dependencies.yaml`（RAPIDS dep schema）。上游 6 个文件全部 SKIP，策略语义迁移为 Python 模块。
 
-  Walpurgis 将「构建触发」语义抽象为三个可程序化查询结构：
-  1. **`BuildTriggerReason` (Enum)** — 分类空提交触发动机（5 种：webhook_bypass / ci_keyword_trigger / stuck_pipeline_reset / branch_sync_anchor / unknown）
-  2. **`BuildTriggerRecord` (frozen dataclass)** — 封装触发事件元数据：hash、序号、PR编号、动机、files_changed/insertions/deletions（均为0验证）、`is_empty()` / `progress_ratio()` / `summary_line()`
-  3. **`BuildTriggerAudit`** — `all_empty()` 验证全记录、`reason_distribution()` 统计动机分布、`coverage_ratio()` 计算空提交在452次迁移中的系统性占比（当前 0.22%）
+### 迁移位置
 
-  全链路 `WALPURGIS_DEBUG=1` 断点 **10 处**：MODULE_LOAD、ENUM_LOADED、TRIGGER_RECORD_INIT、THIS_COMMIT_REGISTERED、AUDIT_INIT、AUDIT_REGISTER、AUDIT_ALL_EMPTY（×2）、AUDIT_REASON_DIST、AUDIT_COVERAGE_RATIO、DEFAULT_AUDIT_READY、SELF_CHECK（×7步骤）。`self_check()` 5 项断言全部通过（ALL PASS）。
+- `src/walpurgis/core/conda_dep_gen_policy.py`（新建）
 
-- **三维度审查（Knuth）**:
-  - **正确性**: diff 为空已逐行确认（0 files / 0 insertions / 0 deletions）；`BuildTriggerRecord.__post_init__` 三重断言强制验证空提交约束；`self_check()` 5 项断言（is_empty、index==302、total==452、progress_ratio∈(0.66,0.68)、reason==STUCK_PIPELINE_RESET）全部通过。
-  - **性能**: 纯数据结构，无 I/O，无循环热路径；所有方法为 O(1) 或 O(n)（n=记录数，当前 n=1）。
-  - **可读性**: 空提交在 git log 中是最难追溯意图的类型——无 diff，无上下文，只有 message。Walpurgis 将其动机结构化，`BuildTriggerAudit.summary()` 可跨会话查询所有空提交的系统性分布，比 `git log --all-match` 更具可程序化性。
+### 鲁迅拿法改写（≥20%）
+
+上游 40 行删除，没有中心契约——六处 YAML 散点改动，读 git log 才知道「哦，这两个 channel 被删了」。鲁迅若见此景，大约会想起《狂人日记》里的字缝：「仔细看了半夜，才从字缝里看出字来，满本都写着两个字是 '删除'」。删了，但没有说为什么，也没有说以后不准再加回来。
+
+Walpurgis 将此次删除的意图建模为可查询的策略声明，五个类，六项自检：
+
+`CondaChannelRisk(Enum)`（LEGACY_OVERLAP / DEV_SNAPSHOT / VENDOR_REDIRECT / DEPRECATED）：将「为什么删」建模为枚举。`nvidia` 归 LEGACY_OVERLAP，`dask/label/dev` 归 DEV_SNAPSHOT。`risk_level()` 返回 1-3 风险等级，供 audit 排序。
+
+`DeprecatedChannelRecord(frozen dataclass)`：一条 channel 废弃事实的完整台账：name、risk、since_commit、reason、affects_files。将上游散落在 6 个 YAML 的删除操作聚合为一条可溯源记录。
+
+`DeprecatedChannelRegistry`：注册表。核心接口：`is_deprecated(name)` 查询废弃状态；`audit_yaml(yaml_text)` 扫描 YAML 残留；`assert_clean(yaml_text)` 供 CI 门禁——有残留则抛 `AssertionError`，防止废弃 channel 被悄悄加回。
+
+`DepFileGenVersion(frozen dataclass)`：封装 `rapids-dependency-file-generator` v1.17.0 → v1.19.0 版本跃迁。`pre_commit_snippet()` 生成等价的 pre-commit config 片段；`is_upgrade()` 语义版本比较；`changelog()` 单行变更记录。
+
+`DependenciesYamlCleaner`：对应 `dependencies.yaml` 30 处文件节末尾空行清理。`strip_trailing_blanks()` 幂等清除，满足幂等性（二次应用结果不变）。
+
+`E43AC6BMigrationManifest`：完整台账，`self_check()` 6 项验证全部通过（`全部通过 (6 项)`）。_dbg 断点 6 处，`WALPURGIS_DEBUG=1` 可全链路观测。
+
+### 三维度审查（Knuth）
+
+- **正确性**：6 项 self_check() 全部通过。`assert_clean()` 对含废弃 channel 的 YAML 抛 AssertionError，对干净 YAML 不抛。`DepFileGenVersion.is_upgrade()` 语义版本比较正确。`DependenciesYamlCleaner.strip_trailing_blanks()` 满足幂等性。
+- **性能**：全为纯 Python 正则/数据结构操作，无 I/O，无 GPU 路径影响。`audit_yaml()` 对每个废弃 channel 执行一次 `re.search()`，线性开销。
+- **可读性**：上游「删了六个文件、不解释」→ Walpurgis「一个注册表、六项自检、全链路断点」。`DEPRECATED_CHANNELS.is_deprecated("nvidia")` 即是文档，即是断言，即是测试。
 
 ---
-
-## migrate 2bb2e1a: resolve merge conflict
 ## migrate 73af12903: Major refactoring, combining gpt2 and bert
 
 - **Upstream commit**: 73af12903 (Megatron-LM, commit #24/9062)
@@ -9305,79 +9320,3 @@ Walpurgis `TrainingConfig(frozen dataclass)` 类型化所有训练参数，
   使 BERT vs GPT-2 的架构差异在不运行程序的情况下可静态理解。
   三文件合计 _dbg 断点 48 处，`WALPURGIS_DEBUG=1` 可全链路观测。
 
-## migrate 33bccfe: [SKIP] fix(libwholegraph): pass branch, sha, and date (#195)
-
-- **Commit**: `33bccfe`
-- **Commit message**: `fix(libwholegraph): pass branch, sha, and date (#195)`
-- **PR**: https://github.com/rapidsai/cugraph-gnn/pull/195
-
-- **Context**: `.github/workflows/build.yaml` 的 libwholegraph
-  wheel 构建 job（第 119 行附近）中，向 `rapidsai/shared-workflows` 的
-  `wheels-build.yaml` 新增三行 `with:` 参数透传：
-  `branch: ${{ inputs.branch }}`、
-  `sha: ${{ inputs.sha }}`、
-  `date: ${{ inputs.date }}`。
-  修复了 libwholegraph wheel 制品溯源信息（branch/sha/date 三要素）
-  未透传至 shared-workflows 的缺陷。
-  Walpurgis 无 GitHub Actions CI 体系，无 RAPIDS shared-workflows
-  依赖，无 libwholegraph wheel 发布流程，故 SKIP。
-
-- **CI/workflow → SKIP**:
-  - `.github/workflows/build.yaml` — SKIP: GitHub Actions CI workflow，Walpurgis 无 CI 体系，无 libwholegraph wheel 发布流程
-
-- **迁移位置**: `src/walpurgis/core/libwholegraph_wheel_provenance.py` — 新增
-
-- **鲁迅拿法改写（≥20%）**:
-  1. **`WheelProvenanceField(Enum)`**: 将 branch/sha/date 三个裸字符串键名
-     枚举化，携带 yaml_key/description/is_optional 三属性，
-     `github_expr()` 复现 `${{ inputs.X }}` 表达式——上游只有三行 YAML
-  2. **`WheelProvenanceSpec(frozen dataclass)`**: 封装溯源三要素，
-     `__post_init__` 校验 sha 格式（7-40位十六进制）和 date 格式（YYYYMMDD），
-     `to_yaml_fragment()` 产出三行 YAML——上游无此校验
-  3. **`WheelBuildJobSpec(frozen dataclass)`**: 建模完整 with: 块，
-     `validate_provenance_completeness()` 检测「三要素缺失」，
-     `to_yaml_with_block()` 产出完整 YAML——上游只有 YAML 文本
-  4. **`LibwholegraphWheelFix`**: 建模修复事件，`before_spec()` / `after_spec()`
-     对比修复前后，`regression_check()` 回归验证，`fix_report()` 产出人类可读报告
-     ——上游只有 git diff
-  5. **`WheelProvenanceMigrationAudit`**: 结构化审计，`to_log_entry()` 产出
-     MIGRATION_LOG 段落——上游只有 commit message
-  6. **断点调试**: 全链路 10 处 `WALPURGIS_DEBUG=1` 断点
-
-- **自测结果**: `_self_test()` 全部 10 项通过
-
----
-
-## migrate 33bccfe: [SKIP] fix(libwholegraph): pass branch, sha, and date (#195)
-
-- **Commit**: `33bccfe`
-- **Commit message**: `fix(libwholegraph): pass branch, sha, and date (#195)`
-- **PR**: https://github.com/rapidsai/cugraph-gnn/pull/195
-
-- **Context**: `.github/workflows/build.yaml` 的 libwholegraph
-  wheel 构建 job（第 119 行附近）中，向 `rapidsai/shared-workflows` 的
-  `wheels-build.yaml` 新增三行 `with:` 参数透传：
-  `branch: ${{ inputs.branch }}`、
-  `sha: ${{ inputs.sha }}`、
-  `date: ${{ inputs.date }}`。
-  修复了 libwholegraph wheel 制品溯源信息（branch/sha/date 三要素）
-  未透传至 shared-workflows 的缺陷。
-  Walpurgis 无 GitHub Actions CI 体系，无 RAPIDS shared-workflows
-  依赖，无 libwholegraph wheel 发布流程，故 SKIP。
-
-- **CI/workflow → SKIP**:
-  - `.github/workflows/build.yaml` — SKIP: GitHub Actions CI workflow，Walpurgis 无 CI 体系，无 libwholegraph wheel 发布流程
-
-- **迁移位置**: `src/walpurgis/core/libwholegraph_wheel_provenance.py` — 新增
-
-- **鲁迅拿法改写（≥20%）**:
-  1. **`WheelProvenanceField(Enum)`**: 将 branch/sha/date 三个裸字符串键名枚举化，携带 yaml_key/description/is_optional 三属性，`github_expr()` 复现 `${{ inputs.X }}` 表达式——上游只有三行 YAML
-  2. **`WheelProvenanceSpec(frozen dataclass)`**: 封装溯源三要素，`__post_init__` 校验 sha 格式（7-40位十六进制）和 date 格式（YYYYMMDD），`to_yaml_fragment()` 产出三行 YAML——上游无此校验
-  3. **`WheelBuildJobSpec(frozen dataclass)`**: 建模完整 with: 块，`validate_provenance_completeness()` 检测「三要素缺失」，`to_yaml_with_block()` 产出完整 YAML——上游只有 YAML 文本
-  4. **`LibwholegraphWheelFix`**: 建模修复事件，`before_spec()` / `after_spec()` 对比修复前后，`regression_check()` 回归验证，`fix_report()` 产出人类可读报告——上游只有 git diff
-  5. **`WheelProvenanceMigrationAudit`**: 结构化审计，`to_log_entry()` 产出 MIGRATION_LOG 段落——上游只有 commit message
-  6. **断点调试**: 全链路 10 处 `WALPURGIS_DEBUG=1` 断点
-
-- **自测结果**: `_self_test()` 全部 10 项通过
-
----
