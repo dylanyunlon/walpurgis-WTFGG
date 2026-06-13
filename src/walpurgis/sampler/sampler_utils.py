@@ -75,7 +75,7 @@ try:
     import cupy
     import pylibcugraph
 
-    dask_cudf = import_optional("dask_cudf")
+    # 05b5791: dask_cudf dependency removed — no longer needed after 1e91ed7 Dask API removal
     torch_geometric = import_optional("torch_geometric")
     torch = import_optional("torch")
     HeteroSamplerOutput = torch_geometric.sampler.base.HeteroSamplerOutput
