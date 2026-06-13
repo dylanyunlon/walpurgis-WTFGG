@@ -21,8 +21,9 @@ set -u
 # ── 参数 (cugraph-gnn风格: 环境变量配置) ──
 TIMESTAMP="$(date '+%Y%m%d_%H%M%S')"
 DATASET="${DATASET:-SYNTH}"
-# 空白清理: printf + tr (echo -n在某些shell/conda环境下不可靠)
-DATASET="$(printf '%s' "$DATASET" | tr -d ' \t\n\r')"
+# 空白清理: 删除所有空白字符包括 Unicode non-breaking space (U+00A0 = 0xc2a0)
+# 根因: 浏览器/终端复制命令时会将普通空格替换为 non-breaking space
+DATASET="$(printf '%s' "$DATASET" | sed 's/\xc2\xa0//g' | tr -d ' \t\n\r')"
 GPU="${GPU:-0}"
 EPOCHS="${EPOCHS:-3}"
 SEED="${SEED:-42}"
