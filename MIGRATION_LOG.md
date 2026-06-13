@@ -9511,3 +9511,45 @@ Walpurgis `TrainingConfig(frozen dataclass)` 类型化所有训练参数，
   5. **断点调试**: 全链路 8 处 `WALPURGIS_DEBUG=1` 断点，覆盖模块加载、枚举构造、引用分类、manifest 构建、报告渲染全路径
 
 - **自测结果**: `_self_test()` 全部 5 项通过
+
+
+---
+
+## migrate 1b4f631: build and test against CUDA 13.1.0 (#381)
+
+- **Commit**: `1b4f631`
+- **Commit message**: `build and test against CUDA 13.1.0 (#381)`
+- **PR**: https://github.com/rapidsai/cugraph-gnn/pull/381
+
+- **Context**: 将 CI 体系中全部 shared-workflows 引用从浮动的 `@main` 锁定至 `@cuda-13.1.0`，共 4 个 workflow YAML 文件、32 处替换（build.yaml 11处、pr.yaml 14处、test.yaml 5处、trigger-breaking-change-alert.yaml 1处）。此为 RAPIDS 项目引入 CUDA 13.1.0 构建矩阵支持的基础准备工作。
+
+- **CI/merge → SKIP**:
+  - `.github/workflows/build.yaml` — SKIP：GitHub Actions CI 脚本，Walpurgis 无 rapidsai/shared-workflows 依赖体系
+  - `.github/workflows/pr.yaml` — SKIP：GitHub Actions CI 脚本，同上
+  - `.github/workflows/test.yaml` — SKIP：GitHub Actions CI 脚本，同上
+  - `.github/workflows/trigger-breaking-change-alert.yaml` — SKIP：GitHub Actions CI 脚本，同上
+
+- **迁移位置**:
+  - `src/walpurgis/core/cuda131_workflow_pin_policy.py` — 新增（workflow 锁定策略显式建模）
+
+- **鲁迅拿法改写（≥20%）**:
+
+  鲁迅在《灯下漫笔》里写：「所谓中国的文明者，其实不过是安排给阔人享用的人肉的筵宴。」
+
+  上游 1b4f631 做的事情极为简单：把 32 处 `@main` 改为 `@cuda-13.1.0`。然而上游仓库里没有任何文件解释：为什么是 13.1.0 而不是 13.0？锁定标签的命名规范是什么？锁定与解锁的决策权在谁手里？
+
+  「@main」是流动的河，「@cuda-13.1.0」是河床上的一块石头。上游工程师把石头放下去，没有说为什么，没有说石头是谁的——如同旧式官衙的告示，张贴出来就算数，不问百姓是否看懂，也不问告示本身是否有人记档。
+
+  Walpurgis 将此次锁定策略改写为 **6 个显式组件**：
+
+  1. **`WorkflowRefKind(Enum)`**: 将 `@main`（FLOATING）与 `@cuda-X.Y.Z`（PINNED）枚举化，携带 `is_reproducible()`/`human_label()` 属性——上游代码中二者仅靠字符串前缀隐式区分
+  2. **`CudaWorkflowPin(frozen dataclass)`**: 将锁定事件结构化为 cuda_version/pin_tag/commit_hash/workflow_count/rationale 五字段，`validate()` 自检格式合法性——上游只有一次 git commit，无结构化记录
+  3. **`SharedWorkflowRef(frozen dataclass)`**: 将每条 `uses:` 引用建模，携带 `to_upstream_string()`/`is_pinned_to()`——上游 32 条 `uses:` 行完全等价，无类型区分
+  4. **`WorkflowPinManifest`**: 单点定义记录 1b4f631 所有被锁定引用，`count_by_kind()` 统计分布，`find_unverified()` 扫描残留浮动引用——上游信息完全隐藏在 git diff 中
+  5. **`CudaPinDecisionLog(dataclass)`**: 结构化决策日志，记录「为何选择 cuda-13.1.0 而非 main」的推理链，`to_audit_line()` 产出单行可搜索摘要——上游无此记录
+  6. **`WorkflowPinAuditReport(dataclass)`**: 聚合审计报告，统计 total_refs/pinned_count/floating_count/cuda_version 四项指标——上游无此统计层
+
+  断点调试: 全链路 10 处 `WALPURGIS_DEBUG=1` 断点，覆盖枚举构造、版本解析、清单遍历、审计报告生成全路径
+
+- **自测结果**: `_self_test()` 全部 10 项通过
+
