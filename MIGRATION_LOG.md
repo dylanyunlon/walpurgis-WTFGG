@@ -9678,3 +9678,26 @@ Walpurgis `TrainingConfig(frozen dataclass)` 类型化所有训练参数，
 - **自测结果**: `_self_test()` 全部 8 组（含 10 项断言）通过
 
 ---
+
+## migrate 289175f: resolve conflict
+
+- **Commit**: `289175f`
+- **Commit message**: `resolve conflict`
+- **序号**: 316/452（cugraph-gnn 迁移序列）
+
+- **上游 diff 摘要**: 空 diff（pure conflict-resolution merge commit，无文件变更）
+
+- **迁移决策**: SKIP
+
+- **SKIP 理由**:
+  本 commit 为纯冲突消解合并提交（conflict-resolution merge commit），
+  diff 为空，无任何文件增删改。上游仅记录分支合并后冲突标记的清除动作，
+  无任何实质性逻辑、接口或配置变更可迁移至 Walpurgis。
+
+- **鲁迅拿法改写**: 无可迁移内容，SKIP 豁免改写要求。
+
+- **_dbg() 断点**: 无可迁移文件，SKIP 豁免断点要求。
+
+- **自测结果**: N/A（无新增代码）
+
+---
