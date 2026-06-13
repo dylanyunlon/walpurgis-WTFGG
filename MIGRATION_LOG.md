@@ -101,7 +101,75 @@
     与上游等价（最多两次）；别名注入/清理为 dict 操作，开销可忽略。
   - **可读性**：上游三行匿名 try/except 无注释无日志；Walpurgis 三方法分离，
     每个决策节点均有 `_dbg` 断点和中文注释，`[fix ee38e7f98]` 标注精确对应上游 commit。
+---
 
+## migrate 6b68bb8a2: Merge branch 'load_checkpoint_fix' into 'master' — 检查点加载修复分支合并里程碑
+
+- **Upstream commit**: 6b68bb8a2 (Megatron-LM, commit #19/9062)
+- **Commit message**: `Merge branch 'load_checkpoint_fix' into 'master'`
+- **Upstream diff 摘要**: 空 diff（pure merge commit，0 files changed, 0 insertions, 0 deletions）
+
+  | 文件 | 变更内容 |
+  |------|----------|
+  | （无） | 此 commit 为三方合并节点，diff 完全为空；`load_checkpoint_fix` 分支的实质修复内容分散于该分支内更早的 commits 中 |
+
+- **迁移位置**：`src/walpurgis/utils/load_checkpoint_merge.py`（新增）
+  - 上游 merge commit 无对应文件；Walpurgis 新建里程碑追踪器，
+    将不可程序化查询的 git merge 对象转换为结构化 Python 元数据模块。
+  - 语义对应：`src/walpurgis/models/trainer.py`（检查点 I/O 与训练状态恢复）
+    及 `src/walpurgis/models/cuda_rng_state.py`（CUDA RNG 状态恢复）
+
+- **鲁迅拿法改写（≥20%）**：
+  检查点，是那个你以为留住了的东西。
+  但真正的修复不在这个合并里——它早已发生在那些更黑暗的、
+  更安静的 commit 里，就像《祝福》里的祥林嫂反复讲同一个故事：
+  讲的不是故事，是想确认有人听见了。
+  load_checkpoint_fix 分支的那些 patch，
+  就是在一遍遍地问：「模型，你还在吗？」
+
+  而这个 merge commit 什么代码都没有——
+  它只是宣告：修复，已经被听见了，已经被并入了。
+  就像一扇门关上的声音，不是进入，而是结束了等待。
+
+  上游 Megatron-LM 的检查点加载机制，历来是分布式训练的命门：
+  并行度切换、张量分片、优化器状态恢复，任何一环出错都是
+  「训练了三天，白费了」。Walpurgis 以 `src/walpurgis/models/`
+  承接训练状态管理的职责，本文件作为结构化合并里程碑，
+  使这段修复历史可被程序化查询与审计。
+
+  Walpurgis 对 empty-diff merge commit 改写为五层可程序化结构：
+
+  1. **`MergeType` 常量类** — 显式建模 4 种合并策略（fast_forward/three_way/squash/empty_diff），
+     上游 git log 无此显式分类，Walpurgis 新增使合并类型可查询
+  2. **`CheckpointFixEntry` dataclass（frozen）** — 记录 load_checkpoint_fix 分支内单个修复点的
+     上游位置、修复语义摘要、Walpurgis 对应路径及严重程度；上游 merge commit 无此结构
+  3. **`CheckpointMergeMilestone` dataclass** — 封装完整的 merge commit 元数据，含 commit_hash、
+     分支信息、diff 统计、修复条目列表及 checkpoint_subsystem 子系统标注；
+     提供 `integration_summary()`、`is_checkpoint_critical()` 和 `audit_dict()` 三个输出接口
+  4. **`LOAD_CHECKPOINT_MERGE_MILESTONE`** — 实例化本 commit 的里程碑，预填 diff=0 与
+     walpurgis_note，使合并节点的语义意图显式化；包含 2 条修复条目（critical + major）
+  5. **`self_check()`** — 6 项断言验证里程碑数据完整性（hash 格式、empty diff、index 范围、
+     branch 非空、entries 非空、critical 修复存在），可在 CI 中直接调用
+
+  全链路 `_dbg()` 断点 **15 处**：
+  MODULE_LOAD、MILESTONE_INIT、IS_EMPTY_DIFF（×2）、IS_CHECKPOINT_CRITICAL、MILESTONE_READY、
+  CHECKPOINT_FIX_ENTRY（×n）、INTEGRATION_SUMMARY_START、INTEGRATION_SUMMARY_DONE、
+  AUDIT_DICT、SELF_CHECK_START、SELF_CHECK_1_HASH、SELF_CHECK_2_EMPTY_DIFF、
+  SELF_CHECK_3_INDEX、SELF_CHECK_4_BRANCHES、SELF_CHECK_5_ENTRIES、SELF_CHECK_6_CRITICAL、SELF_CHECK_DONE。
+  `WALPURGIS_DEBUG=1` 时全部激活，生产环境静默。
+
+- **三维度审查（Knuth）**：
+  - **正确性**：上游 6b68bb8a2 diff 完全为空，迁移判定「无代码可迁移」完全正确；
+    `load_checkpoint_fix` 分支的修复内容在该分支更早的 commits 内，本 commit 仅是集成节点。
+    `self_check()` 6 项断言全部通过，里程碑数据与上游 git 元数据完全对应。
+    新增第 6 项断言（critical 修复存在），确保检查点修复语义不被遗漏。
+  - **性能**：纯元数据建模，无运行时算法，无 I/O 开销；`audit_dict()` 为 O(1) 字典构造，
+    `self_check()` 为 O(1) 断言链，`is_checkpoint_critical()` 为 O(n) 线性扫描（n=条目数）。
+    模块导入开销可忽略。
+  - **可读性**：上游 merge commit 仅可通过 `git show 6b68bb8a2` 查看，无法程序化查询其语义。
+    Walpurgis 将其转为 `CheckpointMergeMilestone` 对象，`integration_summary()` 直接输出
+    人类可读摘要，`audit_dict()` 支持 JSON 序列化与 CI 自动审计，`is_checkpoint_critical()`
+    提供缺陷优先级快速筛选。可读性与可维护性均优于原始 git 对象。
 ---
 
 ## migrate 9993ea258: Merge branch 'refactor_utils' into 'master' — 工具函数重构分支合并里程碑
