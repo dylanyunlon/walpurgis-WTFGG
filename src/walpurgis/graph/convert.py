@@ -21,6 +21,16 @@
 #      - 函数入口：input_graph 的 ntypes/etypes/num_nodes/num_edges
 #      - 同构/异构分支选择
 #      - add_nodes/add_edges 调用前的参数摘要
+#
+# adb4006 迁移注记 (fix circular import):
+#   上游 cugraph_dgl/convert.py 在 456d5a2 后出现循环导入:
+#     import cugraph_dgl                          # 触发 cugraph_dgl/__init__.py
+#     from cugraph_dgl import CuGraphStorage      # __init__.py 又 import convert.py
+#   修复: 改为直接导入底层模块，绕过 __init__.py:
+#     from cugraph_dgl.cugraph_storage import CuGraphStorage  # 直接路径，无循环
+#   Walpurgis 中 convert.py 从未使用 cugraph_dgl 包路径（Graph 来自 walpurgis.graph），
+#   故不存在对应的循环导入问题；adb4006 的修复模式已在本文件架构设计时规避。
+#   详见 src/walpurgis/core/circular_import_fix.py
 
 import os as _os
 import sys as _sys
