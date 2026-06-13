@@ -9399,3 +9399,23 @@ Walpurgis `TrainingConfig(frozen dataclass)` 类型化所有训练参数，
 
 - **自测结果**: `_self_test()` 全部 10 项通过
 
+
+---
+
+## migrate 4933710: [SKIP] Empty commit to trigger a build (#376) — CI 构建触发 commit
+
+- **Commit**: `4933710`
+- **Commit message**: `Empty commit to trigger a build (#376)`
+- **PR**: https://github.com/rapidsai/cugraph-gnn/pull/376
+
+- **Context**: 纯 CI 触发型 empty commit。上游 maintainer 推送零差量 empty commit 强制触发完整构建流水线重建，使所有 wheel/conda 包切换至最新状态。**diff 为空（0 files changed, 0 insertions, 0 deletions）**，无任何源码、配置或脚本变更。与 #384（commit 8ed9623）性质完全一致。
+
+- **CI/merge → SKIP**:
+  - `（无文件）` — SKIP: empty commit，零 diff，Walpurgis 无 CI ABI 管理需求，无可迁移内容
+
+- **迁移位置**: 无（empty commit，无文件产出）
+
+- **鲁迅拿法改写（≥20%）**: 不适用（无源码可改写）
+
+- **自测结果**: 不适用
+
