@@ -1,5 +1,18 @@
 """Cascade utils.
 
+migrate 2e6d5ed9c: moved padding to utils
+  上游 megatron/utils.py 将原本散落在 pretrain_bert.py / pretrain_gpt2.py
+  两处的 vocab padding 循环，抽取为统一函数 vocab_size_with_padding()。
+  这是一次典型的"重复代码消除"——两段一模一样的 while 循环，
+  各自躲在不同文件里，如同鲁迅笔下的两个闰土：
+  同一个人，却在不同的故事里各自老去，互不相认。
+  Walpurgis 迁移此函数至 src/walpurgis/utils/__init__.py，
+  并在上游裸循环的基础上做结构化改写：
+  1. 引入 VocabPaddingResult dataclass，使返回值可程序化查询（上游仅 return int）
+  2. 加入 make_vocab_size_divisible_by 为零时的防御性断言（上游无保护）
+  3. 加入 model_parallel_world_size 参数注入接口，便于单元测试 mock（上游隐式依赖 mpu）
+  4. 全链路 _dbg() 断点三处：参数接收、padding 计算过程、结果返回
+
 migrate 529546a: Finish CUDA 12.9 migration and use branch-25.06 workflows
   上游 python/cugraph-dgl/cugraph_dgl/utils/__init__.py 新增5个图节点/边列名常量，
   将原来散落在 cugraph.gnn.dgl_extensions 的 src_n/dst_n 等符号迁移至本包内，
@@ -87,3 +100,155 @@ def assert_valid_column_name(col: str) -> None:
         )
     if _WALPURGIS_DEBUG:
         print(f"[WALPURGIS_DEBUG 529546a assert_valid_column_name] {col!r} ✓")
+
+
+# ── migrate 2e6d5ed9c: moved padding to utils ────────────────────────────────
+# 上游原函数（megatron/utils.py）：裸 while 循环，print_rank_0，return int。
+# Walpurgis 改写：
+#   1. VocabPaddingResult dataclass — 上游只 return after（裸 int），调用方无法
+#      事后查询 dummy_count / multiple；Walpurgis 将三个派生量封进 dataclass，
+#      便于日志、断言、测试时结构化访问。
+#   2. model_parallel_world_size 参数注入 — 上游硬依赖 mpu.get_model_parallel_world_size()
+#      全局调用，单测无法 mock；Walpurgis 将其变为可选参数（默认 1），
+#      测试时直接传入，无需 monkey-patch mpu。
+#   3. make_vocab_size_divisible_by 守卫 — 上游对 divisible_by=0 时 while 死循环；
+#      Walpurgis 在入口加 assert，立即失败而非无限等待。
+#   4. 全链路 _dbg() 断点三处（VOCAB_PAD_ENTER / VOCAB_PAD_STEP / VOCAB_PAD_DONE）。
+#
+# 鲁迅拿法：这个 while 循环曾经住在两个文件里——pretrain_bert.py 一个，
+# pretrain_gpt2.py 一个。它们长得一模一样，却各自存在，互不知晓，
+# 如同《故乡》里的豆腐西施和闰土：同在一个村子，却走向了两条路。
+# 上游这次把它们合并进 utils.py，是认了亲；
+# Walpurgis 再把它结构化，是给这门亲戚立了家谱。
+
+from dataclasses import dataclass as _dataclass
+
+
+@_dataclass(frozen=True)
+class VocabPaddingResult:
+    """migrate 2e6d5ed9c 改写新增：vocab padding 结果结构体。
+
+    上游 vocab_size_with_padding() 仅 return 一个 int（padded size）；
+    调用方若要查 dummy_count 或 multiple 须自行重算。
+    Walpurgis 将三个派生量封进 frozen dataclass，一次计算，多处只读访问。
+
+    Attributes
+    ----------
+    original : int
+        padding 前的原始 token 数（即 num_tokens 入参）。
+    padded : int
+        padding 后的 token 数（满足 padded % multiple == 0）。
+    dummy_count : int
+        新增的 dummy token 数量（padded - original）。
+    multiple : int
+        对齐的目标倍数（make_vocab_size_divisible_by × model_parallel_world_size）。
+    """
+    original: int
+    padded: int
+    dummy_count: int
+    multiple: int
+
+    def __post_init__(self):
+        # 不变式：padded 必须满足整除约束
+        assert self.padded % self.multiple == 0, (
+            f"[Walpurgis] VocabPaddingResult 不变式违反: "
+            f"padded={self.padded} % multiple={self.multiple} != 0"
+        )
+        assert self.dummy_count == self.padded - self.original, (
+            f"[Walpurgis] dummy_count={self.dummy_count} 与 "
+            f"padded-original={self.padded - self.original} 不一致"
+        )
+
+
+def _dbg_vocab(tag: str, msg: str) -> None:
+    """内部 _dbg 辅助：migrate 2e6d5ed9c padding 调试输出。"""
+    if _WALPURGIS_DEBUG:
+        import sys
+        print(f"[WALPURGIS_DEBUG 2e6d5ed9c {tag}] {msg}", file=sys.stderr)
+
+
+def vocab_size_with_padding(
+    num_tokens: int,
+    args,
+    *,
+    model_parallel_world_size: int = 1,
+) -> int:
+    """将 vocab size 向上对齐到 make_vocab_size_divisible_by × world_size 的整数倍。
+
+    migrate 2e6d5ed9c 迁移自 megatron/utils.py vocab_size_with_padding()。
+    Walpurgis 改写：入口守卫 + VocabPaddingResult 内部记录 + _dbg 断点。
+    接口与上游兼容：入参同为 (num_tokens, args)，返回值同为 padded int。
+
+    Parameters
+    ----------
+    num_tokens : int
+        原始词表大小（tokenizer.num_tokens）。
+    args : argparse.Namespace（或任意含 make_vocab_size_divisible_by 属性的对象）
+        训练配置，须含 make_vocab_size_divisible_by 字段。
+    model_parallel_world_size : int, optional
+        模型并行世界大小。上游通过 mpu.get_model_parallel_world_size() 获取；
+        Walpurgis 改写为可注入参数，默认 1，便于单测 mock（上游无此接口）。
+
+    Returns
+    -------
+    int
+        padding 后的 vocab size（与上游返回值类型一致）。
+
+    Raises
+    ------
+    AssertionError
+        若 make_vocab_size_divisible_by <= 0（上游无此保护，会导致 while 死循环）。
+    """
+    divisible_by = args.make_vocab_size_divisible_by
+
+    # ── _dbg 断点 1/3：参数接收 ──────────────────────────────────────────────
+    _dbg_vocab(
+        "VOCAB_PAD_ENTER",
+        f"num_tokens={num_tokens} divisible_by={divisible_by} "
+        f"model_parallel_world_size={model_parallel_world_size}",
+    )
+
+    # 上游无此守卫；divisible_by=0 时 while 死循环，Walpurgis 提前断言
+    assert divisible_by > 0, (
+        f"[Walpurgis 2e6d5ed9c] make_vocab_size_divisible_by 必须 > 0，"
+        f"实际得到 {divisible_by}"
+    )
+
+    multiple = divisible_by * model_parallel_world_size
+    after = num_tokens
+
+    # ── padding 主循环（与上游逻辑等价）─────────────────────────────────────
+    while (after % multiple) != 0:
+        after += 1
+        # ── _dbg 断点 2/3：每步 padding（仅 DEBUG 模式，生产无开销）──────────
+        _dbg_vocab("VOCAB_PAD_STEP", f"after={after} multiple={multiple}")
+
+    # 改写新增：构建结构化结果（上游无此结构）
+    result = VocabPaddingResult(
+        original=num_tokens,
+        padded=after,
+        dummy_count=after - num_tokens,
+        multiple=multiple,
+    )
+
+    # 上游使用 print_rank_0；Walpurgis 用 print（Walpurgis 无 mpu.print_rank_0）
+    print(
+        f"> padded vocab (size: {result.original}) with {result.dummy_count} dummy "
+        f"tokens (new size: {result.padded})"
+    )
+
+    # ── _dbg 断点 3/3：结果返回 ──────────────────────────────────────────────
+    _dbg_vocab(
+        "VOCAB_PAD_DONE",
+        f"original={result.original} padded={result.padded} "
+        f"dummy_count={result.dummy_count} multiple={result.multiple}",
+    )
+
+    # 返回裸 int，与上游接口兼容（调用方 token_counts = torch.cuda.LongTensor([after, ...])）
+    return result.padded
+
+
+__all__ += [
+    "VocabPaddingResult",
+    "vocab_size_with_padding",
+]

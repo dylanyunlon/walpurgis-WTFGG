@@ -1,5 +1,13 @@
 #!/bin/bash
 # migrate: megatron 3573423f4 — added presplit-sentences to scripts
+# migrate: megatron 2e6d5ed9c — moved padding to utils
+#   上游 pretrain_bert.py 在此 commit 中：
+#   1. 新增 from megatron.utils import vocab_size_with_padding
+#   2. 将 get_train_val_test_data() 内的 6 行 while-padding 循环替换为一次函数调用
+#   3. token_counts 构造格式化为多行（可读性改写）
+#   Walpurgis 对应：vocab_size_with_padding 已迁入 src/walpurgis/utils/__init__.py；
+#   本 shell 脚本层加入 MAKE_VOCAB_SIZE_DIVISIBLE_BY 参数，
+#   供调用侧显式传入（上游脚本无此变量，硬编码进 args 默认值）。
 # 鲁迅拿法改写：原脚本是一纸告示，参数罗列，无人解释为何如此，
 # 后人照抄，照抄再抄，presplit-sentences 一行加上去，亦无注释，
 # 如同在铁屋子里开了一扇窗，却不告诉人窗外是何物。
@@ -10,7 +18,7 @@ _dbg() {
     # 断点：输出当前参数快照供调试，生产环境设 WALPURGIS_DBG=0 关闭
     local tag="${1:-DBG}"
     if [[ "${WALPURGIS_DBG:-1}" == "1" ]]; then
-        echo "[_dbg:${tag}] $(date '+%H:%M:%S') | PRESPLIT=${PRESPLIT_SENTENCES} | DATA_PATH=${DATA_PATH} | VOCAB=${VOCAB_SIZE}" >&2
+        echo "[_dbg:${tag}] $(date '+%H:%M:%S') | PRESPLIT=${PRESPLIT_SENTENCES} | DATA_PATH=${DATA_PATH} | VOCAB=${VOCAB_SIZE} | DIVISIBLE_BY=${MAKE_VOCAB_SIZE_DIVISIBLE_BY}" >&2
     fi
 }
 
@@ -27,6 +35,11 @@ SAVE_ITERS=10000
 TOKENIZER_TYPE="BertWordPieceLowerCase"
 TOKENIZER_MODEL="bert-large-uncased"
 VOCAB_SIZE=30522
+# migrate 2e6d5ed9c 新增：vocab padding 对齐倍数。
+# 上游 pretrain_bert.py 通过 args.make_vocab_size_divisible_by 读取（默认 128）；
+# Walpurgis 在脚本层显式声明，避免隐式依赖 argparse 默认值，
+# 如鲁迅所言：「默认值如不言而喻的规矩，只有打破时才有人追问来历。」
+MAKE_VOCAB_SIZE_DIVISIBLE_BY="${MAKE_VOCAB_SIZE_DIVISIBLE_BY:-128}"
 
 TRAIN_DATA="wikipedia"
 # presplit-sentences: 数据预切句，upstream 3573423f4 新增。
@@ -61,6 +74,7 @@ python pretrain_bert.py \
     --tokenizer-type    ${TOKENIZER_TYPE}                 \
     --tokenizer-model-type ${TOKENIZER_MODEL}             \
     --vocab-size        ${VOCAB_SIZE}                     \
+    --make-vocab-size-divisible-by ${MAKE_VOCAB_SIZE_DIVISIBLE_BY} \
     --train-data        ${TRAIN_DATA}                     \
     ${PRESPLIT_SENTENCES}                                 \
     --loose-json                                          \

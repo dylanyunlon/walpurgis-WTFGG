@@ -1,3 +1,57 @@
+## migrate 2e6d5ed9c: moved padding to utils — vocab padding 集中化
+
+- **Upstream commit**: 2e6d5ed9c (Megatron-LM, commit #20/9062)
+- **Commit message**: `moved padding to utils`
+- **Upstream diff 摘要** (3 files changed, 26 insertions(+), 22 deletions(-)):
+
+  | 文件 | 变更内容 |
+  |------|----------|
+  | `megatron/utils.py` | 新增 `vocab_size_with_padding(num_tokens, args)` 函数；while padding 循环 + print_rank_0 + return after |
+  | `pretrain_bert.py` | 新增 `from megatron.utils import vocab_size_with_padding`；`get_train_val_test_data()` 内 6 行循环替换为 `num_tokens = vocab_size_with_padding(tokenizer.num_tokens, args)`；token_counts 构造改为多行 |
+  | `pretrain_gpt2.py` | 新增 `from megatron.utils import vocab_size_with_padding`；`get_train_val_test_data()` 内 6 行循环替换为 `num_tokens = vocab_size_with_padding(num_tokens, args)`；加注释 `# pad.`；token_counts 构造改为多行 |
+
+- **迁移位置**：
+  - `megatron/utils.py` → `src/walpurgis/utils/__init__.py`（`vocab_size_with_padding` 函数 + `VocabPaddingResult` dataclass 追加）
+  - `pretrain_bert.py` import 变更 → `src/walpurgis/scripts/pretrain_bert.sh` 注释更新 + `--make-vocab-size-divisible-by` 参数显式化
+  - `pretrain_gpt2.py` import 变更 → `src/walpurgis/scripts/pretrain_gpt2.sh`（新增）
+
+- **鲁迅拿法改写（≥20%）**：
+  上游 2e6d5ed9c 做的事是「搬家」——把住在两个文件里的同一段代码合并进 utils。
+  这两段 while 循环长得一模一样，各自躲在 pretrain_bert.py 和 pretrain_gpt2.py 里，
+  如同鲁迅《故乡》里的两个闰土：同一个人，却在不同的故事里各自老去，互不相认。
+  上游搬家之后，给这段代码起了名字：`vocab_size_with_padding`。
+  有了名字，便有了落脚处；有了落脚处，便可以被调用、被测试、被问责。
+
+  Walpurgis 在此基础上做四处结构化改写：
+
+  1. **`VocabPaddingResult` dataclass（frozen）** — 上游仅 `return after`（裸 int），
+     调用方若要查 `dummy_count` 或 `multiple` 须自行重算。
+     Walpurgis 将三个派生量封进 frozen dataclass（`original/padded/dummy_count/multiple`），
+     并在 `__post_init__` 加入两条不变式断言，一次计算，多处只读访问。
+
+  2. **`model_parallel_world_size` 参数注入** — 上游硬依赖 `mpu.get_model_parallel_world_size()` 全局调用，
+     单元测试无法 mock；Walpurgis 将其变为可选参数（默认 1），
+     测试时直接传入，无需 monkey-patch mpu。
+
+  3. **`make_vocab_size_divisible_by` 防御性断言** — 上游对 `divisible_by=0` 时 while 死循环；
+     Walpurgis 在入口加 `assert divisible_by > 0`，立即 AssertionError 而非无限等待。
+
+  4. **Shell 层 `MAKE_VOCAB_SIZE_DIVISIBLE_BY` 显式化** — 上游脚本无此变量，
+     依赖 argparse 隐式默认值（128）。Walpurgis 在 pretrain_bert.sh 和 pretrain_gpt2.sh
+     均加入 `MAKE_VOCAB_SIZE_DIVISIBLE_BY="${MAKE_VOCAB_SIZE_DIVISIBLE_BY:-128}"`
+     并通过 `--make-vocab-size-divisible-by` 显式传入 Python 进程，
+     如鲁迅所言：「默认值如不言而喻的规矩，只有打破时才有人追问来历。」
+
+- **全链路 `_dbg()` 断点**：
+  - Python 层：`VOCAB_PAD_ENTER`（参数接收）、`VOCAB_PAD_STEP`（每步 padding，DEBUG 模式）、`VOCAB_PAD_DONE`（结果返回）
+  - Shell 层（pretrain_gpt2.sh）：`VOCAB_PAD_BEFORE`（进程启动前）、`VOCAB_PAD_AFTER`（进程退出后）
+
+- **三维度审查（Knuth）**：
+  - **正确性**：`vocab_size_with_padding()` 返回裸 int，与上游接口完全兼容（`token_counts = torch.cuda.LongTensor([after, ...])`）。`VocabPaddingResult.__post_init__` 两条断言保证 `padded % multiple == 0` 及 `dummy_count` 计算一致性。`model_parallel_world_size` 默认 1 与上游单机行为等价。
+  - **性能**：`_dbg_vocab()` 在 `WALPURGIS_DEBUG=0`（默认）时为零代价（if 分支短路）。`VocabPaddingResult` 为 frozen dataclass，无运行时额外开销。while 循环复杂度 O(multiple)，与上游完全一致。
+  - **可维护性**：`VocabPaddingResult` 使 padding 结果可程序化查询；`model_parallel_world_size` 注入使函数可独立测试；`assert divisible_by > 0` 防止静默死循环。新增 `pretrain_gpt2.sh` 补全了 BERT/GPT-2 脚本对称性，与 pretrain_bert.sh 风格一致。
+---
+
 ## migrate ee38e7f98: fixed deserializing issue with old checkpoint
 
 - **Upstream commit**: ee38e7f98 (Megatron-LM, commit #18/9062)
