@@ -1,0 +1,6 @@
+# Walpurgis CODEOWNERS
+# 此文件由迁移流水线维护，对应上游 rapidsai/cugraph-gnn 各提交的 .github/CODEOWNERS。
+# 迁移来源：commit d097572 (#149) — add cugraph-notebook-codeowners to CODEOWNERS
+
+# notebooks code owners
+*.ipynb @rapidsai/cugraph-notebook-codeowners
