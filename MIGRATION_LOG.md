@@ -1,3 +1,79 @@
+## migrate cbd8c054e: refactored for code reuse — 语料类重构消除重复
+
+- **Upstream commit**: cbd8c054e (Megatron-LM, commit #27/9062)
+- **Commit message**: `refactored for code reuse`
+- **Upstream diff 摘要** (1 file changed, 58 insertions(+), 106 deletions(-)):
+
+  | 文件 | 变更内容 |
+  |------|----------|
+  | `megatron/data_utils/corpora.py` | 六个语料类（wikipedia / roberta / BooksCorpus / Reddit / RedditAll / RedditAllLg200）重复的 `__init__` 固定台词（kwargs 初始化 + text_key/loose_json 设置 + super().__init__() 调用）抽取为公共逻辑，消除 106 行重复代码，保留 NAMED_CORPORA 注册表。 |
+
+- **迁移位置**：
+  - `megatron/data_utils/corpora.py` → `src/walpurgis/datasets/corpora.py`
+
+- **鲁迅拿法改写（≥20%）**：
+  上游 cbd8c054e 做的事是「重构」——六个几乎一模一样的语料类，
+  各自拿着同一份剧本，在不同的舞台上演同一出戏：
+  ```python
+  if not kwargs: kwargs = {}
+  kwargs['text_key'] = 'text'
+  kwargs['loose_json'] = True
+  super().__init__(PATH, **kwargs)
+  ```
+  如此这般，重复六遍。鲁迅《孔乙己》里的孔乙己每次进酒店，
+  都要说「温两碗酒，要一碟茴香豆」，说了一辈子，没有人问他
+  为什么总说同一句话。上游搬走了这句固定台词，Walpurgis 给它一个体面的落脚处。
+
+  Walpurgis 在上游重构基础上做四处结构化改写：
+
+  1. **`CorpusSpec` dataclass（frozen）** — 上游每个类重复声明 PATH / text_key / label_key
+     散落在类体与 `__init__` 内。Walpurgis 将语料「规格」集中为可序列化 frozen dataclass，
+     `validate()` 在构造期检查 PATH 是否为占位符（等价上游裸 assert），
+     `as_kwargs()` 集中生成 kwargs 字典，`describe()` 输出可审计摘要。
+
+  2. **`JsonCorpusBase.__init_subclass__` 强制验证** — 上游抽取的公共逻辑以隐式约定
+     （子类须有 PATH 等属性）表达，子类缺失时等到实例化才 AttributeError。
+     Walpurgis 显式声明 `SPEC: ClassVar[CorpusSpec]` 并在 `__init_subclass__` 中
+     强制验证，类定义时立即 TypeError，早于任何实例化。
+
+  3. **`registry()` 惰性工厂 + 自动注册** — 上游用模块级可变字典 `NAMED_CORPORA`
+     硬编码所有类名，添加新语料须修改两处（类定义 + 字典）。
+     Walpurgis 用 `__init_subclass__` 自动注册，`registry()` 首次调用时
+     冻结为 `MappingProxyType`，防止运行时意外修改。
+     向后兼容：保留 `NAMED_CORPORA` 模块级名称，上游接口零破坏。
+
+  4. **环境变量路径覆盖** — 上游路径硬编码在类体（`PATH = '/raid/mshoeybi/...'`），
+     部署时须修改源码。Walpurgis 以 `WALPURGIS_*_PATH` 环境变量为优先，
+     占位符 `<name_path>` 为回退，`validate()` 检测未替换路径并给出
+     明确错误信息（而非上游的无上下文 `AssertionError`）。
+
+- **全链路 `_dbg()` 断点**：
+  - `MODULE_LOAD`：模块加载时打印注册表摘要
+  - `SPEC_VALIDATE`：路径占位符验证入口
+  - `SPEC_AS_KWARGS`：kwargs 生成时记录字段
+  - `CORPUS_INIT_ENTER`：`__init__` 入口，记录原始 caller_kwargs
+  - `CORPUS_INIT_MERGED`：kwargs 合并完成，即将调用 super()
+  - `CORPUS_INIT_DONE`：super().__init__() 完成
+  - `REGISTRY_ADD`：新语料类注册时打印
+  - `REGISTRY_FROZEN`：注册表首次冻结时打印
+
+- **三维度审查（Knuth）**：
+  - **正确性**：`CorpusSpec.validate()` 等价上游 `assert PATH != placeholder`；
+    `as_kwargs()` 输出与上游 kwargs 字典完全一致（text_key / label_key / loose_json）；
+    `NAMED_CORPORA` 键集与上游完全相同，调用方零感知。
+  - **性能**：`_dbg()` 在 `WALPURGIS_DEBUG=0`（默认）时为零代价（if 短路）；
+    `CorpusSpec` 为 frozen dataclass，无运行时额外开销；
+    `registry()` 首次调用后缓存 MappingProxyType，后续 O(1)。
+  - **可维护性**：新增语料只需定义子类 + SPEC，自动注册，无需手动维护字典；
+    `CorpusSpec.describe()` 使调试时可一行打印全部语料元信息；
+    环境变量覆盖路径机制使部署无需修改源码。
+
+---
+
+## migrate 2e6d5ed9c: moved padding to utils — vocab padding 集中化
+
+---
+
 ## migrate ebbe40cd3: Merge branch 'move_vocab_padding_to_utils' into 'master'
 
 - **Upstream commit**: ebbe40cd3 (Megatron-LM, commit #22/9062)
