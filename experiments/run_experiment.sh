@@ -21,21 +21,20 @@ set -u
 # ── 参数 (cugraph-gnn风格: 环境变量配置) ──
 TIMESTAMP="$(date '+%Y%m%d_%H%M%S')"
 DATASET="${DATASET:-SYNTH}"
-# 三重空白清理: bash pattern + tr + sed, 防止任何locale/shell版本遗漏
-DATASET="${DATASET//[[:space:]]/}"
-DATASET="$(echo -n "$DATASET" | tr -d '[:space:]')"
-DATASET="$(echo -n "$DATASET" | sed 's/[[:space:]]//g')"
+# 空白清理: printf + tr (echo -n在某些shell/conda环境下不可靠)
+DATASET="$(printf '%s' "$DATASET" | tr -d ' \t\n\r')"
 GPU="${GPU:-0}"
 EPOCHS="${EPOCHS:-3}"
 SEED="${SEED:-42}"
 PUSH="${PUSH:-0}"
 DEBUG="${DEBUG:-0}"
-RUN_ID="$(echo -n "${DATASET}_${TIMESTAMP}_seed${SEED}" | tr -d '[:space:]')"
+RUN_ID="$(printf '%s' "${DATASET}_${TIMESTAMP}_seed${SEED}" | tr -d ' \t\n\r')"
 
 echo "============================================"
 echo " Walpurgis Experiment (cugraph-gnn pattern)"
 echo " Run ID:   $RUN_ID"
-echo " Dataset:  $DATASET"
+echo " Dataset:  [$DATASET] (len=${#DATASET})"
+printf " Dataset hex: " && printf '%s' "$DATASET" | od -A n -t x1 | head -1
 echo " GPU:      $GPU"
 echo " Epochs:   $EPOCHS"
 echo " Seed:     $SEED"
@@ -57,7 +56,7 @@ echo "  PWD: $REPO_DIR"
 # ── Phase 1: 数据校验 (from cugraph-gnn datasets/get_test_data.sh) ──
 echo ""
 echo "[Phase 1] Data validation"
-DATA_DIR="datasets/$(echo -n "${DATASET}" | tr -d '[:space:]')"
+DATA_DIR="datasets/$(printf '%s' "${DATASET}" | tr -d ' \t\n\r')"
 # 断言: DATASET不应含空格
 if [[ "$DATASET" =~ [[:space:]] ]]; then
     echo "  FATAL: DATASET='${DATASET}' still contains whitespace after strip"
