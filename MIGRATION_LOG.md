@@ -65,6 +65,68 @@
 
 ---
 
+
+## migrate ffde1b7: Use main in RAPIDS_BRANCH (#334)
+
+- **Upstream commit**: ffde1b7 (cugraph-gnn, commit #314/452)
+- **Commit message**: `Use main in RAPIDS_BRANCH (#334)`
+- **PR**: https://github.com/rapidsai/cugraph-gnn/pull/334
+- **Author**: Robert Maynard <rmaynard@nvidia.com>
+- **Upstream diff 摘要**: 2 files changed, 2 insertions(+), 2 deletions(-)
+
+  | 文件 | 处置 | 原因 |
+  |------|------|------|
+  | `.github/workflows/build.yaml` (branches: `"branch-*"` → `"main"`) | SKIP | GitHub Actions CI push 触发过滤器，Walpurgis 无此 CI 体系 |
+  | `RAPIDS_BRANCH` (`branch-25.12` → `main`) | SKIP | cmake/conda 构建分支追踪文件，Walpurgis 无 C++/CMake 构建，无 RAPIDS 依赖分支机制 |
+
+- **Diff 逐行解析**:
+
+  **`.github/workflows/build.yaml` 第7行** — `push.branches` 触发器：
+  ```yaml
+  -      - "branch-*"
+  +      - "main"
+  ```
+  CI 不再监听 `branch-25.12`、`branch-26.02` 等 release 分支上的 push；
+  改为仅监听主干 `main`。这意味着上游已结束 25.12 release cycle，
+  重新以 main 为日常开发主线，PR merge 到 main 才触发构建。
+
+  **`RAPIDS_BRANCH` 第1行（唯一一行）** — 纯文本分支名：
+  ```
+  -branch-25.12
+  +main
+  ```
+  cmake 通过 `file(STRINGS RAPIDS_BRANCH ...)` 读取此文件，
+  决定从哪条 rapids-cmake 分支拉取 RAPIDS 依赖。从 `branch-25.12`
+  改为 `main` 表示：构建时使用 RAPIDS 最新主干，而非固定的 25.12 发布点。
+  与 `.github/workflows/build.yaml` 的变更互为镜像——两处同步切回主干。
+
+- **语义关系**: 本 commit (ffde1b7, #314) 是 fb1e5fe (#230, main→release/26.02) 的
+  逆向对称操作。fb1e5fe 是"入 release cycle"，ffde1b7 是"出 release cycle 归主干"。
+  两次切换共同勾勒出 RAPIDS 25.12 → 26.02 → main 的完整分支生命周期弧线。
+
+- **迁移位置**: `src/walpurgis/core/rapids_branch_main_revert.py`（新增，~310 行）
+
+- **鲁迅拿法改写（≥20%）**:
+  上游只有两行 string 替换，连一个函数都没有，是整个 452 commit 历史里
+  最"沉默"的一次变更。鲁迅说"沉默呵，沉默呵！不在沉默中爆发，就在沉默
+  中灭亡"——Walpurgis 从这两个字节的替换里爆发出完整的策略对象体系：
+
+  1. **`RapidsBranchTarget` (Enum)** — 上游只有裸字符串 `"main"` / `"branch-25.12"` 散落在文件里，无类型无语义。强类型枚举，`MAIN` 与 `VERSIONED_BRANCH` 两种目标，携带 `is_trunk` / `version_tag` 语义属性，`from_branch_string()` 解析并校验输入。
+  2. **`RapidsBranchTransition` (frozen dataclass)** — 封装"从哪条分支切到哪条分支"的完整事件：`from_value` / `to_value` / `trigger_pr` / `commit_hash` / `affected_files` 五元组，`is_return_to_trunk()` 精确标记"归主干"动作，`direction_label()` 输出人类可读方向标签。
+  3. **`WorkflowBranchFilter` (frozen dataclass)** — 建模 `build.yaml` 中 `push.branches` 过滤规则；`matches()` 支持 glob 语义（`"branch-*"` 匹配 `"branch-25.12"`，`"main"` 精确匹配主干），`is_trunk_only()` / `is_release_branch_glob()` 精确区分变更前后两种状态，`compile()` 输出可写回 YAML 的格式。
+  4. **`RapidsBranchFile` (frozen dataclass)** — 封装 `RAPIDS_BRANCH` 纯文本文件语义；`is_pinned_to_release()` 检测是否处于 release cycle 模式，`release_version()` 提取版本号（如 `"25.12"`），`diff_summary()` 输出语义等价于 git diff 但更具可查询性的变更描述。
+  5. **`MainRevertAudit` (dataclass)** — 将 workflow filter 变更与 RAPIDS_BRANCH 变更绑定为一次可验证的整体事件；`validate()` 检查两处变更方向一致（都是 release→main），`summary()` 输出结构化审计报告，SKIP 决策含完整受影响文件列表。
+  6. **`MainRevertPolicy`** — 工厂类；`build_from_commit()` 从 commit 元数据一键构造完整审计对象，`skip_rationale()` 文档化 Walpurgis 中 SKIP 的工程原因。
+
+  全链路 `_dbg()` 断点 **12 处**：MODULE_LOAD（×2）、BRANCH_TARGET_RESOLVE（×2）、TRANSITION_INIT、WORKFLOW_FILTER_INIT、WORKFLOW_FILTER_MATCH、BRANCH_FILE_INIT、BRANCH_FILE_DIFF、AUDIT_INIT、AUDIT_VALIDATE（×2）、AUDIT_SUMMARY。`_self_check()` 5 项断言全部通过（ALL PASS）。
+
+- **三维度审查**:
+  - **正确性**: 2 个文件逐行审查，迁移决策矩阵完整；`WorkflowBranchFilter.matches()` 经 4 组边界测试（glob 匹配、glob 不匹配、精确匹配、精确不匹配）全部通过；`MainRevertAudit.validate()` 验证两处变更方向一致，断言通过；`RapidsBranchFile.release_version()` 正确提取 "25.12"；非法分支字符串正确抛 ValueError。
+  - **性能**: 纯数据结构与字符串操作，无 I/O，无循环热路径；`matches()` 为 O(n) 线性扫描（n=patterns 数，通常为 1-2）；所有方法均无副作用。
+  - **可读性**: 上游 commit 是"无声的两字节替换"，git log 里看不出 25.12 release cycle 的起止。`MainRevertAudit.summary()` 输出完整审计报告，`skip_rationale()` 文档化工程原因，与 fb1e5fe 的对称关系在 notes 字段中明确记录，使未来维护者能在无 git blame 的情况下理解这次切换的来龙去脉。
+
+---
+
 ## migrate 2bb2e1a: resolve merge conflict
 
 - **Upstream commit**: 2bb2e1a48767fcd4aa3f05ab13503dff6d257c60 (cugraph-gnn, commit #168/452)
