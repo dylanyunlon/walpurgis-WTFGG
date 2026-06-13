@@ -21,6 +21,9 @@ set -u
 # ── 参数 (cugraph-gnn风格: 环境变量配置) ──
 TIMESTAMP="$(date '+%Y%m%d_%H%M%S')"
 DATASET="$(echo "${DATASET:-SYNTH}" | tr -d '[:space:]')"
+# 双保险: bash内置trim
+DATASET="${DATASET%% }"
+DATASET="${DATASET## }"
 GPU="${GPU:-0}"
 EPOCHS="${EPOCHS:-3}"
 SEED="${SEED:-42}"
