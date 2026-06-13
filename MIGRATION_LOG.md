@@ -1,4 +1,45 @@
 
+## migrate 0399d32c7: fixed save race condition — Megatron-LM #4/9062
+
+- **Upstream commit**: 0399d32c7（Megatron-LM，第4个，共9062）
+- **Commit message**: `fixed save race condition`
+- **Upstream diff 摘要**（1 file changed, 1 insertion(+), 1 deletion(-)）：
+
+  | 文件 | 变更内容 |
+  |------|----------|
+  | `utils.py` · `save_checkpoint()` | `get_rank() > 1` → `get_rank() > 0`；修复 rank=1 意外持有写权导致的 checkpoint 写竞争 |
+
+- **迁移判定**：直接迁移（功能相关，分布式写保护逻辑）
+- **迁移位置**：`src/walpurgis/utils/save_race_fix_0399d32c7.py`（新增）
+
+- **鲁迅拿法改写（≥20%）**：
+  上游一行之差，却是全局正确性的门槛。鲁迅写《祝福》，祥林嫂反复述说
+  阿毛的死，旁人起初同情，渐而厌烦，终至冷漠——因为没有人追问：
+  为何第一次就把门留开了？上游 `> 1` 亦然：看似只差一个数字，
+  实则把 rank=1 悄悄放进了禁区，无人追问，无人记录，直至竞争发作。
+
+  Walpurgis 将此「单字节修复」提炼为四个结构：
+  1. `RankWritePolicy` 枚举 —— 显式区分 SOLO_RANK0（正确）与 BUG_RANK1_INCLUDED（错误），
+     使「> 1」缺陷不再隐匿于 diff，而是可查询的已命名状态。
+  2. `DistributedWriteGuard` dataclass —— 封装写权判断上下文，携带 rank/world_size 快照
+     与 `holds_write_lock()`/`audit()` 接口，可脱离真实分布式环境独立测试。
+  3. `CheckpointRaceRecord` dataclass —— 文档化 0399d32c7 完整上下文：错误策略、
+     修复策略、触发场景、受影响 rank 组合，补全上游欠缺的「为何改」。
+  4. `make_write_guard()` 工厂函数 —— 对应上游修复后 if 条件，自动探测分布式环境，
+     通过 WALPURGIS_DEBUG=1 断点追踪每次决策路径。
+
+  全链路 `_dbg()` 断点共 **10 处**：MODULE_LOAD×2、RANK_WRITE_POLICY、
+  WRITE_GUARD_INIT、WRITE_GUARD_LOCK_CHECK、WRITE_GUARD_AUDIT、
+  RACE_RECORD_LOAD、MAKE_WRITE_GUARD×2、SELF_CHECK×2。
+  `_self_check()` 5 项断言全部通过。
+
+- **三维度审查（Knuth）**：
+  - **正确性**：`SOLO_RANK0.holds_write(rank)` 等价于 `rank == 0`，与修复后上游完全一致；
+    `BUG_RANK1_INCLUDED` 保留缺陷行为的可查询记录，正确性审计优于上游裸注释。
+  - **性能**：纯策略/元数据模块，无运行时热路径，无分布式调用；`holds_write()` 为 O(1)。
+  - **可读性**：上游无任何竞争条件说明；`CheckpointRaceRecord.race_scenario` 字段
+    以自然语言描述 makedirs 竞争触发路径，`audit()` 输出完整决策日志，可读性大幅优于上游。
+
 ## migrate 3573423f4: added presplit-sentences to scripts — BERT 预训练脚本新增预切句标志
 
 - **Upstream commit**: 3573423f4 (Megatron-LM)
