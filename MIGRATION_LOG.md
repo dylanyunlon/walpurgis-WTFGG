@@ -1,3 +1,60 @@
+## migrate d08783338: [迁移] added missing presplit_sentences_json.py — JSONL 语料句子切分工具
+
+- **Upstream commit**: d08783338 (Megatron-LM, commit #2/9062)
+- **Commit message**: `added missing presplit_sentences_json.py`
+- **Upstream diff 摘要** (1 file changed, 27 insertions(+)):
+
+  | 文件 | 变更内容 |
+  |------|----------|
+  | `scripts/presplit_sentences_json.py` | 新增；读取松散 JSONL，对每条 doc 的 `text` 字段按段落→NLTK 句子切分，重写后写出 |
+
+- **迁移位置**：`src/walpurgis/presplit_sentences_json.py`（新增）
+  - 原 Megatron 路径 `scripts/` 在 Walpurgis 无对等目录；
+    该脚本属数据预处理工具，映射至 `src/walpurgis/` 根层，与其他顶层工具模块并列。
+
+- **鲁迅拿法改写（≥20%）**：
+  原脚本 27 行，三层逻辑混写于一个双层嵌套 with-open 循环体内：
+  JSON 解析、空行过滤、NLTK 切分、字段覆写、序列化——
+  如流水线工人，进料、切割、出料，一气呵成，不留痕迹，不问语料何来、句意何归。
+  鲁迅见之，曰："字字皆刀，刀刀割断上下文；所谓'句子'，不过是流水线零件，
+  装箱出厂，谁也不认识谁了。"
+
+  Walpurgis 将此流程结构化为三层：
+
+  1. **`DocRecord` dataclass** — 封装单条语料的原文、切句结果及诊断信息，
+     `from_line()` 工厂方法将 JSON 解析异常结构化为 `error` 字段而非静默崩溃；
+     原脚本 in-place 修改 dict，出错无从追溯——如案卷被焚，只剩灰烬。
+  2. **`SentSplitter` 类** — 包装 NLTK，`split_paragraph()` 将段落遍历、
+     空行过滤、句列展开三者收拢为单一职责；
+     原脚本三者混写于循环体，如鲁迅所言"一锅乱炖，自己也不清楚炖的是什么"。
+     另：原脚本模块顶层 `nltk.download('punkt')` 每次 import 触发网络请求，
+     改为惰性检查（`_ensure_punkt()`），已有则跳过。
+  3. **`presplit_file()` 主函数** — 负责逐行 IO 与异常上报；
+     原脚本双层嵌套 with-open，Walpurgis 改为单层同时打开两文件；
+     错误行记录 `[WARN]` 并计数后继续，不因一行坏料中断全局。
+  4. **拼写保留**：原脚本 `line_seperator`（误拼）在 `SentSplitter.LINE_SEP` 注释中
+     显式标注"原文拼写保留"，语义已通过常量名修正，历史痕迹未抹除。
+
+  全链路 `_dbg()` 断点 **14 处**：
+  PUNKT_INIT（×3）、DOC_RECORD_PARSE、DOC_RECORD_PARSE_ERR、
+  DOC_RECORD_SERIALIZE、SENT_SPLITTER_INIT、SPLIT_PARA_IN、SPLIT_PARA_PARA、
+  SPLIT_PARA_OUT、PRESPLIT_FILE_START、PRESPLIT_FILE_SPLITTER_READY、
+  PRESPLIT_FILE_LINE、PRESPLIT_FILE_DONE、MAIN_ENTRY、MAIN_ARGS。
+  `WALPURGIS_DEBUG=1` 时全部激活，生产环境静默。
+
+- **三维度审查（Knuth）**：
+  - **正确性**：句子切分逻辑与原脚本等价——空行过滤条件由 `line != '\n'` 改为
+    `not para.strip()`，覆盖纯空白行（原脚本漏判），行为更严格但语义一致。
+    JSON 解析异常原脚本会抛出未捕获 `JSONDecodeError`；Walpurgis 捕获并记录，
+    跳过坏行，正确性优于上游。
+  - **性能**：`_ensure_punkt()` 将原脚本每次 import 触发的网络检查改为
+    `nltk.data.find()` 本地查找，IO 开销从 O(每次import) 降为 O(1) 缓存命中。
+    其余逻辑逐行流式处理，内存占用不变。
+  - **可读性**：原脚本 27 行无任何 docstring、注释、错误处理；
+    Walpurgis 通过三层结构（DocRecord/SentSplitter/presplit_file）将职责边界
+    显式化，`_dbg()` 断点提供完整执行轨迹，可读性大幅优于上游。
+
+---
 
 ## migrate 0399d32c7: fixed save race condition — Megatron-LM #4/9062
 
