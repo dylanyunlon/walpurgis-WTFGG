@@ -9773,3 +9773,58 @@ Walpurgis `TrainingConfig(frozen dataclass)` 类型化所有训练参数，
 - **自测结果**: N/A（无新增代码）
 
 ---
+
+---
+
+## migrate 6b94558: [MIGRATE] fix some potential buffer overflow problems as suggested by sonarqube
+
+- **Upstream commit**: 6b94558 (linhu-nv, 2025-12-03)
+- **Commit message**: `fix some potential buffer overflow problems as suggested by sonarqube`
+- **PR**: #367 "fix some potential buffer overflow problems as suggested by sonarqube"
+- **2 files changed, 16 insertions(+), 7 deletions(-)**
+
+### 上游 diff 摘要
+
+| 文件 | 修复内容 |
+|------|----------|
+| `cpp/src/wholememory/communicator.cpp::get_host_name()` | 删除 `strncpy(hostname, "unknown", maxlen)` 死代码（在 `WHOLEMEMORY_FATAL` 之前的不可达写入）|
+| `cpp/src/wholememory/communicator.cpp::get_boot_id()` | `strncpy→memcpy+std::min()` 防止溢出；`fclose(file)` 移入 `if(file!=nullptr)` 块内防 UB；`#undef HOSTID_FILE`→`#undef BOOTID_FILE` 宏名拼写修正 |
+| `cpp/src/wholememory/memory_handle.cpp::exchange_handle()` | `strcpy(cliaddr.sun_path, dst_name.c_str())` 前加 `if (dst_name.length() >= sizeof(cliaddr.sun_path)) WHOLEMEMORY_FATAL(...)` 长度守卫 |
+
+### 与已迁移文件的关系
+
+6b94558 是 PR #367 的**源头 commit**，其 C++ 修复语义已通过以下历史迁移消化：
+
+- **`ipc_guard.py` (migrate 3626464)**: `HostnameGuard` / `BootIdBuilder` / `IpcPathGuard` 完整覆盖三处 C++ 修复的 Python 防护层。
+- **`clang_format_comm.py` (migrate 5a9accc)**: 将 6b94558 引入代码的 clang-format 格式规则显式化。
+- **`1b6d67b` (migrate 1b6d67b)**: PR #367 的 merge commit，已 SKIP（纯 merge）。
+
+### CI/merge 判定
+
+两个 C++ 文件均属 buffer overflow 安全修复，有独立 Python 建模价值：**迁移**。
+
+### 迁移位置
+
+`src/walpurgis/core/wholememory/sonarqube_overflow_audit.py`（**新建**）
+
+**迁移角度**: ipc_guard.py 已覆盖功能防护，本模块从三个 ipc_guard 未建模的维度补充：
+
+1. **SonarQube 规则级映射** — `SonarFinding(NamedTuple)` 将每处 C++ 修复映射到具体规则 ID（`cpp:S1048` / `cpp:S5891` / `cpp:S1081`）及 CWE 编号。
+2. **宏名拼写漏洞** — `MacroNameInvariant` 专项建模 `#undef HOSTID_FILE`→`#undef BOOTID_FILE` 静默 no-op 风险。
+3. **NULL 解引用风险建模** — `NullDerefRiskRecord` 结构化记录 `fclose` 位置 UB（S5902/CWE-476），映射 Python `with open()` 消除机制。
+
+### 鲁迅拿法改写（≥20%）
+
+五刀: `SonarFinding(NamedTuple)` / `SonarSeverity(Enum)+must_fix` / `MacroNameInvariant.check()` / `NullDerefRiskRecord+NullDerefElimination(Enum)` / `OverflowFixMatrix+audit_ipc_guard_coverage()`
+
+### 自测结果
+
+```
+[sonarqube_overflow_audit] self_test: ALL PASS
+commit 6b94558 OverflowFixMatrix (3 findings):
+  [BLOCKER]   cpp:S1081 / CWE-120 @ exchange_handle() → IpcPathGuard
+  [CRITICAL]  cpp:S5891 / CWE-120 @ get_boot_id()    → BootIdBuilder
+  [MINOR]     cpp:S1048 / CWE-561 @ get_host_name()  → HostnameGuard
+  NullDeref:  cpp:S5902 / CWE-476 → CONTEXT_MANAGER
+  Must-fix (BLOCKER+CRITICAL): 2
+```
