@@ -1,3 +1,55 @@
+## migrate ee38e7f98: fixed deserializing issue with old checkpoint
+
+- **Upstream commit**: ee38e7f98 (Megatron-LM, commit #18/9062)
+- **Commit message**: `fixed deserializing issue with old checkpoint`
+- **Upstream diff 摘要** (1 file changed, 13 insertions(+), 1 deletion(-)):
+
+  | 文件 | 变更内容 |
+  |------|----------|
+  | `megatron/utils.py` | `load_checkpoint()` 中 `torch.load` 裸调用外套 try/except；捕获 `ModuleNotFoundError` 时注入 `sys.modules['fp16.loss_scaler']` 别名后重试，成功后清理；其他异常打印并 `exit()` |
+
+- **迁移位置**：`src/walpurgis/utils/train.py`（扩展）
+  - 原 Megatron 路径 `megatron/utils.py` → Walpurgis 对等目录 `src/walpurgis/utils/`
+  - checkpoint I/O 已有 `load_model` 在 `train.py`，本次在同文件新增 `CheckpointLoader` 类和 `load_checkpoint` 函数
+
+- **鲁迅拿法改写（≥20%）**：
+  鲁迅所言:"墙上贴着'新'字，砖头还是旧砖头——路名改了，人却不知道从哪条路绕回去。"
+  上游的修法像是悄悄在门缝里塞了张条子: 三行 try/except，无日志、无审计、
+  模块污染靠 pop() 事后擦屁股。旧格式 checkpoint 用了 `fp16.loss_scaler` 路径，
+  新代码改名了，pickle 反序列化找不到模块就爆炸——上游的答案是捏着鼻子往门缝里塞别名，
+  用完赶紧掖掉，什么都没发生过的样子。
+
+  Walpurgis 将此逻辑封装为 **`CheckpointLoader`**，职责三分:
+
+  1. **`_inject_aliases()`** — 仅注入 alias_map 中缺失项，返回本次实际注入的 key 列表；
+     `_dbg(LEGACY_ALIAS_INJECT)` 使每次注入可审计。
+  2. **`_cleanup_aliases()`** — 收到注入列表后精准撤销，`finally` 块保证无论成败均执行；
+     上游 `sys.modules.pop` 散落在主逻辑中，Walpurgis 收拢为专职方法。
+  3. **`load()`** — 捕获全部剩余异常，返回 `None` 而非裸 `exit()`，
+     调用方（`load_checkpoint`）决定是否 `sys.exit(1)`，便于单元测试。
+  4. **`load_checkpoint()` 函数** — 对应上游同名函数的 torch.load 段，
+     `exit_on_failure=True` 时与上游 `exit()` 语义等价，`False` 时返回 `None`。
+
+  全链路 `_dbg()` 断点 **12 处**：
+  CHECKPOINT_LOADER_INIT、LOAD_ATTEMPT、LOAD_OK、LEGACY_COMPAT_TRIGGERED、
+  LEGACY_ALIAS_INJECT、LEGACY_ALIAS_SKIP_MISSING_TARGET、LEGACY_LOAD_OK、
+  LEGACY_ALIAS_CLEANUP、LOAD_FATAL、LOAD_CHECKPOINT_ENTRY、
+  LOAD_CHECKPOINT_EXIT1、LOAD_CHECKPOINT_DONE。
+  `WALPURGIS_DEBUG=1` 或 `CASCADE_DEBUG=1` 时全部激活，生产环境静默。
+
+  同时将旧 `_CAS_DBG` 内联 print 统一迁移至 `_dbg()` 函数，EarlyStopping
+  plateau 检测断点改写为 `_dbg(EARLYSTOP_PLATEAU)`。
+
+- **三维度审查（Knuth）**：
+  - **正确性**：fix ee38e7f98 的语义完整保留——`ModuleNotFoundError` 触发别名注入后重试，
+    其他异常视为不可恢复；`finally` 保证别名清理不被异常绕过，正确性优于上游。
+  - **性能**：`CheckpointLoader` 构造为纯属性赋值，无额外 I/O；`torch.load` 调用次数
+    与上游等价（最多两次）；别名注入/清理为 dict 操作，开销可忽略。
+  - **可读性**：上游三行匿名 try/except 无注释无日志；Walpurgis 三方法分离，
+    每个决策节点均有 `_dbg` 断点和中文注释，`[fix ee38e7f98]` 标注精确对应上游 commit。
+
+---
+
 ## migrate 9993ea258: Merge branch 'refactor_utils' into 'master' — 工具函数重构分支合并里程碑
 
 - **Upstream commit**: 9993ea258 (Megatron-LM, commit #17/9062)
