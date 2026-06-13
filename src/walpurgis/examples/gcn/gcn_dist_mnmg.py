@@ -634,6 +634,13 @@ def run_train(
     cugraph_comms_shutdown()
 
 
+class WGMemType:
+    """Enumeration of supported WholeGraph memory allocation strategies."""
+    CHUNKED = "chunked"
+    DISTRIBUTED = "distributed"
+    VALID = (CHUNKED, DISTRIBUTED)
+
+
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--hidden_channels", type=int, default=256)
@@ -646,7 +653,18 @@ def parse_args():
     parser.add_argument("--dataset", type=str, default="ogbn-products")
     parser.add_argument("--skip_partition", action="store_true")
     parser.add_argument("--seeds_per_call", type=int, default=-1)
-    return parser.parse_args()
+    parser.add_argument(
+        "--wg_mem_type",
+        type=str,
+        default=WGMemType.DISTRIBUTED,
+        choices=WGMemType.VALID,
+        help="WholeGraph memory allocation type: 'chunked' or 'distributed'",
+    )
+    args = parser.parse_args()
+    assert args.wg_mem_type in WGMemType.VALID, (
+        f"Invalid wg_mem_type '{args.wg_mem_type}'; expected one of {WGMemType.VALID}"
+    )
+    return args
 
 
 if __name__ == "__main__":
