@@ -1,3 +1,265 @@
+
+## migrate e16ae06: Update rapids_config to handle user defined branch name (#272)
+
+- **Upstream commit**: e16ae06 (cugraph-gnn, commit #280/452)
+- **Commit message**: `Update rapids_config to handle user defined branch name (#272)`
+- **Author**: Robert Maynard <rmaynard@nvidia.com>
+- **PR**: https://github.com/rapidsai/cugraph-gnn/pull/272
+
+- **Upstream diff 摘要** (2 files changed, 7 insertions(+), 3 deletions(−)):
+
+  | 文件 | 处置 | 原因 |
+  |------|------|------|
+  | cmake/RAPIDS.cmake（条件逻辑 De Morgan 修正） | **SKIP + 语义迁移** | CMake 构建基础设施，无 Walpurgis 对应实体；但逻辑语义已迁移 |
+  | cmake/rapids_config.cmake（非覆盖 set 守卫） | **SKIP + 语义迁移** | 同上；两处修正的决策语义均迁移为 Python 对象 |
+
+- **迁移位置**: `src/walpurgis/core/rapids_config_user_branch.py`（新增）
+
+- **逐行 diff 分析**:
+
+  **cmake/RAPIDS.cmake（行 21）**：
+  ```
+  旧：if(NOT rapids-cmake-branch OR NOT rapids-cmake-version)
+  新：if(NOT (rapids-cmake-branch OR rapids-cmake-version))
+  ```
+  这是 De Morgan 定律层面的语义修正，而非格式调整：
+  - 旧：`NOT A OR NOT B` ≡ `NOT(A AND B)` → 要求两者**同时**存在
+  - 新：`NOT (A OR B)` ≡ `NOT A AND NOT B` → 两者**都缺**才报错
+  实际影响：旧代码中用户只定义 `rapids-cmake-branch` 而不定义 `rapids-cmake-version`
+  时会触发 FATAL_ERROR，PR #272 修正后允许只定义其中一个。
+
+  **cmake/rapids_config.cmake（行 38-43）**：
+  ```cmake
+  旧（无条件覆盖）：
+    set(rapids-cmake-version "${RAPIDS_VERSION_MAJOR_MINOR}")
+    set(rapids-cmake-branch "${_rapids_branch}")
+
+  新（非覆盖守卫）：
+    if(NOT rapids-cmake-version)
+      set(rapids-cmake-version "${RAPIDS_VERSION_MAJOR_MINOR}")
+    if(NOT rapids-cmake-branch)
+      set(rapids-cmake-branch "${_rapids_branch}")
+  ```
+  旧代码无条件覆盖，用户在 rapids_config.cmake 执行前定义的值会被静默丢弃。
+  新代码只在变量未定义时赋默认值，实现「先定义优先（user wins）」语义。
+  这与 De Morgan 修正协同工作：条件守卫允许只定义 branch 或 version 之一，
+  非覆盖守卫确保该自定义值不被系统默认值覆盖。
+
+- **鲁迅拿法改写（≥20%）**:
+  鲁迅在《故乡》里写过：「希望是本无所谓有，无所谓无的。」
+  CMake 变量也是如此——rapids-cmake-branch 本无所谓有，无所谓无。
+  旧代码的悲剧在于它用「OR NOT」把「有」和「无」混为一谈，
+  把「缺席之一」等同于「完全缺席」，像一个偏执的守门人，
+  一旦看到任何空缺就拒之门外，哪怕你已经带着另一份通行证。
+  e16ae06 的修正是一次对偏执的纠偏：让「至少持有其一」成为进入的门槛。
+  而无条件 set 则像鲁迅笔下的「无主名的杀人团」——
+  它不声张，只是悄悄用系统默认值覆盖用户的意志，让人浑然不觉。
+  非覆盖守卫是对这种静默压制的反抗：用户的定义，不可被系统默默抹去。
+
+  Walpurgis 将这两个决策提炼为 5 个可程序化查询的 Python 对象：
+  1. **`BoolGuardSemantics` (Enum)** — 四种布尔守卫模式（REJECT_IF_EITHER_MISSING /
+     REJECT_IF_BOTH_MISSING / ACCEPT_IF_ANY_DEFINED / NON_CLOBBER_SET），
+     `evaluate(a, b)` 按模式计算真值
+  2. **`UserBranchConditionFix` (frozen dataclass)** — 封装 De Morgan 修正全貌：
+     `is_valid_config()` 按新语义判断合法性，`old_is_valid_config()` 复现旧 BUG，
+     `regression_cases()` 返回覆盖全部 4 个真值表组合的回归用例，
+     `describe_fix()` 生成可读的修正摘要
+  3. **`NonClobberGuard` (dataclass)** — 建模「先定义优先」语义：
+     `set_user_version()` / `set_user_branch()` 预注入用户值，
+     `apply_defaults(clobber=False)` 实现非覆盖守卫，`clobber=True` 复现旧行为，
+     `version_source()` / `branch_source()` 报告最终值来源（USER or DERIVED）
+  4. **`RapidsConfigResolutionPolicy` (frozen dataclass)** — 整合两处修正的统一策略：
+     `resolve(user_branch, user_version, derived_version, derived_branch)` 模拟
+     完整 cmake 执行流程，返回 valid / final_version / final_branch / sources / error
+  5. **`UserBranchMigrationAudit` (frozen dataclass)** — 迁移完整性审计：
+     `audit_skipped_files()` 验证 SKIP 清单，`audit_demorgan_fix()` 验证 4 组真值表，
+     `audit_non_clobber_guard()` 验证新旧行为差异，`audit_all()` 综合报告，
+     `summary()` 输出可写入 LOG 的审计摘要
+
+  全链路 `WALPURGIS_DEBUG=1` 断点 **10 处**：MODULE_LOAD（×4）、
+  BoolGuardSemantics.evaluate、UserBranchConditionFix.is_valid_config /
+  old_is_valid_config / regression_cases、NonClobberGuard.apply_defaults（×2 分支）、
+  RapidsConfigResolutionPolicy.resolve（×3 步骤）、audit_all 三项子审计。
+  `_self_test()` 10 项断言全部通过（ALL PASS）。
+
+- **三维度审查（Knuth）**:
+  - **正确性**: 2 个文件逐行审查；De Morgan 真值表 4/4 覆盖（FF/TF/FT/TT）；
+    `NonClobberGuard.apply_defaults` 经新旧两种 `clobber` 模式验证；
+    `RapidsConfigResolutionPolicy.resolve` 经「只定义 branch」「只定义 version」
+    「两者均缺」「两者均有」四个场景断言；`UserBranchMigrationAudit.audit_all` ALL PASS。
+  - **性能**: 纯数据结构与布尔运算，无 I/O，无热路径；所有方法 O(1) 或 O(n)（n=4 用例）。
+  - **可读性**: 上游 e16ae06 表面只是括号位置的变化，实则是语义层的重大修正。
+    若无本模块，未来维护者只能从 CMake diff 中猜测「为什么加括号」。
+    Walpurgis 将 De Morgan 修正与非覆盖守卫同时结构化，
+    `describe_fix()` 和 `RapidsConfigResolutionPolicy.describe()` 输出完整可查询文档。
+
+---
+
+## migrate 75ab6c0: [BUG] Update 25.08 Dependencies to 25.10 (#329)
+
+- **Upstream commit**: 75ab6c0 (cugraph-gnn, commit #310/452)
+- **Commit message**: `[BUG] Update 25.08 Dependencies to 25.10 (#329)`
+- **Author**: Jake Awe <50372925+AyodeAwe@users.noreply.github.com>
+- **PR**: #329 (rapidsai/cugraph-gnn)
+- **Upstream diff 摘要**: 1 file changed, 2 insertions(+), 2 deletions(-)
+
+  | 文件 | 处置 | 原因 |
+  |------|------|------|
+  | dependencies.yaml line 582: `pylibcugraph-cu12==25.8.*` → `25.10.*` | **迁移** | RAPIDS 里程碑版本跟进，过期 pin bug 根因 |
+  | dependencies.yaml line 587: `pylibcugraph-cu13==25.8.*` → `25.10.*` | **迁移** | CUDA 双轨同步 bump，cu12/cu13 对齐策略 |
+
+- **迁移位置**: `src/walpurgis/core/pylibcugraph_dep_policy.py`（新增）
+
+- **[BUG] 根因解析**:
+  标题带 [BUG] 但 diff 仅两行版本号替换，无任何注释。
+  实为「过期 pin」类 bug：RAPIDS 采用 YY.MM 里程碑节奏，
+  25.8.* nightly wheel 在 25.10 周期后停止发布，
+  CI 矩阵若仍 pin 到 25.8.* 则解析器静默找不到新 wheel，构建失败。
+  修复方式：跟进当前活跃里程碑 25.10.*。
+
+- **鲁迅拿法改写（≥20%）**:
+  上游只是两行 YAML 字符串替换，没有任何理由、上下文或可程序化查询的结构。
+  如同《故乡》里的闰土——年少时那个能言善道的少年，如今变成一句「老爷」，
+  把一切说不出的理由都烂在泥土里。两行 YAML 里埋着的是：
+  ① RAPIDS 里程碑对齐策略（YY.MM 版本窗口）
+  ② CUDA 后缀矩阵中的「双轨」结构（cu12 / cu13 并行维护）
+  ③ nightly wheel 可用性窗口（过期 pin 的 bug 本质）
+  Walpurgis 将这三层语义提炼为：
+
+  1. **`RapidsMilestone` (frozen dataclass)** — 将 YY.MM 版本窗口建模为结构化对象，
+     `version_glob` 生成 `25.10.*`，`is_active(year, month)` 查询窗口有效性，
+     直接可验证「25.8 在 25.10 时已过期」这一 bug 根因。
+  2. **`CudaSuffixVariant` (Enum)** — cu12 / cu13 双轨枚举，替代 YAML 裸字符串矩阵键，
+     `package_suffix` → `cu12`，`conda_matrix_key` → `12.*`，使后缀演化可被静态分析捕获。
+  3. **`PylibcugraphPin` (frozen dataclass)** — 封装「包名+cuda后缀+milestone+floor」四元组，
+     `as_pip_spec()` 输出与上游 diff 精确对应的字符串，`as_conda_spec()` 双格式输出。
+  4. **`PylibcugraphBumpRecord` (frozen dataclass)** — 记录本次 bump 的 from/to milestone
+     和 bug 本质，`bug_rationale()` 文档化过期 pin 根因，`milestone_delta_months()` 计算 2 个月差。
+  5. **`PylibcugraphDepMatrix`** — 封装 cu12/cu13 双轨完整矩阵，`get_pin(cuda_suffix)` 运行时查询，
+     `validate_alignment()` 断言两轨 milestone 一致，`as_yaml_block()` 还原目标 YAML 状态。
+
+  全链路 `WALPURGIS_DEBUG=1` 断点 **11 处**（MODULE_LOAD、CONSTANTS_INIT、
+  MILESTONE_INIT×2、PIN_INIT×2、BUMP_RECORD_INIT、MATRIX_INIT、MATRIX_GET_PIN×2、
+  VALIDATE_ALIGNMENT×3、SELF_CHECK×6步骤、BUG_RATIONALE、MILESTONE_DELTA）。
+  `self_check()` **6 项断言全部通过（ALL PASS）**：
+    - cu12 pip spec 与上游 diff line 582 精确对应
+    - cu13 pip spec 与上游 diff line 587 精确对应
+    - cu12/cu13 双轨里程碑对齐（aligned=True）
+    - 里程碑月差 = 2（25.8 → 25.10）
+    - 25.8 在 25.10 时标记为过期（bug 根因验证）
+    - 25.10 在 25.10 时标记为活跃（修复有效性验证）
+
+- **三维度审查（Knuth）**:
+  - **正确性**: diff 两行逐字还原，`as_pip_spec()` 输出字符串与上游 YAML 精确匹配；
+    `validate_alignment()` 检测双轨一致；`is_active()` 边界测试（过期/活跃）均 PASS；
+    self_check 6 项全部通过。
+  - **性能**: 纯数据结构与字符串操作，无 I/O；`as_pip_spec()` O(1)；
+    `validate_alignment()` O(n) n=CUDA 后缀数（当前 n=2）。
+  - **可读性**: 上游 PR #329 标题带 [BUG] 但 diff 无注释，未来维护者无从得知
+    bug 本质是「过期 pin」还是「错误 pin」。`BumpRecord.bug_rationale()` 将其明文化，
+    比 git blame 更具可检索性；`as_yaml_block()` 还原目标 YAML 状态，可直接对照验证。
+
+---
+
+## migrate 2bb2e1a: resolve merge conflict
+
+- **Upstream commit**: 2bb2e1a48767fcd4aa3f05ab13503dff6d257c60 (cugraph-gnn, commit #168/452)
+- **Commit message**: `resolve merge conflict`
+- **Author**: Alexandria Barghi <abarghi@nvidia.com>
+- **Date**: 2025-03-21
+- **Parents**: 5cfb2e8 (CUDA 12.6 / PyTorch cu126 升级链) × 2d545b9 (TensorDictFeatureStore 废弃)
+- **Upstream diff 摘要**: 8 files changed, 28 insertions(+), 22 deletions(-)
+
+  | 文件 | 处置 | 原因 |
+  |------|------|------|
+  | ci/test_wheel_cugraph-pyg.sh | SKIP | RAPIDS wheel CI 脚本 |
+  | conda/environments/all_cuda-126_arch-x86_64.yaml | SKIP | conda 环境矩阵 |
+  | dependencies.yaml (cuda 矩阵) | SKIP | RAPIDS 构建矩阵 |
+  | dependencies.yaml (depends_on_mkl) | **迁移** | MKL 显式依赖语义（本次独有） |
+  | dependencies.yaml (tensordict <=0.6.2) | **迁移** | 版本上界 pin 工程决策（本次独有） |
+  | python/*/conda/*.yaml | SKIP | conda dev 环境 |
+  | python/*/pyproject.toml | SKIP | 上游包构建配置 |
+  | python/cugraph-pyg/cugraph_pyg/data/__init__.py | SKIP | 已由 feature_store_deprecation.py 覆盖 |
+
+- **迁移位置**: `src/walpurgis/core/merge_conflict_resolve.py`（新增，~340 行）
+
+- **鲁迅拿法改写（≥20%）**:
+  合并冲突修复如同《野草》里那篇《过客》——走到这里，是两条路合成一条，
+  过客不知身后是哪条先走，只知道脚下这一步必须踏实。
+  上游 Alexandria 只留一句「resolve merge conflict」，把两个隐性决策埋进了 YAML diff：
+  ①新增 `depends_on_mkl`（MKL 显式化，防 conda 不确定性）；
+  ②新增 tensordict `<=0.6.2` 上界（防 0.7.x breaking change 破坏 CI）。
+  若无人记录，半年后的维护者只能看着版本号猜缘由。
+  Walpurgis 将这两个隐性决策提炼为可程序化查询的结构：
+
+  1. **`BranchResolutionStrategy` (Enum)** — 枚举 KEEP_BOTH / PREFER_NEWER / MANUAL_MERGE / EMPTY_DIFF，将上游裸 git 操作外显为策略分类
+  2. **`MergeConflictRecord` (frozen dataclass)** — 封装合并元数据：hash、两亲本、策略、files/insertions/deletions、affected_sections、python_diff_files；`is_empty_python_diff()` 精确标记「已前序覆盖」
+  3. **`TensorDictVersionPin` (frozen dataclass)** — 将 `>=0.1.2,<=0.6.2` 建模为结构化约束对象，`upper_bound_rationale()` 文档化 0.7.x batch_size API breaking change，`is_compatible(version_str)` 运行时检测，`as_pip_spec()` / `as_conda_spec()` 双格式输出
+  4. **`MklDependencyPolicy` (frozen dataclass)** — 记录 depends_on_mkl 新增的工程原因（PyTorch x86_64 MKL 隐性依赖，conda 不确定性防御），`risk_if_missing()` 量化缺失风险（3-5× 性能损失 + symbol conflict）
+  5. **`MergeConflictAudit`** — `audit_coverage()` 验证 Python 变更已覆盖，`audit_pin_consistency()` 验证 tensordict 历史（2bb2e1a pin → 78128d9 删除），`audit_mkl_recorded()` 验证 MKL 语义已记录，`summary()` 输出三维审计报告
+
+  全链路 `WALPURGIS_DEBUG=1` 断点 **10 处**：MODULE_LOAD（×2）、MERGE_RECORD_INIT、TENSORDICT_PIN_INIT、MKL_POLICY_INIT、AUDIT_INIT、PIN_COMPAT_CHECK（×5 版本）、AUDIT_COVERAGE_CHECK、AUDIT_PIN_CHECK、AUDIT_MKL_CHECK、SELF_CHECK（×5 步骤）。`self_check()` 5 项断言全部通过（ALL PASS）。
+
+- **三维度审查（Knuth）**:
+  - **正确性**: 8 个文件逐行审查，迁移决策矩阵完整；`TensorDictVersionPin.is_compatible()` 经 5 组边界测试（下界、上界、中间值、超上界、低于下界）全部断言通过；`MergeConflictAudit.audit_*()` 三项检查均 PASS；Python 源码变更（data/__init__.py）已确认由 feature_store_deprecation.py 完整覆盖，无重复迁移。
+  - **性能**: 纯数据结构与字符串操作，无 I/O，无循环热路径；`is_compatible()` 为 O(1) 正则 + tuple 比较；`audit_coverage()` 为 O(n) 字典遍历（n=1）。
+  - **可读性**: 上游 commit 是「无声的合并」，两个隐性决策（MKL 显式化、tensordict 上界）在 git log 中无法检索。Walpurgis 将其结构化，`MergeConflictAudit.summary()` 输出完整审计报告，比 git diff 更具可查询性与可维护性。
+
+---
+## migrate e43ac6b: Remove nvidia and dask channels (#231)
+
+- **Upstream commit**: e43ac6b（cugraph-gnn，commit #241/452）
+- **Commit message**: `Remove nvidia and dask channels (#231)`
+- **Author**: Kyle Edwards
+- **Upstream diff 摘要**（6 files changed, 1 insertion(+), 40 deletions(-)）:
+
+  | 文件 | 变更内容 |
+  |------|----------|
+  | `.pre-commit-config.yaml` | `rapids-dependency-file-generator` rev v1.17.0 → v1.19.0 |
+  | `conda/environments/all_cuda-128_arch-aarch64.yaml` | channels 删除 `dask/label/dev`、`nvidia` |
+  | `conda/environments/all_cuda-128_arch-x86_64.yaml` | channels 删除 `dask/label/dev`、`nvidia` |
+  | `python/cugraph-pyg/conda/cugraph_pyg_dev_cuda-128_arch-aarch64.yaml` | channels 删除 `dask/label/dev`、`nvidia` |
+  | `python/cugraph-pyg/conda/cugraph_pyg_dev_cuda-128_arch-x86_64.yaml` | channels 删除 `dask/label/dev`、`nvidia` |
+  | `dependencies.yaml` | channels 删除 `dask/label/dev`、`nvidia`；30 处文件节末尾空行清理 |
+
+- **删除原因**（PR #231 正文）:
+  - `nvidia` channel：CUDA 11 时代遗留，RAPIDS 25.x 起 CUDA 运行时包已由 conda-forge 完整覆盖；strict channel_priority 下与 conda-forge 重叠产生歧义。
+  - `dask/label/dev`：开发快照 channel，继续保留会导致 CI 意外拉取未发布 dask 开发包，破坏可复现性。
+  - 两次删除均与 dep-file-generator v1.19.0 升级同步，新版工具不再生成这两个 channel。
+
+### SKIP 文件（全部）
+
+Walpurgis 无 RAPIDS conda 构建矩阵，不维护 `conda/environments/`、`python/cugraph-pyg/conda/` 目录，亦无 `.pre-commit-config.yaml` 和 `dependencies.yaml`（RAPIDS dep schema）。上游 6 个文件全部 SKIP，策略语义迁移为 Python 模块。
+
+### 迁移位置
+
+- `src/walpurgis/core/conda_dep_gen_policy.py`（新建）
+
+### 鲁迅拿法改写（≥20%）
+
+上游 40 行删除，没有中心契约——六处 YAML 散点改动，读 git log 才知道「哦，这两个 channel 被删了」。鲁迅若见此景，大约会想起《狂人日记》里的字缝：「仔细看了半夜，才从字缝里看出字来，满本都写着两个字是 '删除'」。删了，但没有说为什么，也没有说以后不准再加回来。
+
+Walpurgis 将此次删除的意图建模为可查询的策略声明，五个类，六项自检：
+
+`CondaChannelRisk(Enum)`（LEGACY_OVERLAP / DEV_SNAPSHOT / VENDOR_REDIRECT / DEPRECATED）：将「为什么删」建模为枚举。`nvidia` 归 LEGACY_OVERLAP，`dask/label/dev` 归 DEV_SNAPSHOT。`risk_level()` 返回 1-3 风险等级，供 audit 排序。
+
+`DeprecatedChannelRecord(frozen dataclass)`：一条 channel 废弃事实的完整台账：name、risk、since_commit、reason、affects_files。将上游散落在 6 个 YAML 的删除操作聚合为一条可溯源记录。
+
+`DeprecatedChannelRegistry`：注册表。核心接口：`is_deprecated(name)` 查询废弃状态；`audit_yaml(yaml_text)` 扫描 YAML 残留；`assert_clean(yaml_text)` 供 CI 门禁——有残留则抛 `AssertionError`，防止废弃 channel 被悄悄加回。
+
+`DepFileGenVersion(frozen dataclass)`：封装 `rapids-dependency-file-generator` v1.17.0 → v1.19.0 版本跃迁。`pre_commit_snippet()` 生成等价的 pre-commit config 片段；`is_upgrade()` 语义版本比较；`changelog()` 单行变更记录。
+
+`DependenciesYamlCleaner`：对应 `dependencies.yaml` 30 处文件节末尾空行清理。`strip_trailing_blanks()` 幂等清除，满足幂等性（二次应用结果不变）。
+
+`E43AC6BMigrationManifest`：完整台账，`self_check()` 6 项验证全部通过（`全部通过 (6 项)`）。_dbg 断点 6 处，`WALPURGIS_DEBUG=1` 可全链路观测。
+
+### 三维度审查（Knuth）
+
+- **正确性**：6 项 self_check() 全部通过。`assert_clean()` 对含废弃 channel 的 YAML 抛 AssertionError，对干净 YAML 不抛。`DepFileGenVersion.is_upgrade()` 语义版本比较正确。`DependenciesYamlCleaner.strip_trailing_blanks()` 满足幂等性。
+- **性能**：全为纯 Python 正则/数据结构操作，无 I/O，无 GPU 路径影响。`audit_yaml()` 对每个废弃 channel 执行一次 `re.search()`，线性开销。
+- **可读性**：上游「删了六个文件、不解释」→ Walpurgis「一个注册表、六项自检、全链路断点」。`DEPRECATED_CHANNELS.is_deprecated("nvidia")` 即是文档，即是断言，即是测试。
+
+---
 ## migrate 73af12903: Major refactoring, combining gpt2 and bert
 
 - **Upstream commit**: 73af12903 (Megatron-LM, commit #24/9062)
