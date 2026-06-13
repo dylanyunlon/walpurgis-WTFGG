@@ -26,7 +26,10 @@ SEED="${SEED:-42}"
 GPU="${GPU:-2}"
 EPOCHS="${EPOCHS:-200}"
 DATASET="${DATASET:-METR-LA}"
-RUN_ID="experiment_${DATASET}_${TIMESTAMP}"
+# 空白字符清理 (三重保险)
+DATASET="${DATASET//[[:space:]]/}"
+DATASET="$(echo -n "$DATASET" | tr -d '[:space:]')"
+RUN_ID="experiment_$(echo -n "${DATASET}_${TIMESTAMP}" | tr -d '[:space:]')"
 RESULT_DIR="experiments/results/${RUN_ID}"
 mkdir -p "$RESULT_DIR"
 

@@ -256,30 +256,73 @@ class trainer():
                     print(f"[DIAG step={self._global_step}] per_horizon_MAE: {' '.join(per_h_mae)}", flush=True)
 
         # ═══ 增强诊断: 每200步打印完整数据状态快照 ═══
+        # 设计原则: 像现实世界开发一样, 每个关键组件的运行时状态都print出来
+        # 让开发者在服务器实验日志中就能看到模型是否正常学习
         if self._global_step % 200 == 0:
             with torch.no_grad():
-                # 模型组件状态
+                print(f"\n{'─'*70}", flush=True)
+                print(f"[DIAG step={self._global_step} epoch={self._current_epoch}] === 完整状态快照 ===", flush=True)
+
+                # ── 1. 自适应嵌入 ──
                 if hasattr(self.model, 'adp_gate'):
                     adp_gate_val = torch.sigmoid(self.model.adp_gate).item()
-                    print(f"[DIAG step={self._global_step}] adaptive_emb_gate={adp_gate_val:.4f}", flush=True)
+                    print(f"  adaptive_emb_gate={adp_gate_val:.4f}", flush=True)
                 if hasattr(self.model, 'adaptive_embedding'):
                     adp_norm = self.model.adaptive_embedding.norm().item()
-                    print(f"[DIAG step={self._global_step}] adaptive_emb_norm={adp_norm:.4f}", flush=True)
+                    adp_mean = self.model.adaptive_embedding.mean().item()
+                    adp_std = self.model.adaptive_embedding.std().item()
+                    print(f"  adaptive_emb: norm={adp_norm:.4f} mean={adp_mean:.6f} std={adp_std:.6f}", flush=True)
+
+                # ── 2. 邻接矩阵 ──
                 if hasattr(self.model, '_adj_temperature'):
                     adj_temp = self.model._adj_temperature.item()
-                    print(f"[DIAG step={self._global_step}] adj_temperature={adj_temp:.4f}", flush=True)
-                # 深度门状态
+                    blend = torch.sigmoid(self.model._adj_blend_gate).item()
+                    print(f"  adj_temperature={adj_temp:.4f} adj_blend_fwd={blend:.4f}", flush=True)
+
+                # ── 3. 深度门 ──
                 gate_vals = [f"L{i}={torch.sigmoid(g).item():.3f}" for i, g in enumerate(self.model.depth_gates)]
-                print(f"[DIAG step={self._global_step}] depth_gates: {' '.join(gate_vals)}", flush=True)
-                # cascade权重
+                print(f"  depth_gates: {' '.join(gate_vals)}", flush=True)
+
+                # ── 4. cascade权重 ──
                 cw = torch.nn.functional.softmax(self.model.cascade_weights, dim=0)
                 cw_str = ' '.join([f"L{i}={cw[i].item():.3f}" for i in range(len(cw))])
-                print(f"[DIAG step={self._global_step}] cascade_weights: {cw_str}", flush=True)
-                # 预测值分布
-                print(f"[DIAG step={self._global_step}] predict: min={predict.min().item():.2f} max={predict.max().item():.2f} mean={predict.mean().item():.2f} std={predict.std().item():.2f}", flush=True)
-                print(f"[DIAG step={self._global_step}] real_val: min={real_val_s.min().item():.2f} max={real_val_s.max().item():.2f} mean={real_val_s.mean().item():.2f}", flush=True)
-                # 学习率
-                print(f"[DIAG step={self._global_step}] lr={current_lr:.6f} epoch={self._current_epoch}", flush=True)
+                print(f"  cascade_weights: {cw_str}", flush=True)
+
+                # ── 5. 空间自注意力 (Phase 3) ──
+                if hasattr(self.model, '_use_spatial_attn') and self.model._use_spatial_attn:
+                    spa_gate = torch.sigmoid(self.model.spatial_attn.spa_gate).item()
+                    spa_entropy = (self.model.spatial_attn._last_entropy.item()
+                                   if self.model.spatial_attn._last_entropy is not None else -1.0)
+                    print(f"  spatial_attn: gate={spa_gate:.4f} entropy={spa_entropy:.4f}", flush=True)
+
+                # ── 6. Dif/Inh 融合门 ──
+                if hasattr(self.model, 'dif_inh_gate_out'):
+                    gate_bias = self.model.dif_inh_gate_out.bias.item()
+                    print(f"  dif_inh_gate_bias={gate_bias:.4f} (>0偏向dif, <0偏向inh)", flush=True)
+
+                # ── 7. 预测值分布 ──
+                print(f"  predict: min={predict.min().item():.2f} max={predict.max().item():.2f} "
+                      f"mean={predict.mean().item():.2f} std={predict.std().item():.2f}", flush=True)
+                print(f"  real_val: min={real_val_s.min().item():.2f} max={real_val_s.max().item():.2f} "
+                      f"mean={real_val_s.mean().item():.2f}", flush=True)
+
+                # ── 8. 梯度健康 ──
+                grad_norms = []
+                for name, p in self.model.named_parameters():
+                    if p.grad is not None:
+                        grad_norms.append((name, p.grad.norm().item()))
+                if grad_norms:
+                    grad_norms.sort(key=lambda x: -x[1])
+                    top3 = grad_norms[:3]
+                    bot3 = grad_norms[-3:]
+                    top3_str = " ".join(f"{n.rsplit('.', 1)[-1]}={v:.4f}" for n, v in top3)
+                    bot3_str = " ".join(f"{n.rsplit('.', 1)[-1]}={v:.6f}" for n, v in bot3)
+                    print(f"  grad_top3: {top3_str}", flush=True)
+                    print(f"  grad_bot3: {bot3_str}", flush=True)
+
+                # ── 9. 学习率 + loss分解 ──
+                print(f"  lr={current_lr:.6f} loss={mae_loss.item():.4f} cl_len={self.cl_len}", flush=True)
+                print(f"{'─'*70}\n", flush=True)
 
         if _is_debug() and self._global_step % 20 == 0:
             dump_struct_state(

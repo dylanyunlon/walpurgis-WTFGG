@@ -21,13 +21,16 @@ set -u
 # ── 参数 (cugraph-gnn风格: 环境变量配置) ──
 TIMESTAMP="$(date '+%Y%m%d_%H%M%S')"
 DATASET="${DATASET:-SYNTH}"
+# 三重空白清理: bash pattern + tr + sed, 防止任何locale/shell版本遗漏
 DATASET="${DATASET//[[:space:]]/}"
+DATASET="$(echo -n "$DATASET" | tr -d '[:space:]')"
+DATASET="$(echo -n "$DATASET" | sed 's/[[:space:]]//g')"
 GPU="${GPU:-0}"
 EPOCHS="${EPOCHS:-3}"
 SEED="${SEED:-42}"
 PUSH="${PUSH:-0}"
 DEBUG="${DEBUG:-0}"
-RUN_ID="${DATASET}_${TIMESTAMP}_seed${SEED}"
+RUN_ID="$(echo -n "${DATASET}_${TIMESTAMP}_seed${SEED}" | tr -d '[:space:]')"
 
 echo "============================================"
 echo " Walpurgis Experiment (cugraph-gnn pattern)"
@@ -54,7 +57,12 @@ echo "  PWD: $REPO_DIR"
 # ── Phase 1: 数据校验 (from cugraph-gnn datasets/get_test_data.sh) ──
 echo ""
 echo "[Phase 1] Data validation"
-DATA_DIR="datasets/${DATASET}"
+DATA_DIR="datasets/$(echo -n "${DATASET}" | tr -d '[:space:]')"
+# 断言: DATASET不应含空格
+if [[ "$DATASET" =~ [[:space:]] ]]; then
+    echo "  FATAL: DATASET='${DATASET}' still contains whitespace after strip"
+    exit 1
+fi
 if [ ! -f "${DATA_DIR}/train.npz" ]; then
     if [ "$DATASET" = "SYNTH" ] && [ -f "src/walpurgis/generate_synth_data.py" ]; then
         echo "  Generating SYNTH data..."

@@ -175,8 +175,9 @@ def cascade_aware_loss(preds, labels, null_val=np.nan,
 
     # ═══ 从TITAN移植: PSD不确定性感知加权 ═══
     # 高不确定性样本(突变/噪声)降权 → 防止模型被不可预测的样本带偏
-    # epoch < 20时不启用，让模型先学会基本模式
-    if _use_uncertainty and _current_epoch >= 20:
+    # 改写vs原TITAN: epoch >= 10 就启用(原来是20), 因为实验显示epoch 15已收敛
+    # 早期启用不确定性估计有助于远horizon更早得到合理梯度信号
+    if _use_uncertainty and _current_epoch >= 10:
         uncertainty = compute_psd_uncertainty(labels, null_val=0.0)
         # uncertainty=1: 不确定(降权到0.6), uncertainty=0: 确定(权重1.0)
         unc_weight = 1.0 - 0.4 * uncertainty  # [B, 1, N]
@@ -185,6 +186,31 @@ def cascade_aware_loss(preds, labels, null_val=np.nan,
              uncertainty.mean(), "loss")
         _dbg("cascade_loss.unc_weight_range",
              f"[{unc_weight.min().item():.3f}, {unc_weight.max().item():.3f}]", "loss")
+
+    # ═══ 从TITAN移植: worst-horizon-avoidance (鲁迅拿法, ~20%改写) ═══
+    # 原理: TITAN对每个expert的最差预测施加额外log惩罚
+    # 我们改写为: 找出每个batch中MAE最差的horizon, 对其施加额外权重
+    # 目的: 防止远horizon(h9-h12)被平均loss淹没, 迫使模型关注最弱环节
+    # 改写点: 不用log-gate(TITAN用于MoE), 而是直接对最差horizon加权
+    if T >= 4 and _current_epoch >= 5:
+        with torch.no_grad():
+            # 每个horizon的平均残差: [T]
+            per_h_mae = []
+            for hi in range(T):
+                h_res = residual[:, hi, :]
+                h_mask = mask[:, hi, :]
+                h_mae = (h_res * h_mask).sum() / h_mask.sum().clamp(min=1.0)
+                per_h_mae.append(h_mae)
+            per_h_mae = torch.stack(per_h_mae)  # [T]
+            # 找出最差的top-3 horizon
+            _, worst_idx = per_h_mae.topk(min(3, T))
+            # 构造worst-avoidance权重: 最差horizon额外加权1.3x
+            wa_weight = torch.ones(T, device=preds.device)
+            wa_weight[worst_idx] = 1.3
+            wa_weight = wa_weight.unsqueeze(0).unsqueeze(-1)  # [1, T, 1]
+        weighted_loss = weighted_loss * wa_weight
+        _dbg("cascade_loss.worst_horizons",
+             f"idx={worst_idx.tolist()} mae={per_h_mae[worst_idx].tolist()}", "loss")
 
     total = torch.mean(weighted_loss) + torch.mean(penalty)
 
