@@ -19,17 +19,17 @@ import torch
 import numpy as np
 from collections import defaultdict, OrderedDict
 
-# ─── migrate 539d0ad: 暴露 tensor 子包 ───────────────────
-# 原 commit: "Expose cugraph_pyg.tensor Subpackage"
-# 对应 walpurgis: import walpurgis.tensor
-# 鲁迅: 一扇门推开了, 屋里才有光。
-import walpurgis.tensor  # noqa: E402  (子包需在全局调试开关初始化后延迟亦可, 但提前注册更清晰)
+# ─── migrate 539d0ad: 暴露 tensor 子包 (optional: 需cupy) ──
+try:
+    import walpurgis.tensor  # noqa: E402
+except ImportError:
+    pass  # cupy不可用时跳过, 训练pipeline不需要此子包
 
-# ─── migrate f4ca484: 暴露 graph 子包 ────────────────────
-# 原 commit: "resolve merge conflicts" (引入 cugraph_dgl.Graph/features/view/convert)
-# 对应 walpurgis: import walpurgis.graph
-# 鲁迅: 推开一扇更重的门——屋里藏着整张图。
-import walpurgis.graph  # noqa: E402
+# ─── migrate f4ca484: 暴露 graph 子包 (optional: 需cupy) ──
+try:
+    import walpurgis.graph  # noqa: E402
+except ImportError:
+    pass  # cupy不可用时跳过, 训练pipeline不需要此子包
 
 # ─── 全局调试开关 ─────────────────────────────────────────
 _DEBUG_ENV = os.environ.get("WALPURGIS_DEBUG", "0")
