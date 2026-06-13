@@ -291,3 +291,48 @@ cat experiments/results/summary.json
 
 ### 第六位 Claude (M576-M600) — 待执行
 **角色**: PEMS-BAY 扩展 (若 METR-LA MAE < 2.85)
+
+---
+
+## Phase 4: 远Horizon突破 + 基础设施对齐 (M601-M750)
+
+### 实验数据现状 (来自服务器ags1 epoch-15真实日志)
+```
+(On average over 12 horizons) Test MAE: 2.90 | Test RMSE: 5.89 | Test MAPE: 7.92%
+h1=2.1566 h3=2.6021 h6=2.9299 h9=3.1520 h12=3.3462
+h12/h1 ratio = 1.55 → 目标: <1.40
+```
+
+### 第一位 Claude (M601-M625) ✅ 当前 — 主控
+**角色**: 远horizon突破算法 + 运行时诊断增强 + 空格bug修复
+**已完成**:
+- worst-horizon-avoidance loss: 从TITAN移植, 每batch找MAE最差top-3 horizon加权1.3x
+- PSD不确定性估计提前: epoch>=20 → epoch>=10 (实验证据: epoch 15已收敛)
+- 运行时诊断: 每200步打印9大类完整状态(spatial_attn/dif_inh/gradient健康/...)
+- DATASET空格修复: 三重清理(bash+tr+sed) + 断言检查
+- 研究alphaproof-nexus-results: 理解项目定位应是异构GPU系统论文, 预测只是ablation
+**commit**: 2a48aa3
+
+### 第二位 Claude (M626-M650) — 待执行
+**角色**: 服务器 METR-LA 200ep 完整实验 (worst-avoidance首战)
+- `git pull origin main && DATASET=METR-LA GPU=2 EPOCHS=200 bash experiments/run_experiment.sh`
+- 关注增强诊断中的 `worst_horizons` 和 `spatial_attn.gate` 变化趋势
+- 判据: h12/h1 ratio < 1.45 且 MAE_avg < 2.88 → SOTA突破
+
+### 第三位 Claude (M651-M675) — 待执行
+**角色**: 多种子评估 + 统计显著性检验 (服务器)
+- `for SEED in 42 123 456; do SEED=$SEED GPU=2 EPOCHS=200 bash experiments/run_experiment.sh; done`
+- 计算 mean±std, 确认改进的统计显著性
+
+### 第四位 Claude (M676-M700) — 待执行
+**角色**: 完整消融实验 (逐组件关闭)
+- worst_avoidance=off / spatial_attn=off / uncertainty=off / dif_inh_gate=fixed
+- 每组配置跑完push结果到 experiments/results/
+
+### 第五位 Claude (M701-M725) — 待执行
+**角色**: TeX论文数据更新 + pdflatex编译验证
+- 将Phase 4实验结果填入论文SOTA表/per-horizon表/消融表
+- 确保与alphaproof级别的呈现质量对齐
+
+### 第六位 Claude (M726-M750) — 待执行
+**角色**: PEMS-BAY数据集扩展 (若METR-LA已SOTA)
