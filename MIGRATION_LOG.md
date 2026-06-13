@@ -231,6 +231,63 @@
 
 ---
 
+## migrate 66719e973: Faster dataloader merge (#1) — Megatron-LM 确定性随机采样 + presplit-sentences + TFRecord 并发预取
+
+- **Upstream commit**: 66719e973 (Megatron-LM, 2019-09-13)
+- **Commit message**: `Faster dataloader merge (#1)`
+- **Upstream diff 摘要** (8 files changed, 127 insertions(+), 21 deletions(-))：
+
+  | 上游文件 | 变更内容 |
+  |---------|---------|
+  | `data_utils/samplers.py` | **新增**：`RandomSampler`（seed×epoch 确定性随机）、`DistributedBatchSampler`（rank 分片） |
+  | `data_utils/tf_dl.py` | **新增**：`ThreadedIterator` 后台预取；`TFRecordDataLoader` 支持 `threaded_dl` 参数 |
+  | `data_utils/datasets.py` | **新增**：`--presplit-sentences` 分支路径，逐行句子迭代替代整段随机截取 |
+  | `configure_data.py` | `RandomSampler` 替换 `torch.utils.data.RandomSampler`；TFRecord 修复 `max(num_workers,1)` 与新增 `threaded_dl` |
+  | `arguments.py` | 新增 `--shuffle`（确定性打乱）与 `--presplit-sentences`（预分割句子格式）两个参数 |
+  | `pretrain_bert.py` | `args.shuffle` 透传至 `make_loaders` |
+  | `README.md` | 文档：新增 `--presplit-sentences` 使用说明与 `presplit_sentences_json.py` 脚本引用 |
+
+- **迁移位置**：
+  - `src/walpurgis/sampler/faster_dl_sampler_66719e9.py`（新增）← `data_utils/samplers.py`
+  - `src/walpurgis/dataloader/faster_dl_tfrecord_66719e9.py`（新增）← `data_utils/tf_dl.py` + `data_utils/datasets.py`
+  - `src/walpurgis/core/faster_dl_args_66719e9.py`（新增）← `arguments.py` + `configure_data.py`
+
+- **鲁迅拿法改写（≥20%）**：
+  上游三个文件的故事，鲁迅各有一语道破：
+
+  `samplers.py`（「做奴隶虽然不幸，但并不可怕，因为知道挣扎，毕竟还有走出去的希望」）：
+  PyTorch 原版 `RandomSampler` 是随机的奴隶——每次 epoch 换种子，从不记录自己走过哪条路。
+  66719e973 用 `seed × epoch` 给随机套上锁链，使每次训练的采样序列完全可复现。
+  Walpurgis 的改写：`EpochSeedPolicy` dataclass 将种子计算策略显式建模（乘法/加法两种模式均可配置），
+  `SamplerBudget` 将 `batch_size×train_iters` 三元组封装为有界预算审计，
+  `DistributedBatchSampler.ShardSpec` 使 rank 切片边界集中化可测试。
+
+  `tf_dl.py + datasets.py`（「不在沉默中爆发，就在沉默中灭亡」）：
+  原版 TFRecord 加载器在 IO 等待中沉默，GPU 空转等待 CPU 解压。
+  `ThreadedIterator` 后台预取是一次「爆发」——后台线程持续压队，主线程无需等待。
+  `presplit-sentences` 更彻底：把每 epoch 的分词代价前移到预处理阶段，「把苦难放在今天受」。
+  Walpurgis 改写：`ThreadSpec` dataclass 封装线程参数，增加异常传播（`_ExceptionWrapper`）
+  解决上游 silent failure；`PresplitPolicy` 将两条路径显式建模，`split_document()` 统一接口；
+  `TFRecordLoaderConfig.effective_workers()` / `should_thread()` 集中决策逻辑。
+
+  `arguments.py + configure_data.py`（「横眉冷对千夫指，俯首甘为孺子牛」）：
+  两个新参数的背后，是对「随机」和「效率」的重新定义。`--shuffle` 不是随便打乱，
+  是对不可复现训练的横眉冷对；`--presplit-sentences` 不是偷懒，是俯首甘为每个 epoch 的孺子牛。
+  Walpurgis 改写：`ArgumentGroupSpec` dataclass 将参数元数据（来源 commit / Walpurgis 注释）
+  结构化存储；`DataLoaderPolicy` 枚举 + `DataLoaderPolicyResolver.resolve()` 将
+  `if shuffle: sampler = ...` 的裸条件决策建模为可测试策略；
+  `TFRecordArgsPolicy.build_loader_args()` 集中两处上游 fix（`max(num_workers,1)` / `threaded_dl`）。
+
+- **全链路断点覆盖**（`WALPURGIS_DEBUG=1`）：
+  - `faster_dl_sampler_66719e9.py`：MODULE_LOAD×2、EPOCH_SEED、SAMPLER_BUDGET、RANDOM_SAMPLER_INIT、RANDOM_SAMPLER_ITER、SET_EPOCH、DIST_BATCH_SAMPLER_INIT、DIST_BATCH_SAMPLER_SHARD、SELF_CHECK×5
+  - `faster_dl_tfrecord_66719e9.py`：MODULE_LOAD×2、THREADED_ITER_INIT、THREADED_ITER_PUT/GET/ERR/DONE、TF_LOADER_CONFIG×3、PRESPLIT_SPLIT×2、PRESPLIT_JSON、DATASET_CONFIG_TF/PRESPLIT/SAMPLER/AUDIT、SELF_CHECK×5
+  - `faster_dl_args_66719e9.py`：MODULE_LOAD×2、ARG_SPEC、POLICY_RESOLVE×2、TF_ARGS_BUILD、TF_ARGS_AUDIT、SELF_CHECK×5
+
+- **三维度审查（Knuth）**：
+  - **正确性**：`EpochSeedPolicy.hash_key(epoch)` 与上游 `seed * epoch` 完全等价（multiply_epoch=True 默认）；`TFRecordLoaderConfig.effective_workers()` 等价于 `max(num_workers,1)`；`should_thread()` 等价于 `num_workers > 0`；`rank_seed()` 等价于 `seed + rank + 1`。全部三个模块的 5 项自检断言均通过。
+  - **性能**：`EpochSeedPolicy.hash_key()` O(1)；`SamplerBudget.total_budget()` O(1)；`DataLoaderPolicyResolver.resolve()` O(1)；`PresplitPolicy.split_document()` O(n/sep) 与上游 `str.split()` 等价。无额外运行时开销。
+  - **可读性**：上游 127 行改动分散在 8 个文件中，意图隐藏在 `if` 条件和裸 int 运算里。Walpurgis 三个迁移文件将意图结构化：种子策略、预算审计、线程规格、presplit 路径、参数历史、采样器策略决策——全部可程序化查询，比上游代码更具可读性与可维护性。
+
 ## migrate 26c7d07: [SKIP] remove docs support in build.sh, other small cleanup — 全部 CI 脚本，Walpurgis 无 RAPIDS CI 体系
 
 - **Upstream commit**: 26c7d07cb89185beffa542dc269fa50a39fdb175 (James Lamb, 2024-10-21)
