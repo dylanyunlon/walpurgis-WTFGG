@@ -9632,6 +9632,42 @@ Walpurgis `TrainingConfig(frozen dataclass)` 类型化所有训练参数，
 
 ---
 
+## migrate 1c78b03: Use `RAPIDS_BRANCH` in cmake-format invocations that need rapids-cmake configs (#339)
+
+- **Commit**: `1c78b03`
+- **Commit message**: `Use \`RAPIDS_BRANCH\` in cmake-format invocations that need rapids-cmake configs (#339)`
+- **PR**: https://github.com/rapidsai/cugraph-gnn/pull/339
+
+- **Context**: `ci/check_style.sh` 中，cmake-format 检查所用配置文件 URL 的
+  分支名取得策略，从「调用 `rapids-version-major-minor` 命令动态推导」改为
+  「读取仓库根目录 `RAPIDS_BRANCH` 文件」（该文件由 commit eba488c 引入）。
+  同时修正缓存文件名拼写：`cmake-formats` → `cmake-format`（去掉多余的 `s`）。
+
+- **CI shell 脚本 → SKIP**:
+  - `ci/check_style.sh` → SKIP: CI shell 脚本，Walpurgis 无 RAPIDS cmake-format 检查流程
+
+- **策略变更**: `VERSION_CMD（动态推导）→ BRANCH_FILE（读取文件）`
+
+- **迁移位置**: `src/walpurgis/core/cmake_format_branch_policy.py` — 新增
+
+- **鲁迅拿法改写（≥20%）**:
+  1. **`FormatBranchSource(Enum)`**: 将上游两种隐式 bash 策略枚举化，
+     VERSION_CMD（已废弃）/ BRANCH_FILE（当前），携带 label/description/is_current 属性——上游无枚举
+  2. **`FormatFileUrlBuilder(frozen dataclass)`**: 封装 FORMAT_FILE_URL 构造语义，
+     validate_branch() 校验格式，to_url() 显式拼接——上游只有内联 bash 变量替换
+  3. **`RapidsBranchReader(frozen dataclass)`**: 封装「从哪取 RAPIDS_BRANCH 值」，
+     from_cmd() / from_file() 工厂方法对应 before/after，read() 统一入口——上游只有两种 bash 赋值
+  4. **`CheckStyleCmakeConfig(frozen dataclass)`**: 三行配置收口为单一对象，
+     consistency_check() 校验 URL 与 reader 一致性，corrects_typo() 验证拼写修正——上游无任何一致性校验
+  5. **`FormatBranchMigration`**: 建模迁移事件本身，before() / after() 对比，
+     change_report() 产出变更报告，verify() 回归验证——上游只有 git diff 三行
+  6. **`FormatBranchPolicyAudit`**: 结构化审计，to_log_entry() 产出 MIGRATION_LOG 段落——上游只有 commit message
+  7. **断点调试**: 全链路 10 处 `WALPURGIS_DEBUG=1` 断点 `_dbg()`
+
+- **自测结果**: `_self_test()` 全部 10 项通过
+
+---
+
 ## migrate 0bdae67: Require CUDA 12.2+ (#340)
 
 - **Commit**: `0bdae67`
