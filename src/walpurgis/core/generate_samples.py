@@ -1,6 +1,18 @@
 """
-migrate a1d04b793: Updating public repo with latest changes.
+migrate a1d04b793 + 872b4a6a4: Updating public repo with latest changes.
 上游文件: generate_samples.py + evaluate_gpt2.py（合并迁移）
+
+872b4a6a4 修复要点（Fixed edge case with multiple end of sequence in one sequence）：
+  上游 sample_sequence_batch 里，done_token 的计算没有检查序列是否已经"真正开始"：
+    旧: done_token = (prev == eos_id).byte()
+    新: done_token = (prev == eos_id).byte() & started.byte()
+  问题：如果 context 里本来就含有 eos_id（多个 eos 连续出现），
+  还没生成任何新 token，done_token 就已经为 True，
+  导致 lengths 被提前写入、just_finished 误判、is_done 提前置位。
+  鲁迅见此，想必会说：门还没开，就说进去了，这不是见鬼是什么。
+  Walpurgis 修复：在 batch_generate 里引入 started 掩码，
+  只有当 context_length > context_lengths（即至少生成了一个新 token）时，
+  才允许 done_token 触发 just_finished 逻辑。
 
 鲁迅拿法改写（≥20%）：
   上游 generate_samples.py 本次几乎完整重写（333行 → 333+外），
@@ -16,7 +28,8 @@ migrate a1d04b793: Updating public repo with latest changes.
   但上游偏偏反其道——一件事说了三遍，每遍还说得不清楚。
   Walpurgis 改写：
   1. SamplingConfig: 采样参数的结构化数据类
-  2. TokenSampler: top-k/top-p/greedy 采样逻辑，独立可测试
+  2. TokenSampler: top-k/top-p/greedy 采样逻辑，独立可测试；
+     新增 batch_generate，含 started 掩码修复（872b4a6a4）
   3. GenerationServer: socket 服务器抽为类，含状态机 ServerState
   4. PerplexityEvaluator: evaluate_gpt2 逻辑抽为独立类
 
@@ -185,6 +198,110 @@ class TokenSampler:
                     _dbg("GEN_MAX_REACHED", f"max_new_tokens={self.cfg.max_new_tokens}")
 
         return generated
+
+    def batch_generate(
+        self,
+        model: torch.nn.Module,
+        context_tokens: torch.Tensor,    # [B, T_max] padded
+        context_lengths: torch.Tensor,   # [B] 每条序列的真实 prompt 长度
+        eos_id: int,
+        max_new_tokens: Optional[int] = None,
+    ) -> torch.Tensor:
+        """
+        批量自回归生成（对应上游 sample_sequence_batch）。
+
+        872b4a6a4 修复：done_token 必须与 started 掩码做 AND，
+        否则 context 中已有的 eos_id 会被误认为"本轮生成结束"：
+
+          旧（有 bug）:  done_token = (prev == eos_id).byte()
+          新（已修复）:  done_token = (prev == eos_id).byte() & started.byte()
+
+        鲁迅拿法：上游把"已开始"这件事藏在循环变量里，没有命名、
+        没有注释，初读时完全看不出 & started 的必要性——
+        直到遇见"context 里就有 eos"的边界情形，才知道少了它会出什么鬼。
+        Walpurgis 把 started 显式建模为布尔张量，语义一目了然。
+
+        参数:
+          context_tokens:  [B, T_max]  prompt token ids，右边 pad
+          context_lengths: [B]         每条 prompt 的有效长度
+          eos_id:          结束符 token id
+          max_new_tokens:  最多生成多少新 token（默认用 SamplingConfig.max_new_tokens）
+
+        返回:
+          lengths: [B]  每条序列从 prompt 起始到 eos（含）的总长度
+        """
+        B = context_tokens.size(0)
+        max_new = max_new_tokens if max_new_tokens is not None else self.cfg.max_new_tokens
+        device = context_tokens.device
+
+        # lengths[i] 记录序列 i 生成结束时的总长度（prompt + generated）
+        lengths = context_lengths.clone().long()                      # [B]
+        is_done = torch.zeros(B, dtype=torch.bool, device=device)    # [B]
+        # started[i] = True 表示序列 i 已经至少生成了一个新 token
+        # 这是 872b4a6a4 修复的核心：防止 context 中的 eos 被误判
+        started = torch.zeros(B, dtype=torch.bool, device=device)    # [B]
+
+        _dbg("BATCH_GEN_START", f"B={B} max_new={max_new} eos_id={eos_id}")
+        _dbg("BATCH_GEN_CTX_LENGTHS", context_lengths)
+
+        current_ids = context_tokens.clone()  # [B, T_max]
+        context_length = int(context_lengths.max().item())
+
+        model.eval()
+        with torch.no_grad():
+            for counter in range(max_new):
+                context_length += 1
+
+                outputs = model(current_ids[:, :context_length])
+                if isinstance(outputs, tuple):
+                    logits = outputs[0]
+                else:
+                    logits = outputs
+
+                # 取每条序列最后一步的 logits → 逐条采样 → [B]
+                prev_logits = logits[:, -1, :]
+                prev = torch.tensor(
+                    [self.sample(prev_logits[i]) for i in range(B)],
+                    dtype=torch.long, device=device,
+                )
+
+                _dbg("BATCH_GEN_STEP", f"counter={counter} context_length={context_length}")
+                _dbg("BATCH_GEN_PREV", prev)
+
+                # 更新 started：只要当前 context_length 超过对应 prompt 长度，
+                # 就表示该序列已经开始生成新 token
+                started = started | (context_lengths < context_length)
+                _dbg("BATCH_GEN_STARTED", f"started_count={started.sum().item()}")
+
+                # ── 872b4a6a4 核心修复 ───────────────────────────────────────
+                # 旧: done_token = (prev == eos_id).byte()
+                # 新: done_token = (prev == eos_id).byte() & started.byte()
+                # 没有 & started，context 中已有的 eos 会被误认为"本轮完成"
+                done_token = (prev == eos_id).byte() & started.byte()   # [B]
+                # ────────────────────────────────────────────────────────────
+
+                just_finished = done_token.bool() & ~is_done            # [B]
+                lengths[just_finished] = context_length
+                _dbg(
+                    "BATCH_GEN_DONE_STATS",
+                    f"just_finished={just_finished.sum().item()} "
+                    f"cumulative_done={is_done.sum().item()}",
+                )
+
+                is_done = is_done | done_token.bool()
+
+                # 将采样到的 token 写回 current_ids
+                if context_length <= current_ids.size(1):
+                    current_ids[:, context_length - 1] = prev
+                else:
+                    current_ids = torch.cat([current_ids, prev.unsqueeze(1)], dim=1)
+
+                if is_done.all():
+                    _dbg("BATCH_GEN_ALL_DONE", f"all sequences done at counter={counter}")
+                    break
+
+        _dbg("BATCH_GEN_LENGTHS", f"lengths={lengths.tolist()}")
+        return lengths
 
 
 # ── ServerState（GenerationServer 状态机） ────────────────────────────────────
