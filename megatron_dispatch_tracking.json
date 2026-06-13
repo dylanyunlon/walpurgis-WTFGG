@@ -33,5 +33,11 @@
     "subject": "Support latest PyTorch RNG state API. (#8)",
     "dispatched_at": "2026-06-13 02:30:00",
     "status": "completed"
+  },
+  "13": {
+    "hash": "4947002db",
+    "subject": "Merge branch 'torchddp' into 'master'",
+    "status": "completed",
+    "file": "src/walpurgis/models/ddp_selector.py"
   }
 }

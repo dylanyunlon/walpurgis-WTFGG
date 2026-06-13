@@ -1,3 +1,61 @@
+## migrate 4947002db: Merge branch 'torchddp' into 'master' — 运行期 DDP 实现选择器
+
+- **Upstream commit**: 4947002db (Megatron-LM, commit #13/9062)
+- **Commit message**: `Merge branch 'torchddp' into 'master'`
+- **Upstream diff 摘要** (1 file changed, pretrain_bert.py):
+
+  | 变更点 | 内容 |
+  |--------|------|
+  | 移除 `USE_TORCH_DDP = False` 全局布尔旗 | 替换为运行期 `args.DDP_impl ∈ {'torch', 'local'}` |
+  | `get_model()` | 三路 if/elif/else, 记录 `args.DDP_type` |
+  | `get_optimizer()` | `isinstance(model, DDP)` → `isinstance(model, args.DDP_type)` |
+  | `backward_step()` | 新增 `timers` 参数; local 路径加 allreduce 计时 |
+  | `train()` | `timers_to_log` 按 `DDP_impl` 分支 (local 多含 'allreduce') |
+  | `evaluate()` | `isinstance(model, DDP)` → `isinstance(model, args.DDP_type)` |
+
+- **迁移位置**: `src/walpurgis/models/ddp_selector.py`（新增）
+  - 上游逻辑分散于 `pretrain_bert.py` 四个函数; 迁移时集中封装于 `models/` 子包,
+    与 `trainer.py`、`random_state.py` 并列 (同为训练基础设施)。
+  - 上游 `pretrain_bert.py` 在 Walpurgis 无直接对等文件;
+    DDP 选择/计时逻辑属框架层能力, 映射至 `src/walpurgis/models/ddp_selector.py`。
+
+- **鲁迅拿法改写（≥20%）**:
+  上游用一个全局布尔旗 `USE_TORCH_DDP` 区分两路;
+  逻辑散落在 `get_model / get_optimizer / backward_step / train / evaluate` 五处,
+  如鲁迅所言: "旗子挂在屋顶, 屋里的人靠猜。"
+
+  Walpurgis 将 DDP 选择与 allreduce 计时集中封装为四个结构:
+
+  1. **`DDPImpl` (Enum)** — 替代上游裸字符串 `'torch'/'local'`;
+     `from_str()` 单点解析, 拼写错误在入口立即抛 `DDPImplError`,
+     而非等到四处散落的 `if args.DDP_impl == 'torch'` 分支漏判。
+  2. **`DDPBuilder.wrap_for_ddp()`** — 替代上游 `get_model()` 内联三路 if/elif/else;
+     返回 `(wrapped_model, DDP_type)` 元组, 消除对 `args` 命名空间的隐式侧效应写入。
+  3. **`AllreduceTimer` 上下文管理器** — 替代上游 `backward_step()` 内
+     `if args.DDP_impl == 'local': timers('allreduce').start(); ...; stop()`;
+     `with AllreduceTimer(timers, impl): allreduce_params(...)` 一行,
+     TORCH 路径静默跳过, LOCAL 路径自动 start/stop。
+  4. **`build_timers_to_log(impl)`** — 替代上游 `train()` 内四行 if/else,
+     纯函数单点返回 timer 名称列表。
+
+- **全链路 `_dbg()` 断点 10 处**:
+  `DDP_IMPL_PARSE`, `DDP_IMPL_PARSE_ERR`,
+  `DDP_WRAP_TORCH`, `DDP_WRAP_LOCAL`, `DDP_WRAP_UNKNOWN`,
+  `ALLREDUCE_TIMER_ENTER`, `ALLREDUCE_TIMER_START`, `ALLREDUCE_TIMER_STOP`,
+  `ALLREDUCE_TIMER_SKIP`, `BUILD_TIMERS_TO_LOG`.
+  `WALPURGIS_DEBUG=1` 时全部激活, 生产环境静默。
+
+- **三维度审查 (Knuth)**:
+  - **正确性**: `DDPImpl.from_str()` 对未知值抛异常而非 `exit()`,
+    语义等价于上游 `print_rank_0(...); exit()`, 但测试环境可 catch 而不终止进程。
+    `AllreduceTimer.__exit__` 不抑制异常 (返回 False), 与上游线性代码等价。
+  - **性能**: 无额外开销; `_dbg()` 在 `WALPURGIS_DEBUG=0`(默认)时为零代价。
+    `AllreduceTimer` 上下文管理器的 `__enter__/__exit__` 调用开销可忽略。
+  - **可维护性**: 四个结构各司其职; 新增 DDP 实现 (如 'fsdp') 只需扩展
+    `DDPImpl` 枚举 + `DDPBuilder.wrap_for_ddp()` 一处 elif, 其余调用端不变。
+
+---
+
 ## migrate 93ab4bea5: added missing valid-data line (#9) — GPT-2 PPL 评估修复
 
 - **Upstream commit**: 93ab4bea5 (Megatron-LM, commit #8/9062)
