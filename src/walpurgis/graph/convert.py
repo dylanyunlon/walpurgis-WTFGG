@@ -6,6 +6,11 @@
 #         cugraph_dgl_graph_from_heterograph()
 # 迁移作者: dylanyunlon <dogechat@163.com>
 #
+# 追加迁移: cugraph-gnn commit feffb39 — fix import
+# 上游改动: convert.py 新增 `from cugraph_dgl.graph import Graph`
+#           将函数签名中的 `cugraph_dgl.Graph` 替换为 `Graph`（直接引用），
+#           并将 `cugraph_dgl.Graph(...)` 实例化改为 `Graph(...)`。
+#
 # 「凡是愚弱的国民，即使体格如何健全，如何茁壮，也只能做毫无意义的示众的材料
 #   和看客，病死多少是不必以为不幸的。」
 # —— 鲁迅《呐喊·自序》
@@ -13,13 +18,18 @@
 # 上游 convert.py 在 f4ca484 中新增了 cugraph_dgl_graph_from_heterograph——
 # 将 dgl.DGLGraph 转换为 cugraph_dgl.Graph 的工厂函数。
 # 单独的一个函数，逻辑很直观，但上游没有任何入口断点可以观察转换过程。
+# feffb39 修正了间接引用缺陷：原代码用 `cugraph_dgl.Graph` 限定名，
+# 但 cugraph_dgl 在该模块内并非总是直接 import，改为直接 import Graph 类更健壮。
 #
-# Walpurgis 改写：
+# Walpurgis 改写（feffb39 + 20%）：
 #   1. 将函数重命名为 graph_from_heterograph（去掉冗余的 cugraph_dgl_ 前缀）
 #      并保留 cugraph_dgl_graph_from_heterograph 别名向后兼容
-#   2. 全链路 WALPURGIS_DEBUG=1 断点，覆盖：
+#   2. 新增 GraphResolutionMode 枚举（鲁迅拿法新增结构体）：
+#      区分 HOMOGENEOUS / HETEROGENEOUS 两种图结构处理路径，
+#      断点调试时可明确输出当前走哪条分支，不再依赖 `len(ntypes)` 的魔法数字。
+#   3. 全链路 WALPURGIS_DEBUG=1 断点，覆盖：
 #      - 函数入口：input_graph 的 ntypes/etypes/num_nodes/num_edges
-#      - 同构/异构分支选择
+#      - GraphResolutionMode 分支选择
 #      - add_nodes/add_edges 调用前的参数摘要
 #
 # adb4006 迁移注记 (fix circular import):
@@ -32,13 +42,26 @@
 #   故不存在对应的循环导入问题；adb4006 的修复模式已在本文件架构设计时规避。
 #   详见 src/walpurgis/core/circular_import_fix.py
 
+import enum
 import os as _os
 import sys as _sys
 import time as _time
 from typing import Optional
 
 from walpurgis.utils.imports import import_optional
-from walpurgis.graph.graph import Graph
+from walpurgis.graph.graph import Graph  # feffb39: 直接 import Graph，不再依赖包限定名
+
+
+class GraphResolutionMode(enum.Enum):
+    """图结构处理路径枚举（feffb39 Walpurgis 20% 改写新增）。
+
+    feffb39 上游的核心问题是用 `cugraph_dgl.Graph` 而不是直接 import——
+    侧面反映了同构/异构路径的分支并没有明确的类型标注。
+    Walpurgis 将两种处理路径显式化为枚举，断点调试时一目了然。
+    """
+
+    HOMOGENEOUS = "homogeneous"      # ntypes <= 1，单 ntype 直通路径
+    HETEROGENEOUS = "heterogeneous"  # ntypes > 1，逐 ntype 迭代路径
 
 dgl = import_optional("dgl")
 
@@ -101,9 +124,19 @@ def graph_from_heterograph(
     )
 
     # ---------------------------------------------------------------
-    # 节点：同构图（ntypes <= 1）直接添加；异构图逐类型添加
+    # 节点：用 GraphResolutionMode 明确标注分支（feffb39 Walpurgis 改写）
+    # 上游直接用 len(ntypes) <= 1 魔法数字；Walpurgis 枚举显式化。
     # ---------------------------------------------------------------
-    if len(input_graph.ntypes) <= 1:
+    node_mode = (
+        GraphResolutionMode.HOMOGENEOUS
+        if len(input_graph.ntypes) <= 1
+        else GraphResolutionMode.HETEROGENEOUS
+    )
+    _dbg(
+        "graph_from_heterograph",
+        f"node_mode={node_mode.value} ntypes={input_graph.ntypes}",
+    )
+    if node_mode is GraphResolutionMode.HOMOGENEOUS:
         ntype = input_graph.ntypes[0]
         _dbg(
             "graph_from_heterograph",
@@ -136,9 +169,18 @@ def graph_from_heterograph(
             )
 
     # ---------------------------------------------------------------
-    # 边：同构图（canonical_etypes <= 1）直接添加；异构图逐类型添加
+    # 边：用 GraphResolutionMode 明确标注分支（feffb39 Walpurgis 改写）
     # ---------------------------------------------------------------
-    if len(input_graph.canonical_etypes) <= 1:
+    edge_mode = (
+        GraphResolutionMode.HOMOGENEOUS
+        if len(input_graph.canonical_etypes) <= 1
+        else GraphResolutionMode.HETEROGENEOUS
+    )
+    _dbg(
+        "graph_from_heterograph",
+        f"edge_mode={edge_mode.value} canonical_etypes={input_graph.canonical_etypes}",
+    )
+    if edge_mode is GraphResolutionMode.HOMOGENEOUS:
         can_etype = input_graph.canonical_etypes[0]
         src_t, dst_t = input_graph.edges(form="uv", etype=can_etype)
         _dbg(
